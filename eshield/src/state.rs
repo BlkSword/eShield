@@ -62,3 +62,56 @@ impl AppStateInner {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_add_dropped_batch_aggregates_totals() {
+        let stats = Stats::default();
+        let mut by_reason = HashMap::new();
+        by_reason.insert(rules::BLACKLIST, 3);
+        by_reason.insert(rules::RATE_LIMIT, 2);
+        let mut by_source = HashMap::new();
+        by_source.insert(u32::from_be_bytes([192, 0, 2, 1]), 5);
+
+        stats.add_dropped_batch(&by_reason, &by_source);
+
+        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 5);
+        assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            stats
+                .top_attackers
+                .get(&u32::from_be_bytes([192, 0, 2, 1]))
+                .unwrap()
+                .load(Ordering::Relaxed),
+            5
+        );
+    }
+
+    #[test]
+    fn test_add_dropped_batch_empty_is_noop() {
+        let stats = Stats::default();
+        stats.add_dropped_batch(&HashMap::new(), &HashMap::new());
+        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 0);
+        assert!(stats.top_attackers.is_empty());
+    }
+
+    #[test]
+    fn test_add_dropped_batch_unknown_reason_ignored() {
+        let stats = Stats::default();
+        let mut by_reason = HashMap::new();
+        by_reason.insert(0xFFFF, 7);
+        let mut by_source = HashMap::new();
+        by_source.insert(u32::from_be_bytes([10, 0, 0, 1]), 7);
+
+        stats.add_dropped_batch(&by_reason, &by_source);
+
+        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 7);
+        assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
+        assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);
+    }
+}

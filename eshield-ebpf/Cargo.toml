@@ -6,6 +6,7 @@ license = "Apache-2.0"
 
 [dependencies]
 aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
 eshield-common = { path = "../eshield-common" }
 
 [profile.dev]

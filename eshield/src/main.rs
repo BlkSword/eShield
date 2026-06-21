@@ -68,6 +68,12 @@ enum Commands {
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
     },
+    /// 校验配置文件
+    Check {
+        /// 配置文件路径
+        #[arg(short, long, default_value = "/etc/eshield/config.toml")]
+        config: String,
+    },
     /// 启动独立 TUI 仪表盘
     Tui {
         /// eShield HTTP API 端点
@@ -90,12 +96,23 @@ async fn main() -> anyhow::Result<()> {
         } => send_block(&endpoint, &ip, duration).await,
         Commands::Unblock { ip, endpoint } => send_unblock(&endpoint, &ip).await,
         Commands::Reload { endpoint } => send_reload(&endpoint).await,
+        Commands::Check { config } => check_config(&config).await,
         Commands::Tui { endpoint } => tui::run(endpoint).await,
     }
 }
 
+async fn check_config(config_path: &str) -> anyhow::Result<()> {
+    let config = Config::from_file(config_path).context("读取配置文件失败")?;
+    config.validate().context("配置校验失败")?;
+    println!("配置文件校验通过");
+    Ok(())
+}
+
 async fn start(config_path: &str) -> anyhow::Result<()> {
-    let config = Config::from_file(config_path).unwrap_or_default();
+    let config = Config::from_file(config_path).context("读取配置文件失败")?;
+    config
+        .validate()
+        .context("配置校验失败，请检查 /etc/eshield/config.toml")?;
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -111,8 +128,12 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         "../../target/bpfel-unknown-none/release/eshield"
     ))?;
 
-    if let Err(e) = EbpfLogger::init(&mut ebpf) {
-        warn!("failed to initialize eBPF logger: {}", e);
+    if config.ebpf_log_enabled {
+        if let Err(e) = EbpfLogger::init(&mut ebpf) {
+            warn!("failed to initialize eBPF logger: {}", e);
+        } else {
+            info!("eBPF logger initialized");
+        }
     }
 
     // 初始化 SYN Cookie 密钥

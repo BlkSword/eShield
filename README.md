@@ -160,6 +160,7 @@ eshield block 192.0.2.1 --endpoint http://eshield-host:8443
 ```toml
 interface = "eth0"          # 要挂载 XDP 的网卡
 log_level = "info"          # trace/debug/info/warn/error
+ebpf_log_enabled = false    # 是否启用 eBPF 内核调试日志（AYA_LOGS）
 whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
 blacklist = ["192.0.2.1"]
 web_port = 8443             # Web / Prometheus / API 端口
@@ -219,6 +220,7 @@ http://<host>:8443/
 - 封禁 / 解封 IPv4
 - 放行 / 移除 CIDR
 - 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描
+- 实时开关 eBPF 内核调试日志
 - 调整速率限制阈值与 tick
 - 一键重载配置文件
 

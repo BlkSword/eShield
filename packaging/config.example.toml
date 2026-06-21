@@ -7,6 +7,9 @@ interface = "eth0"
 # 日志级别: trace, debug, info, warn, error
 log_level = "info"
 
+# 是否启用 eBPF 内核调试日志（通过 AYA_LOGS PerfEventArray 输出，默认关闭）
+ebpf_log_enabled = false
+
 # 白名单 CIDR 列表（永不被拦截）
 whitelist = [
     "127.0.0.1/32",

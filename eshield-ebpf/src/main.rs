@@ -13,6 +13,7 @@ use aya_ebpf::maps::lpm_trie::Key as LpmKey;
 use aya_ebpf::{
     bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, macros::xdp, programs::XdpContext,
 };
+use aya_log_ebpf::debug;
 use eshield_common::WhitelistKey;
 use maps::{CONFIG, GLOBAL_STATS, WHITELIST};
 use parser::{ptr_at, EthHdr, IpHdr};
@@ -70,6 +71,13 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         Some(c) => *c,
         None => return Ok(xdp_action::XDP_PASS),
     };
+
+    if runtime.ebpf_debug != 0 {
+        debug!(
+            ctx,
+            "eshield packet src={:i} proto={} action=begin", saddr_host, protocol as u32
+        );
+    }
 
     let mut tcp_hdr_len: usize = 0;
     if protocol == 6 {

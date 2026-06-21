@@ -155,6 +155,10 @@
           <input type="checkbox" id="l7-enabled">
           <label for="l7-enabled" style="margin:0">启用 L7 指纹扫描</label>
         </div>
+        <div class="switch">
+          <input type="checkbox" id="ebpf-debug-enabled">
+          <label for="ebpf-debug-enabled" style="margin:0">启用 eBPF 调试日志</label>
+        </div>
         <button onclick="updateSwitches()">更新开关</button>
         <button class="secondary" onclick="reloadConfig()">重载配置文件</button>
       </div>
@@ -212,6 +216,7 @@
         document.getElementById('rl-tick').value = c.rate_limit.tick_ms;
         document.getElementById('syn-proxy-enabled').checked = c.syn_proxy_enabled;
         document.getElementById('l7-enabled').checked = c.l7_scan_enabled;
+        document.getElementById('ebpf-debug-enabled').checked = c.ebpf_debug_enabled;
       } catch (e) { console.error(e); }
     }
 
@@ -254,7 +259,8 @@
     async function updateSwitches() {
       await api('PATCH', '/api/config', {
         syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
-        l7_scan_enabled: document.getElementById('l7-enabled').checked
+        l7_scan_enabled: document.getElementById('l7-enabled').checked,
+        ebpf_debug_enabled: document.getElementById('ebpf-debug-enabled').checked
       });
     }
 

@@ -28,6 +28,7 @@ pub struct RuntimeConfigSnapshot {
     pub rate_limit_enabled: bool,
     pub syn_proxy_enabled: bool,
     pub l7_scan_enabled: bool,
+    pub ebpf_debug_enabled: bool,
     pub rate_limit: RateLimitParams,
 }
 
@@ -46,6 +47,7 @@ pub struct RuntimeConfigPatch {
     pub rate_limit_enabled: Option<bool>,
     pub syn_proxy_enabled: Option<bool>,
     pub l7_scan_enabled: Option<bool>,
+    pub ebpf_debug_enabled: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
 }
 
@@ -187,6 +189,9 @@ impl ControlState {
         if let Some(enabled) = patch.l7_scan_enabled {
             snapshot.l7_scan_enabled = enabled;
         }
+        if let Some(enabled) = patch.ebpf_debug_enabled {
+            snapshot.ebpf_debug_enabled = enabled;
+        }
 
         let mut guard = self.ebpf.lock().await;
 
@@ -221,7 +226,8 @@ impl ControlState {
                     rate_limit_enabled: u8::from(snapshot.rate_limit_enabled),
                     syn_proxy_enabled: u8::from(snapshot.syn_proxy_enabled),
                     l7_scan_enabled: u8::from(snapshot.l7_scan_enabled),
-                    padding: [0; 5],
+                    ebpf_debug: u8::from(snapshot.ebpf_debug_enabled),
+                    padding: [0; 4],
                 },
                 0,
             )?;
@@ -238,6 +244,7 @@ impl RuntimeConfigSnapshot {
             rate_limit_enabled: config.rate_limit.enabled,
             syn_proxy_enabled: config.syn_proxy.enabled,
             l7_scan_enabled: config.l7_scan.enabled,
+            ebpf_debug_enabled: config.ebpf_log_enabled,
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
                 threshold: config.rate_limit.threshold,
@@ -261,7 +268,8 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
             rate_limit_enabled: u8::from(config.rate_limit.enabled),
             syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
             l7_scan_enabled: u8::from(config.l7_scan.enabled),
-            padding: [0; 5],
+            ebpf_debug: u8::from(config.ebpf_log_enabled),
+            padding: [0; 4],
         },
         0,
     )?;
@@ -461,4 +469,52 @@ fn now_ns() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ip_ipv4_ok() {
+        assert_eq!(parse_ip("192.0.2.1").unwrap(), 0xc000_0201);
+    }
+
+    #[test]
+    fn test_parse_ip_ipv6_rejected() {
+        assert!(parse_ip("::1").is_err());
+    }
+
+    #[test]
+    fn test_parse_cidr_ok() {
+        let (addr, prefix) = parse_cidr("10.0.0.0/8").unwrap();
+        assert_eq!(addr, 0x0a00_0000);
+        assert_eq!(prefix, 8);
+    }
+
+    #[test]
+    fn test_parse_cidr_invalid_prefix_rejected() {
+        assert!(parse_cidr("192.0.2.0/33").is_err());
+    }
+
+    #[test]
+    fn test_format_addr() {
+        assert_eq!(format_addr(0xc000_0201), "192.0.2.1");
+    }
+
+    #[test]
+    fn test_runtime_snapshot_from_config_preserves_ebpf_debug() {
+        let mut config = Config {
+            interface: "lo".to_string(),
+            ebpf_log_enabled: true,
+            ..Config::default()
+        };
+        config.rate_limit.enabled = true;
+        config.rate_limit.threshold = 100;
+
+        let snapshot = RuntimeConfigSnapshot::from_config(&config);
+        assert!(snapshot.ebpf_debug_enabled);
+        assert!(snapshot.rate_limit_enabled);
+        assert_eq!(snapshot.rate_limit.threshold, 100);
+    }
 }

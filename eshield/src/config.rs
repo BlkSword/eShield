@@ -12,6 +12,8 @@ pub struct Config {
     pub blacklist: Vec<String>,
     #[serde(default)]
     pub log_level: String,
+    #[serde(default = "default_false")]
+    pub ebpf_log_enabled: bool,
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
@@ -141,6 +143,63 @@ impl Config {
         Ok(config)
     }
 
+    /// 校验配置合法性。
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.interface.is_empty() {
+            anyhow::bail!("interface cannot be empty");
+        }
+        if !interface_exists(&self.interface) {
+            anyhow::bail!(
+                "network interface '{}' does not exist or is not visible",
+                self.interface
+            );
+        }
+
+        for cidr in &self.whitelist {
+            parse_cidr(cidr).with_context(|| format!("invalid whitelist CIDR: {}", cidr))?;
+        }
+        for ip in &self.blacklist {
+            parse_ip(ip).with_context(|| format!("invalid blacklist IP: {}", ip))?;
+        }
+
+        if self.rate_limit.enabled {
+            if self.rate_limit.threshold == 0 {
+                anyhow::bail!("rate_limit.threshold must be > 0");
+            }
+            if self.rate_limit.tick_ms == 0 {
+                anyhow::bail!("rate_limit.tick_ms must be > 0");
+            }
+            if self.rate_limit.decay_den == 0 {
+                anyhow::bail!("rate_limit.decay_den must be > 0");
+            }
+        }
+
+        if self.adaptive.enabled && self.adaptive.threshold == 0 {
+            anyhow::bail!("adaptive.threshold must be > 0");
+        }
+
+        for (i, pat) in self.l7_scan.patterns.iter().enumerate() {
+            let bytes = pat.pattern.as_bytes();
+            if bytes.is_empty() {
+                anyhow::bail!("L7 pattern {} cannot be empty", i);
+            }
+            if bytes.len() > 8 {
+                anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
+            }
+            if let Some(mask) = &pat.mask {
+                if mask.len() != bytes.len() {
+                    anyhow::bail!("L7 pattern {} mask length mismatch", i);
+                }
+            }
+        }
+
+        if self.web_port == 0 {
+            anyhow::bail!("web_port cannot be 0");
+        }
+
+        Ok(())
+    }
+
     #[allow(dead_code)]
     pub fn parse_blacklist(&self) -> anyhow::Result<Vec<u32>> {
         self.blacklist
@@ -150,10 +209,39 @@ impl Config {
     }
 }
 
+fn interface_exists(iface: &str) -> bool {
+    std::path::Path::new("/sys/class/net").join(iface).exists()
+}
+
 pub fn parse_ip(s: &str) -> anyhow::Result<u32> {
     let addr: IpAddr = s.parse().context("invalid IP address")?;
     match addr {
         IpAddr::V4(v4) => Ok(u32::from_be_bytes(v4.octets())),
+        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
+    }
+}
+
+fn parse_cidr(s: &str) -> anyhow::Result<(u32, u32)> {
+    let parts: Vec<&str> = s.split('/').collect();
+    if parts.len() != 2 {
+        anyhow::bail!("invalid CIDR: {}", s);
+    }
+    let addr: IpAddr = parts[0].parse().context("invalid IP address")?;
+    let prefix: u32 = parts[1].parse().context("invalid prefix length")?;
+    if prefix > 32 {
+        anyhow::bail!("invalid prefix length: {}", prefix);
+    }
+
+    match addr {
+        IpAddr::V4(v4) => {
+            let addr = u32::from_be_bytes(v4.octets());
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
+            Ok((addr & mask, prefix))
+        }
         IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
     }
 }

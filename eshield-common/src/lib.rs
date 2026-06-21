@@ -71,7 +71,8 @@ pub struct RuntimeConfig {
     pub rate_limit_enabled: u8,
     pub syn_proxy_enabled: u8,
     pub l7_scan_enabled: u8,
-    pub padding: [u8; 5],
+    pub ebpf_debug: u8,
+    pub padding: [u8; 4],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）
