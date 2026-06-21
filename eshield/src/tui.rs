@@ -48,7 +48,11 @@ pub async fn run(endpoint: String) -> anyhow::Result<()> {
 
     loop {
         if last_draw.elapsed() >= Duration::from_millis(500) {
-            snapshot = client.get(&stats_url).send().ok().and_then(|r| r.json().ok());
+            snapshot = client
+                .get(&stats_url)
+                .send()
+                .ok()
+                .and_then(|r| r.json().ok());
             terminal.draw(|f| draw(f, snapshot.as_ref()))?;
             last_draw = Instant::now();
         }
@@ -136,7 +140,6 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
     );
     f.render_widget(table, chunks[2]);
 
-    let help = Paragraph::new("[q] Quit")
-        .block(Block::default().borders(Borders::ALL));
+    let help = Paragraph::new("[q] Quit").block(Block::default().borders(Borders::ALL));
     f.render_widget(help, chunks[3]);
 }

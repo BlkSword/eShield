@@ -118,8 +118,8 @@ impl Default for RateLimitConfig {
 #[cfg(feature = "userspace")]
 mod userspace_impls {
     use super::{
-        BlockEntry, CookieSecret, DropEvent, GlobalStats, L7Pattern, RateCounter,
-        RateLimitConfig, RuntimeConfig, WhitelistKey,
+        BlockEntry, CookieSecret, DropEvent, GlobalStats, L7Pattern, RateCounter, RateLimitConfig,
+        RuntimeConfig, WhitelistKey,
     };
     use aya::Pod;
 

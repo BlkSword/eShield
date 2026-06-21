@@ -74,7 +74,9 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     let mut tcp_hdr_len: usize = 0;
     if protocol == 6 {
         // TCP
-        if let Some(tcp) = unsafe { parser::ptr_at::<parser::TcpHdr>(ctx, parser::ETH_HDR_LEN + ip_hdr_len) } {
+        if let Some(tcp) =
+            unsafe { parser::ptr_at::<parser::TcpHdr>(ctx, parser::ETH_HDR_LEN + ip_hdr_len) }
+        {
             tcp_hdr_len = (unsafe { (*tcp).doff() } as usize) * 4;
 
             if runtime.syn_proxy_enabled != 0 {

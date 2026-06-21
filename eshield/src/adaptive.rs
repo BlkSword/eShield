@@ -71,7 +71,8 @@ impl AdaptiveEngine {
             blacklist.insert(src_ip, entry, 0)?;
 
             // 记录封禁截止时间，避免重复写入 map
-            self.blocked.insert(src_ip, now_s.saturating_add(block_duration_s));
+            self.blocked
+                .insert(src_ip, now_s.saturating_add(block_duration_s));
 
             tracing::info!(
                 "adaptive block: src={} threshold={}/{}s duration={}s",

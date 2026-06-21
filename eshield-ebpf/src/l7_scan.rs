@@ -20,8 +20,7 @@ pub fn scan(ctx: &XdpContext, src_ip: u32, ip_hdr_len: usize) -> bool {
         return false;
     }
 
-    let tcp_hdr: *const TcpHdr = match unsafe { ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) }
-    {
+    let tcp_hdr: *const TcpHdr = match unsafe { ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) } {
         Some(t) => t,
         None => return false,
     };

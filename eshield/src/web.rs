@@ -36,15 +36,14 @@ struct Attacker {
 }
 
 async fn index_handler(State(stats): State<Arc<Stats>>) -> Html<String> {
-    let total_dropped = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let total_dropped = stats
+        .total_dropped
+        .load(std::sync::atomic::Ordering::Relaxed);
     let mut rows = String::new();
     for entry in stats.top_attackers.iter() {
         let ip = Ipv4Addr::from(entry.key().to_be_bytes());
         let count = entry.value().load(std::sync::atomic::Ordering::Relaxed);
-        rows.push_str(&format!(
-            "<tr><td>{}</td><td>{}</td></tr>\n",
-            ip, count
-        ));
+        rows.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>\n", ip, count));
     }
 
     Html(format!(
@@ -75,7 +74,9 @@ async fn index_handler(State(stats): State<Arc<Stats>>) -> Html<String> {
 }
 
 async fn stats_handler(State(stats): State<Arc<Stats>>) -> Json<StatsResponse> {
-    let total_dropped = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let total_dropped = stats
+        .total_dropped
+        .load(std::sync::atomic::Ordering::Relaxed);
     let mut top_attackers: Vec<Attacker> = stats
         .top_attackers
         .iter()
@@ -93,7 +94,9 @@ async fn stats_handler(State(stats): State<Arc<Stats>>) -> Json<StatsResponse> {
 }
 
 async fn metrics_handler(State(stats): State<Arc<Stats>>) -> Response {
-    let total_dropped = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
+    let total_dropped = stats
+        .total_dropped
+        .load(std::sync::atomic::Ordering::Relaxed);
     let mut body = format!(
         "# HELP eshield_dropped_total Total dropped packets\n\
          # TYPE eshield_dropped_total counter\n\

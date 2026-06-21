@@ -1,8 +1,4 @@
-use aya_ebpf::{
-    bindings::xdp_action,
-    helpers::gen::bpf_ktime_get_ns,
-    programs::XdpContext,
-};
+use aya_ebpf::{bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, programs::XdpContext};
 use core::mem;
 
 use crate::maps::COOKIE_SECRETS;
@@ -68,7 +64,15 @@ pub fn handle_syn(ctx: &XdpContext, ip: *const IpHdr, ip_hdr_len: usize) -> Opti
     };
 
     let mss_idx = 0u8; // 简化：固定默认 MSS
-    let cookie = build_cookie(saddr, daddr, sport, dport, bucket as u32, mss_idx, secret_bytes);
+    let cookie = build_cookie(
+        saddr,
+        daddr,
+        sport,
+        dport,
+        bucket as u32,
+        mss_idx,
+        secret_bytes,
+    );
 
     if send_synack(ctx, ip_hdr_len, cookie, original_seq).is_ok() {
         Some(xdp_action::XDP_TX)

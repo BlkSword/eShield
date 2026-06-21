@@ -14,14 +14,16 @@ use aya::{
 };
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
-use eshield_common::{rules, BlockEntry, CookieSecret, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey};
+use eshield_common::{
+    rules, BlockEntry, CookieSecret, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey,
+};
+use rand::Rng;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tracing::{info, warn};
-use rand::Rng;
 
 use crate::{
     config::{parse_ip, Config},
@@ -129,7 +131,11 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
 
     // 启动 Web 观测面板
-    let web_port = if config.web_port == 0 { 8443 } else { config.web_port };
+    let web_port = if config.web_port == 0 {
+        8443
+    } else {
+        config.web_port
+    };
     let _web_handle = {
         let stats = state.stats.clone();
         tokio::spawn(async move {
@@ -336,7 +342,11 @@ fn parse_cidr(s: &str) -> anyhow::Result<(u32, u32)> {
     match addr {
         IpAddr::V4(v4) => {
             let addr = u32::from_be_bytes(v4.octets());
-            let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix) };
+            let mask = if prefix == 0 {
+                0
+            } else {
+                u32::MAX << (32 - prefix)
+            };
             Ok((addr & mask, prefix))
         }
         IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
