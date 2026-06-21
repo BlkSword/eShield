@@ -1,6 +1,6 @@
 use aya_ebpf::programs::XdpContext;
 
-use crate::maps::{BLACKLIST, CONFIG, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
+use crate::maps::{BLACKLIST, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
 use eshield_common::{rules, BlockEntry, DropEvent, RateCounter, RateLimitConfig};
 
 /// TCP flags
@@ -9,15 +9,6 @@ const TCP_FLAG_SYN: u8 = 0x02;
 /// 检测并处理 SYN Flood：对单 IP 的 SYN 包做速率限制，超限即 DROP 并加黑名单。
 pub fn handle_syn_flood(ctx: &XdpContext, src_ip: u32, tcp_flags: u8, now_ns: u64) -> bool {
     if tcp_flags != TCP_FLAG_SYN {
-        return false;
-    }
-
-    let runtime = match CONFIG.get(0) {
-        Some(c) => *c,
-        None => return false,
-    };
-
-    if runtime.syn_proxy_enabled == 0 {
         return false;
     }
 
@@ -38,21 +29,18 @@ pub fn handle_syn_flood(ctx: &XdpContext, src_ip: u32, tcp_flags: u8, now_ns: u6
     let mut counter: u64 = 1;
     let mut last_decay_ns: u64 = now_ns;
 
-    match unsafe { RATE_MAP.get(&src_ip) } {
-        Some(entry) => {
-            let elapsed_ns = now_ns.saturating_sub(entry.last_decay_ns);
-            let ticks = elapsed_ns / tick_ns;
-            let effective_ticks = ticks.min(64);
+    if let Some(entry) = unsafe { RATE_MAP.get(&src_ip) } {
+        let elapsed_ns = now_ns.saturating_sub(entry.last_decay_ns);
+        let ticks = elapsed_ns / tick_ns;
+        let effective_ticks = ticks.min(64);
 
-            let mut decayed = entry.counter;
-            for _ in 0..effective_ticks {
-                decayed = (decayed * cfg.decay_num) / cfg.decay_den;
-            }
-
-            counter = decayed.saturating_add(1);
-            last_decay_ns = now_ns;
+        let mut decayed = entry.counter;
+        for _ in 0..effective_ticks {
+            decayed = (decayed * cfg.decay_num) / cfg.decay_den;
         }
-        None => {}
+
+        counter = decayed.saturating_add(1);
+        last_decay_ns = now_ns;
     }
 
     let updated = RateCounter {

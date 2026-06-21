@@ -6,6 +6,7 @@ mod l7_scan;
 mod maps;
 mod parser;
 mod rate_limit;
+mod syn_cookie;
 mod syn_flood;
 
 use aya_ebpf::maps::lpm_trie::Key as LpmKey;
@@ -13,7 +14,7 @@ use aya_ebpf::{
     bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, macros::xdp, programs::XdpContext,
 };
 use eshield_common::WhitelistKey;
-use maps::{GLOBAL_STATS, WHITELIST};
+use maps::{CONFIG, GLOBAL_STATS, WHITELIST};
 use parser::{ptr_at, EthHdr, IpHdr};
 
 #[xdp]
@@ -64,38 +65,67 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // 5. TCP SYN Flood 检测（开启时仅对 SYN 包计数，超限 DROP）
+    // 5. SYN Cookie 代理 / SYN Flood 检测
+    let runtime = match CONFIG.get(0) {
+        Some(c) => *c,
+        None => return Ok(xdp_action::XDP_PASS),
+    };
+
     let mut tcp_hdr_len: usize = 0;
     if protocol == 6 {
         // TCP
         if let Some(tcp) = unsafe { parser::ptr_at::<parser::TcpHdr>(ctx, parser::ETH_HDR_LEN + ip_hdr_len) } {
             tcp_hdr_len = (unsafe { (*tcp).doff() } as usize) * 4;
-            let tcp_flags = unsafe { (*tcp).flags() };
-            if syn_flood::handle_syn_flood(ctx, saddr_host, tcp_flags, now_ns) {
-                unsafe {
-                    if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                        let stats = &mut *stats;
-                        stats.total_dropped += 1;
-                        stats.syn_flood_blocked += 1;
+
+            if runtime.syn_proxy_enabled != 0 {
+                // SYN Cookie 代理：对 SYN 回复 SYN-ACK，对合法 ACK 放行
+                if let Some(action) = syn_cookie::handle_syn(ctx, ip, ip_hdr_len) {
+                    unsafe {
+                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                            let stats = &mut *stats;
+                            if action == xdp_action::XDP_TX {
+                                stats.syn_flood_blocked += 1;
+                            } else {
+                                stats.total_dropped += 1;
+                            }
+                        }
                     }
+                    return Ok(action);
                 }
-                return Ok(xdp_action::XDP_DROP);
+                if let Some(action) = syn_cookie::handle_ack(ctx, ip, ip_hdr_len) {
+                    unsafe {
+                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                            (*stats).total_passed += 1;
+                        }
+                    }
+                    return Ok(action);
+                }
+            } else {
+                let tcp_flags = unsafe { (*tcp).flags() };
+                if syn_flood::handle_syn_flood(ctx, saddr_host, tcp_flags, now_ns) {
+                    unsafe {
+                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                            let stats = &mut *stats;
+                            stats.total_dropped += 1;
+                            stats.syn_flood_blocked += 1;
+                        }
+                    }
+                    return Ok(xdp_action::XDP_DROP);
+                }
             }
         }
     }
 
     // 6. L7 轻量指纹扫描（TCP 载荷前 64 字节）
-    if protocol == 6 && tcp_hdr_len > 0 {
-        if l7_scan::scan(ctx, saddr_host, ip_hdr_len) {
-            unsafe {
-                if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                    let stats = &mut *stats;
-                    stats.total_dropped += 1;
-                    stats.l7_blocked += 1;
-                }
+    if protocol == 6 && tcp_hdr_len > 0 && l7_scan::scan(ctx, saddr_host, ip_hdr_len) {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                let stats = &mut *stats;
+                stats.total_dropped += 1;
+                stats.l7_blocked += 1;
             }
-            return Ok(xdp_action::XDP_DROP);
         }
+        return Ok(xdp_action::XDP_DROP);
     }
 
     // 7. 速率限制检查（触发则加入黑名单并 DROP）

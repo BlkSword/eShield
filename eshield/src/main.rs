@@ -14,13 +14,14 @@ use aya::{
 };
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
-use eshield_common::{rules, BlockEntry, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey};
+use eshield_common::{rules, BlockEntry, CookieSecret, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey};
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tracing::{info, warn};
+use rand::Rng;
 
 use crate::{
     config::{parse_ip, Config},
@@ -91,6 +92,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // 初始化运行时配置
     init_config_map(&mut ebpf, &config)?;
 
+    // 初始化 SYN Cookie 密钥
+    init_cookie_secrets(&mut ebpf)?;
+
     // 初始化速率限制参数
     init_rate_limit_map(&mut ebpf, &config)?;
 
@@ -138,6 +142,14 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // Ebpf 状态由事件消费任务与热加载共享
     let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
 
+    // 启动 SYN Cookie 密钥轮换任务
+    let rotator_handle = {
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            rotate_cookie_secrets(ebpf).await;
+        })
+    };
+
     // 启动事件消费任务：周期性获取 Ebpf 锁消费事件，避免阻塞热加载
     let event_handle = {
         let stats = state.stats.clone();
@@ -184,7 +196,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     }
 
     event_handle.abort();
+    rotator_handle.abort();
     let _ = event_handle.await;
+    let _ = rotator_handle.await;
 
     Ok(())
 }
@@ -432,6 +446,77 @@ fn apply_blacklist_map(
     current.clear();
     current.extend(new);
     Ok(())
+}
+
+fn init_cookie_secrets(ebpf: &mut Ebpf) -> anyhow::Result<()> {
+    let mut secrets: Array<_, CookieSecret> = ebpf
+        .map_mut("COOKIE_SECRETS")
+        .context("COOKIE_SECRETS map not found")?
+        .try_into()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    secrets.set(
+        0,
+        CookieSecret {
+            current: random_bytes(),
+            previous: random_bytes(),
+            bucket_index: now / 60,
+        },
+        0,
+    )?;
+    Ok(())
+}
+
+async fn rotate_cookie_secrets(ebpf: Arc<tokio::sync::Mutex<Ebpf>>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    loop {
+        interval.tick().await;
+        let mut guard = ebpf.lock().await;
+        if let Err(e) = rotate_cookie_secrets_inner(&mut guard).await {
+            warn!("cookie secret rotation failed: {}", e);
+        }
+    }
+}
+
+async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
+    let mut secrets_map: Array<_, CookieSecret> = ebpf
+        .map_mut("COOKIE_SECRETS")
+        .context("COOKIE_SECRETS map not found")?
+        .try_into()?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bucket = now / 60;
+
+    let mut current = secrets_map.get(&0, 0).unwrap_or(CookieSecret {
+        current: [0; 16],
+        previous: [0; 16],
+        bucket_index: bucket,
+    });
+
+    if bucket <= current.bucket_index {
+        return Ok(());
+    }
+
+    current.previous = current.current;
+    current.current = random_bytes();
+    current.bucket_index = bucket;
+
+    secrets_map.set(0, current, 0)?;
+    info!("rotated SYN Cookie secret to bucket {}", bucket);
+    Ok(())
+}
+
+fn random_bytes() -> [u8; 16] {
+    let mut bytes = [0u8; 16];
+    rand::thread_rng().fill(&mut bytes[..]);
+    bytes
 }
 
 fn format_addr(addr: u32) -> String {
