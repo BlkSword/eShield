@@ -41,8 +41,9 @@
 | **SYN Cookie 代理** | SYN Flood 场景下用 SYN-ACK Cookie 挑战替换原始 SYN，合法 ACK 验证后放行。 |
 | **L7 轻量指纹扫描** | 检查 TCP 载荷前 64 字节，匹配特征即 DROP（如恶意 UA、扫描指纹）。 |
 | **自适应阈值引擎** | 重复触发规则的 IP 自动提升为更长时间的封禁。 |
-| **配置热加载** | 通过 `SIGHUP` 或 `systemctl reload` 重新加载配置，无需重启服务。 |
-| **双观测面** | 内置 Web Dashboard、Prometheus `/metrics`、独立 TUI 仪表盘。 |
+| **实时控制** | REST API + 中文 Web 表单 + CLI，可实时封禁/解封 IP、更新速率限制与开关。 |
+| **配置热加载** | 通过 `SIGHUP` 或 `systemctl reload` 重新加载配置文件，无需重启服务。 |
+| **双观测面** | 中文 Web Dashboard、Prometheus `/metrics`、中文 TUI 仪表盘。 |
 | **单二进制静态链接** | 基于 musl 静态编译，发布时仅需一个 `eshield` 可执行文件。 |
 
 ---
@@ -135,11 +136,21 @@ sudo eshield start --config /etc/eshield/config.toml
 # 查看状态
 eshield status
 
+# 实时封禁 IP（0 秒表示永久）
+eshield block 192.0.2.1 --duration 300
+
+# 实时解封 IP
+eshield unblock 192.0.2.1
+
+# 重新加载配置文件
+eshield reload
+
 # 启动独立 TUI 仪表盘（连接本地 Web API）
 eshield tui
 
-# 指定 TUI 端点
-eshield tui --endpoint http://eshield-host:8443
+# 指定远程 API 端点
+eshield status --endpoint http://eshield-host:8443
+eshield block 192.0.2.1 --endpoint http://eshield-host:8443
 ```
 
 ### 配置文件
@@ -195,7 +206,7 @@ sudo kill -HUP $(pidof eshield)
 
 ## 观测面
 
-### Web Dashboard
+### Web Dashboard（中文）
 
 启动后访问：
 
@@ -203,7 +214,13 @@ sudo kill -HUP $(pidof eshield)
 http://<host>:8443/
 ```
 
-展示实时包统计、TOP 攻击源、各规则命中数。
+中文界面，展示实时包统计、按规则维度命中数、TOP 攻击源，并提供实时控制表单：
+
+- 封禁 / 解封 IPv4
+- 放行 / 移除 CIDR
+- 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描
+- 调整速率限制阈值与 tick
+- 一键重载配置文件
 
 ### Prometheus 指标
 
@@ -211,21 +228,29 @@ http://<host>:8443/
 http://<host>:8443/metrics
 ```
 
-暴露 `eshield_dropped_total` 等计数器，可直接被 Prometheus 抓取。
+暴露多维计数器，可直接被 Prometheus 抓取：
+
+- `eshield_dropped_total`
+- `eshield_blacklist_blocked_total`
+- `eshield_rate_limited_total`
+- `eshield_syn_flood_blocked_total`
+- `eshield_l7_blocked_total`
+- `eshield_adaptive_blocked_total`
+- `eshield_source_dropped_total{ip="..."}`
 
 ### JSON 统计接口
 
 ```bash
-curl http://<host>:8443/stats | jq
+curl http://<host>:8443/api/stats | jq
 ```
 
-### TUI 仪表盘
+### TUI 仪表盘（中文）
 
 ```bash
 eshield tui
 ```
 
-支持键盘 `q` 退出，每 500ms 刷新一次。
+中文界面，显示总丢弃、各规则拦截数、TOP 攻击源；按 `q` 退出，每 500ms 刷新一次。
 
 ---
 
@@ -269,13 +294,19 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 ```text
 .
 ├── eshield/            # 用户态控制面（Rust + Tokio + axum + ratatui）
+│   ├── src/control.rs  # 控制面：eBPF Map 操作 / 运行时策略 / SIGHUP 重载
+│   ├── src/web.rs      # REST API + 中文 Web Dashboard
+│   ├── src/dashboard.html
+│   ├── src/tui.rs      # 中文 TUI 仪表盘
+│   └── src/main.rs     # CLI + 守护进程启动
 ├── eshield-ebpf/       # 内核态 eBPF/XDP 数据面（Rust + Aya）
 ├── eshield-common/     # 内核/用户态共享结构体与规则 ID
 ├── xtask/              # 构建任务封装（cargo xtask build/run/test）
 ├── scripts/            # install.sh / uninstall.sh / benchmark.sh / build-release.sh
 ├── tests/              # 集成测试脚本
 ├── docs/               # 架构、部署、基准测试、开发环境文档
-└── README.md
+├── README.md
+└── ROADMAP.md
 ```
 
 ---
