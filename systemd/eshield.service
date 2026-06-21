@@ -1,0 +1,18 @@
+[Unit]
+Description=eShield Host-Level CC Defense
+Documentation=https://github.com/eshield/eshield
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/eshield start --config /etc/eshield/config.toml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON CAP_IPC_LOCK
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[package]
+name = "eshield"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "eBPF/XDP host-level CC defense shield - userspace control plane"
+
+[features]
+default = []
+
+[dependencies]
+aya = { workspace = true, features = ["async_tokio"] }
+aya-log = { workspace = true }
+eshield-common = { path = "../eshield-common", features = ["userspace"] }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dashmap = "6"
+ratatui = "0.29"
+crossterm = "0.28"
+axum = "0.7"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+
+[build-dependencies]
+anyhow = { workspace = true }

@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt-clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Check fmt
+        run: cargo fmt --check
+      - name: Run clippy
+        run: cargo clippy --workspace --exclude eshield-ebpf -- -D warnings
+
+  build-ebpf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly + bpf target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: bpfel-unknown-none
+          components: rust-src
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Build eBPF
+        run: cargo xtask build-ebpf --release
+
+  build-userspace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Build userspace
+        run: cargo build --package eshield --target x86_64-unknown-linux-musl --release
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run unit tests
+        run: cargo test --workspace --exclude eshield-ebpf
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    env:
+      CARGO: cargo
+      RUSTUP: rustup
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust nightly + bpf target
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: bpfel-unknown-none
+          components: rust-src
+      - name: Install Rust stable + musl target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install test dependencies
+        run: sudo apt-get install -y hping3 netcat-traditional
+      - name: Build eBPF
+        run: cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
+      - name: Build userspace
+        run: cargo build --package eshield --target x86_64-unknown-linux-musl --release
+      - name: Run integration tests
+        run: sudo bash tests/netns_test.sh
+
+  # TODO(phase4): expand to a true multi-kernel matrix using Vagrant/QEMU.

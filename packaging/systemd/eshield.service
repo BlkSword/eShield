@@ -1,0 +1,17 @@
+[Unit]
+Description=eShield Host-Level CC Defense
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/eshield start --config /etc/eshield/config.toml
+Restart=always
+RestartSec=5
+
+# Required capabilities for eBPF/XDP
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_PERFMON CAP_IPC_LOCK
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

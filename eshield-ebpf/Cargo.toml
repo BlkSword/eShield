@@ -1,0 +1,16 @@
+[package]
+name = "eshield-ebpf"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[dependencies]
+aya-ebpf = { workspace = true }
+eshield-common = { path = "../eshield-common" }
+
+[profile.dev]
+overflow-checks = false
+
+[[bin]]
+name = "eshield"
+path = "src/main.rs"

@@ -1,0 +1,19 @@
+# eShield 配置文件示例
+# 安装后通常位于 /etc/eshield/config.toml
+
+# 要挂载 XDP 程序的网卡名
+interface = "eth0"
+
+# 日志级别: trace, debug, info, warn, error
+log_level = "info"
+
+# 白名单 CIDR 列表（永不被拦截）
+whitelist = [
+    "127.0.0.1/32",
+    "10.0.0.0/8",
+]
+
+# 黑名单 IP 列表（启动时加载，永久封禁）
+blacklist = [
+    # "192.0.2.1",
+]
