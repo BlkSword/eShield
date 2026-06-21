@@ -1,38 +1,29 @@
 mod adaptive;
 mod config;
+mod control;
 mod event_consumer;
 mod state;
 mod tui;
 mod web;
 
 use anyhow::Context;
-use aya::{
-    include_bytes_aligned,
-    maps::{lpm_trie::Key as LpmKey, Array, HashMap as LruHashMap, LpmTrie},
-    programs::{Xdp, XdpFlags},
-    Ebpf,
-};
+use aya::{include_bytes_aligned, programs::Xdp, Ebpf};
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
-use eshield_common::{
-    rules, BlockEntry, CookieSecret, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey,
-};
 use rand::Rng;
-use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tracing::{info, warn};
 
-use crate::{
-    config::{parse_ip, Config},
-    state::AppStateInner,
-};
+use crate::{config::Config, control::ControlState, state::AppStateInner};
+
+const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
 
 #[derive(Debug, Parser)]
 #[command(name = "eshield")]
-#[command(about = "eBPF/XDP host-level CC defense shield")]
+#[command(about = "eBPF/XDP 主机级 CC 防御盾")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -40,18 +31,47 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Start the XDP shield
+    /// 启动 XDP 防护守护进程
     Start {
-        /// Path to config file
+        /// 配置文件路径
         #[arg(short, long, default_value = "/etc/eshield/config.toml")]
         config: String,
     },
-    /// Show current status
-    Status,
-    /// Launch standalone TUI dashboard
+    /// 查看运行状态
+    Status {
+        /// eShield HTTP API 端点
+        #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
+    /// 实时封禁某个 IP
+    Block {
+        /// 要封禁的 IPv4 地址
+        ip: String,
+        /// 封禁时长（秒），0 表示永久
+        #[arg(short, long, default_value = "0")]
+        duration: u64,
+        /// eShield HTTP API 端点
+        #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
+    /// 实时解封某个 IP
+    Unblock {
+        /// 要解封的 IPv4 地址
+        ip: String,
+        /// eShield HTTP API 端点
+        #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
+    /// 重新加载配置文件
+    Reload {
+        /// eShield HTTP API 端点
+        #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
+        endpoint: String,
+    },
+    /// 启动独立 TUI 仪表盘
     Tui {
-        /// eShield HTTP API endpoint
-        #[arg(short, long, default_value = "http://localhost:8443")]
+        /// eShield HTTP API 端点
+        #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
     },
 }
@@ -62,10 +82,14 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Start { config } => start(&config).await,
-        Commands::Status => {
-            println!("eShield status command is not implemented yet");
-            Ok(())
-        }
+        Commands::Status { endpoint } => show_status(&endpoint).await,
+        Commands::Block {
+            ip,
+            duration,
+            endpoint,
+        } => send_block(&endpoint, &ip, duration).await,
+        Commands::Unblock { ip, endpoint } => send_unblock(&endpoint, &ip).await,
+        Commands::Reload { endpoint } => send_reload(&endpoint).await,
         Commands::Tui { endpoint } => tui::run(endpoint).await,
     }
 }
@@ -91,23 +115,8 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         warn!("failed to initialize eBPF logger: {}", e);
     }
 
-    // 初始化运行时配置
-    init_config_map(&mut ebpf, &config)?;
-
     // 初始化 SYN Cookie 密钥
     init_cookie_secrets(&mut ebpf)?;
-
-    // 初始化速率限制参数
-    init_rate_limit_map(&mut ebpf, &config)?;
-
-    // 初始化 L7 指纹模式
-    init_l7_patterns_map(&mut ebpf, &config)?;
-
-    // 加载用户配置中的黑名单
-    let mut static_blacklist = init_blacklist_map(&mut ebpf, &config)?;
-
-    // 加载用户配置中的白名单
-    let mut current_whitelist = init_whitelist_map(&mut ebpf, &config)?;
 
     let program: &mut Xdp = ebpf
         .program_mut("eshield")
@@ -115,13 +124,13 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         .try_into()?;
     program.load()?;
 
-    // Try Native (driver) mode first, fall back to Generic (SKB) mode.
-    match program.attach(&config.interface, XdpFlags::DRV_MODE) {
+    // 优先原生模式挂载，失败则回退到通用模式
+    match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
         Ok(_) => info!("attached XDP in DRV (native) mode on {}", config.interface),
         Err(e) => {
             warn!("native XDP attach failed ({}), trying generic mode", e);
             program
-                .attach(&config.interface, XdpFlags::SKB_MODE)
+                .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
                 .context("failed to attach XDP program")?;
             info!("attached XDP in SKB (generic) mode on {}", config.interface);
         }
@@ -130,7 +139,17 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let state = Arc::new(AppStateInner::new());
     let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
 
-    // 启动 Web 观测面板
+    // Ebpf 状态由控制面、事件消费任务与热加载共享
+    let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
+
+    // 控制面：封装所有 eBPF Map 操作，供 Web / CLI / SIGHUP 使用
+    let control = Arc::new(
+        ControlState::new(ebpf.clone(), config_path.to_string(), &config)
+            .await
+            .context("failed to initialize control state")?,
+    );
+
+    // 启动 Web 观测与控制面板
     let web_port = if config.web_port == 0 {
         8443
     } else {
@@ -138,15 +157,13 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     };
     let _web_handle = {
         let stats = state.stats.clone();
+        let control = control.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run(stats, web_port).await {
+            if let Err(e) = web::run(stats, control, web_port).await {
                 warn!("web server exited: {}", e);
             }
         })
     };
-
-    // Ebpf 状态由事件消费任务与热加载共享
-    let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
 
     // 启动 SYN Cookie 密钥轮换任务
     let rotator_handle = {
@@ -171,7 +188,6 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                         break;
                     }
                 }
-                // 释放锁后短暂让出，使热加载有机会执行
             }
         })
     };
@@ -191,12 +207,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
             }
             _ = sighup.recv() => {
                 info!("received SIGHUP, reloading config");
-                let mut guard = ebpf.lock().await;
-                match reload_config(&mut guard, config_path, &mut current_whitelist, &mut static_blacklist).await {
+                match control.reload_config_file().await {
                     Ok(()) => info!("config reloaded successfully"),
                     Err(e) => warn!("config reload failed: {}", e),
                 }
-                // 锁在此处释放，事件消费任务继续
             }
         }
     }
@@ -209,257 +223,109 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
-    let mut config_array: Array<_, RuntimeConfig> = ebpf
-        .map_mut("CONFIG")
-        .context("CONFIG map not found")?
-        .try_into()?;
-    config_array.set(
-        0,
-        RuntimeConfig {
-            rate_limit_enabled: u8::from(config.rate_limit.enabled),
-            syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
-            l7_scan_enabled: u8::from(config.l7_scan.enabled),
-            padding: [0; 5],
-        },
-        0,
-    )?;
-    Ok(())
-}
+async fn show_status(endpoint: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let stats: serde_json::Value = client
+        .get(format!("{}/api/stats", endpoint))
+        .send()
+        .await
+        .context("无法连接 eShield API，守护进程是否已启动？")?
+        .json()
+        .await
+        .context("解析 API 响应失败")?;
 
-fn init_rate_limit_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
-    let mut rate_cfg: Array<_, RateLimitConfig> = ebpf
-        .map_mut("RATE_LIMIT_CFG")
-        .context("RATE_LIMIT_CFG map not found")?
-        .try_into()?;
-    rate_cfg.set(
-        0,
-        RateLimitConfig {
-            threshold: config.rate_limit.threshold,
-            tick_ms: config.rate_limit.tick_ms,
-            decay_num: config.rate_limit.decay_num,
-            decay_den: config.rate_limit.decay_den,
-            block_duration_s: config.rate_limit.block_duration_s,
-        },
-        0,
-    )?;
-    Ok(())
-}
+    println!("eShield 运行状态");
+    println!("----------------");
+    println!(
+        "总丢弃包数: {}",
+        stats["total_dropped"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "黑名单拦截: {}",
+        stats["blacklist_blocked"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "速率限制拦截: {}",
+        stats["rate_limited"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "SYN Flood 拦截: {}",
+        stats["syn_flood_blocked"].as_u64().unwrap_or(0)
+    );
+    println!("L7 指纹拦截: {}", stats["l7_blocked"].as_u64().unwrap_or(0));
+    println!(
+        "自适应阈值拦截: {}",
+        stats["adaptive_blocked"].as_u64().unwrap_or(0)
+    );
 
-fn init_l7_patterns_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
-    let mut patterns: Array<_, L7Pattern> = ebpf
-        .map_mut("L7_PATTERNS")
-        .context("L7_PATTERNS map not found")?
-        .try_into()?;
-
-    for (i, pat_cfg) in config.l7_scan.patterns.iter().enumerate().take(16) {
-        let pattern_bytes = pat_cfg.pattern.as_bytes();
-        if pattern_bytes.len() > 8 {
-            anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
-        }
-
-        let mut sig = [0u8; 8];
-        let mut mask = [0u8; 8];
-
-        if let Some(mask_str) = &pat_cfg.mask {
-            let mask_bytes = mask_str.as_bytes();
-            if mask_bytes.len() != pattern_bytes.len() {
-                anyhow::bail!("L7 pattern {} mask length mismatch", i);
-            }
-            sig[..pattern_bytes.len()].copy_from_slice(pattern_bytes);
-            mask[..mask_bytes.len()].copy_from_slice(mask_bytes);
-        } else {
-            sig[..pattern_bytes.len()].copy_from_slice(pattern_bytes);
-            mask[..pattern_bytes.len()].fill(0xff);
-        }
-
-        patterns.set(
-            i as u32,
-            L7Pattern {
-                signature: u64::from_le_bytes(sig),
-                mask: u64::from_le_bytes(mask),
-                length: pattern_bytes.len() as u8,
-                action: 0, // DROP
-            },
-            0,
-        )?;
-    }
-
-    Ok(())
-}
-
-fn init_blacklist_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<Vec<u32>> {
-    let mut blacklist: LruHashMap<_, u32, BlockEntry> = ebpf
-        .map_mut("BLACKLIST")
-        .context("BLACKLIST map not found")?
-        .try_into()?;
-
-    let mut entries = Vec::with_capacity(config.blacklist.len());
-    for ip_str in &config.blacklist {
-        let ip = parse_ip(ip_str)?;
-        let entry = BlockEntry {
-            blocked_until_ns: 0, // 永久封禁
-            block_reason: rules::BLACKLIST as u8,
-            hit_count: 0,
-            first_seen_ns: 0,
-        };
-        blacklist.insert(ip, entry, 0)?;
-        info!("loaded blacklist entry: {}", ip_str);
-        entries.push(ip);
-    }
-
-    Ok(entries)
-}
-
-fn init_whitelist_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<Vec<(u32, u32)>> {
-    let mut whitelist: LpmTrie<_, WhitelistKey, u8> = ebpf
-        .map_mut("WHITELIST")
-        .context("WHITELIST map not found")?
-        .try_into()?;
-
-    let mut entries = Vec::with_capacity(config.whitelist.len());
-    for cidr in &config.whitelist {
-        let (addr, prefix) = parse_cidr(cidr)?;
-        whitelist.insert(&LpmKey::new(prefix, WhitelistKey { addr }), 1, 0)?;
-        info!("loaded whitelist entry: {}", cidr);
-        entries.push((addr, prefix));
-    }
-
-    Ok(entries)
-}
-
-fn parse_cidr(s: &str) -> anyhow::Result<(u32, u32)> {
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("invalid CIDR: {}", s);
-    }
-    let addr: IpAddr = parts[0].parse().context("invalid IP address")?;
-    let prefix: u32 = parts[1].parse().context("invalid prefix length")?;
-    if prefix > 32 {
-        anyhow::bail!("invalid prefix length: {}", prefix);
-    }
-
-    match addr {
-        IpAddr::V4(v4) => {
-            let addr = u32::from_be_bytes(v4.octets());
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            Ok((addr & mask, prefix))
-        }
-        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
-    }
-}
-
-async fn reload_config(
-    ebpf: &mut Ebpf,
-    config_path: &str,
-    current_whitelist: &mut Vec<(u32, u32)>,
-    static_blacklist: &mut Vec<u32>,
-) -> anyhow::Result<()> {
-    let new_config = Config::from_file(config_path)?;
-
-    init_config_map(ebpf, &new_config)?;
-    init_rate_limit_map(ebpf, &new_config)?;
-    init_l7_patterns_map(ebpf, &new_config)?;
-    apply_whitelist_map(ebpf, &new_config, current_whitelist)?;
-    apply_blacklist_map(ebpf, &new_config, static_blacklist)?;
-
-    Ok(())
-}
-
-fn apply_whitelist_map(
-    ebpf: &mut Ebpf,
-    config: &Config,
-    current: &mut Vec<(u32, u32)>,
-) -> anyhow::Result<()> {
-    let mut whitelist: LpmTrie<_, WhitelistKey, u8> = ebpf
-        .map_mut("WHITELIST")
-        .context("WHITELIST map not found")?
-        .try_into()?;
-
-    let new: HashSet<(u32, u32)> = config
-        .whitelist
-        .iter()
-        .map(|s| parse_cidr(s))
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .into_iter()
-        .collect();
-
-    // 移除已不在新配置中的条目
-    for key in current.iter().copied() {
-        if !new.contains(&key) {
-            whitelist.remove(&LpmKey::new(key.1, WhitelistKey { addr: key.0 }))?;
-            info!("removed whitelist entry: {}/{}", format_addr(key.0), key.1);
-        }
-    }
-
-    // 新增条目
-    for (addr, prefix) in &new {
-        if !current.contains(&(*addr, *prefix)) {
-            whitelist.insert(&LpmKey::new(*prefix, WhitelistKey { addr: *addr }), 1, 0)?;
-            info!("added whitelist entry: {}/{}", format_addr(*addr), prefix);
-        }
-    }
-
-    current.clear();
-    current.extend(new);
-    Ok(())
-}
-
-fn apply_blacklist_map(
-    ebpf: &mut Ebpf,
-    config: &Config,
-    current: &mut Vec<u32>,
-) -> anyhow::Result<()> {
-    let mut blacklist: LruHashMap<_, u32, BlockEntry> = ebpf
-        .map_mut("BLACKLIST")
-        .context("BLACKLIST map not found")?
-        .try_into()?;
-
-    let new: HashSet<u32> = config
-        .blacklist
-        .iter()
-        .map(|s| parse_ip(s))
-        .collect::<anyhow::Result<Vec<_>>>()?
-        .into_iter()
-        .collect();
-
-    // 移除已不在新配置中的静态黑名单条目（保留动态加入的条目）
-    for ip in current.iter().copied() {
-        if !new.contains(&ip) {
-            // 仅删除由配置文件加入的静态黑名单（reason == BLACKLIST）
-            let entry = blacklist.get(&ip, 0)?;
-            if entry.block_reason == rules::BLACKLIST as u8 {
-                blacklist.remove(&ip)?;
-                info!("removed static blacklist entry: {}", format_addr(ip));
+    if let Some(top) = stats["top_attackers"].as_array() {
+        if !top.is_empty() {
+            println!("\nTOP 攻击源:");
+            for attacker in top.iter().take(10) {
+                println!(
+                    "  {} -> {} 包",
+                    attacker["ip"].as_str().unwrap_or("?"),
+                    attacker["count"].as_u64().unwrap_or(0)
+                );
             }
         }
     }
 
-    // 新增静态黑名单条目
-    for ip in &new {
-        if !current.contains(ip) {
-            let entry = BlockEntry {
-                blocked_until_ns: 0,
-                block_reason: rules::BLACKLIST as u8,
-                hit_count: 0,
-                first_seen_ns: 0,
-            };
-            blacklist.insert(*ip, entry, 0)?;
-            info!("added static blacklist entry: {}", format_addr(*ip));
-        }
-    }
+    Ok(())
+}
 
-    current.clear();
-    current.extend(new);
+async fn send_block(endpoint: &str, ip: &str, duration: u64) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/blacklist", endpoint))
+        .json(&serde_json::json!({ "ip": ip, "duration_s": duration }))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
+
+    if resp.status().is_success() {
+        println!("已封禁 {}，时长 {} 秒", ip, duration);
+    } else {
+        anyhow::bail!("封禁失败: {}", resp.text().await.unwrap_or_default());
+    }
+    Ok(())
+}
+
+async fn send_unblock(endpoint: &str, ip: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!("{}/api/blacklist", endpoint))
+        .json(&serde_json::json!({ "ip": ip }))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
+
+    if resp.status().is_success() {
+        println!("已解封 {}", ip);
+    } else {
+        anyhow::bail!("解封失败: {}", resp.text().await.unwrap_or_default());
+    }
+    Ok(())
+}
+
+async fn send_reload(endpoint: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/config/reload", endpoint))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
+
+    if resp.status().is_success() {
+        println!("配置已重新加载");
+    } else {
+        anyhow::bail!("重载失败: {}", resp.text().await.unwrap_or_default());
+    }
     Ok(())
 }
 
 fn init_cookie_secrets(ebpf: &mut Ebpf) -> anyhow::Result<()> {
-    let mut secrets: Array<_, CookieSecret> = ebpf
+    let mut secrets: aya::maps::Array<_, eshield_common::CookieSecret> = ebpf
         .map_mut("COOKIE_SECRETS")
         .context("COOKIE_SECRETS map not found")?
         .try_into()?;
@@ -471,7 +337,7 @@ fn init_cookie_secrets(ebpf: &mut Ebpf) -> anyhow::Result<()> {
 
     secrets.set(
         0,
-        CookieSecret {
+        eshield_common::CookieSecret {
             current: random_bytes(),
             previous: random_bytes(),
             bucket_index: now / 60,
@@ -482,7 +348,7 @@ fn init_cookie_secrets(ebpf: &mut Ebpf) -> anyhow::Result<()> {
 }
 
 async fn rotate_cookie_secrets(ebpf: Arc<tokio::sync::Mutex<Ebpf>>) {
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+    let mut interval = tokio::time::interval(Duration::from_secs(60));
     loop {
         interval.tick().await;
         let mut guard = ebpf.lock().await;
@@ -493,7 +359,7 @@ async fn rotate_cookie_secrets(ebpf: Arc<tokio::sync::Mutex<Ebpf>>) {
 }
 
 async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
-    let mut secrets_map: Array<_, CookieSecret> = ebpf
+    let mut secrets_map: aya::maps::Array<_, eshield_common::CookieSecret> = ebpf
         .map_mut("COOKIE_SECRETS")
         .context("COOKIE_SECRETS map not found")?
         .try_into()?;
@@ -504,11 +370,13 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
         .unwrap_or(0);
     let bucket = now / 60;
 
-    let mut current = secrets_map.get(&0, 0).unwrap_or(CookieSecret {
-        current: [0; 16],
-        previous: [0; 16],
-        bucket_index: bucket,
-    });
+    let mut current = secrets_map
+        .get(&0, 0)
+        .unwrap_or(eshield_common::CookieSecret {
+            current: [0; 16],
+            previous: [0; 16],
+            bucket_index: bucket,
+        });
 
     if bucket <= current.bucket_index {
         return Ok(());
@@ -527,8 +395,4 @@ fn random_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill(&mut bytes[..]);
     bytes
-}
-
-fn format_addr(addr: u32) -> String {
-    Ipv4Addr::from(addr.to_be_bytes()).to_string()
 }

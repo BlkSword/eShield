@@ -1,7 +1,8 @@
 use aya::Ebpf;
 use eshield_common::DropEvent;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{interval, Duration};
 use tracing::debug;
 
 use crate::adaptive::AdaptiveEngine;
@@ -34,8 +35,13 @@ pub async fn run(
         events
     };
 
+    // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争
+    let mut by_source: HashMap<u32, u64> = HashMap::new();
+    let mut by_reason: HashMap<u16, u64> = HashMap::new();
+
     for event in &events {
-        stats.add_dropped(event.src_ip);
+        *by_source.entry(event.src_ip).or_insert(0) += 1;
+        *by_reason.entry(event.rule_id).or_insert(0) += 1;
 
         if let Err(e) = adaptive.on_event(&stats, event.src_ip, ebpf) {
             debug!("adaptive engine error: {}", e);
@@ -47,8 +53,12 @@ pub async fn run(
         );
     }
 
+    stats.add_dropped_batch(&by_reason, &by_source);
+
     if events.is_empty() {
-        sleep(Duration::from_millis(10)).await;
+        // 无事件时让出 CPU，避免空转；使用 interval 保持一致的节奏
+        let mut tick = interval(Duration::from_millis(10));
+        tick.tick().await;
     }
 
     Ok(events.len())

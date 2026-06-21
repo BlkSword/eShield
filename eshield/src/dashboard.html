@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eShield 控制台</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --panel-hover: #26354d;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --danger: #ef4444;
+      --success: #22c55e;
+      --warn: #f59e0b;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      padding: 1.25rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    header h1 { margin: 0; font-size: 1.4rem; display: flex; align-items: center; gap: .6rem; }
+    .status { display: inline-flex; align-items: center; gap: .4rem; font-size: .875rem; color: var(--success); }
+    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+    main { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: .75rem;
+      padding: 1.25rem;
+    }
+    .card h3 { margin: 0 0 .5rem; font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .card .value { font-size: 1.9rem; font-weight: 700; }
+    .card .value.danger { color: var(--danger); }
+    .card .value.accent { color: var(--accent); }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: .75rem;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    section h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin-bottom: .75rem; }
+    label { display: block; font-size: .875rem; color: var(--muted); margin-bottom: .25rem; }
+    input, select {
+      background: #0b1220;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: .5rem .75rem;
+      border-radius: .5rem;
+      font-size: .9375rem;
+    }
+    button {
+      background: var(--accent);
+      border: none;
+      color: #0f172a;
+      padding: .55rem 1rem;
+      border-radius: .5rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { opacity: .9; }
+    button.secondary { background: var(--panel-hover); color: var(--text); border: 1px solid var(--border); }
+    button.danger { background: var(--danger); color: #fff; }
+    .switch { display: flex; align-items: center; gap: .5rem; }
+    table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+    th, td { padding: .75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-size: .8rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    .msg { margin-top: .5rem; font-size: .875rem; min-height: 1.25rem; }
+    .msg.ok { color: var(--success); }
+    .msg.err { color: var(--danger); }
+    footer { max-width: 1200px; margin: 0 auto 2rem; padding: 0 1.5rem; color: var(--muted); font-size: .875rem; }
+    footer a { color: var(--accent); text-decoration: none; margin-right: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+      eShield 控制台
+    </h1>
+    <span class="status">运行中</span>
+  </header>
+
+  <main>
+    <div class="grid" id="stats-grid">
+      <div class="card"><h3>总丢弃包数</h3><div class="value danger" id="total-dropped">-</div></div>
+      <div class="card"><h3>黑名单拦截</h3><div class="value" id="blacklist-blocked">-</div></div>
+      <div class="card"><h3>速率限制拦截</h3><div class="value accent" id="rate-limited">-</div></div>
+      <div class="card"><h3>SYN Flood 拦截</h3><div class="value accent" id="syn-flood-blocked">-</div></div>
+      <div class="card"><h3>L7 指纹拦截</h3><div class="value accent" id="l7-blocked">-</div></div>
+      <div class="card"><h3>自适应阈值拦截</h3><div class="value accent" id="adaptive-blocked">-</div></div>
+    </div>
+
+    <section>
+      <h2>实时控制</h2>
+      <div class="row">
+        <div>
+          <label>封禁 IPv4</label>
+          <input type="text" id="block-ip" placeholder="例如 192.0.2.1">
+        </div>
+        <div>
+          <label>时长（秒，0=永久）</label>
+          <input type="number" id="block-duration" value="300" min="0">
+        </div>
+        <button class="danger" onclick="blockIp()">封禁</button>
+        <button class="secondary" onclick="unblockIp()">解封</button>
+      </div>
+      <div class="row">
+        <div>
+          <label>放行 CIDR</label>
+          <input type="text" id="allow-cidr" placeholder="例如 10.0.0.0/8">
+        </div>
+        <button onclick="allowCidr()">放行</button>
+        <button class="secondary" onclick="disallowCidr()">移除</button>
+      </div>
+      <div class="row">
+        <div class="switch">
+          <input type="checkbox" id="rl-enabled">
+          <label for="rl-enabled" style="margin:0">启用速率限制</label>
+        </div>
+        <div>
+          <label>阈值</label>
+          <input type="number" id="rl-threshold" value="200" min="1">
+        </div>
+        <div>
+          <label>tick_ms</label>
+          <input type="number" id="rl-tick" value="100" min="1">
+        </div>
+        <button onclick="updateRateLimit()">更新速率限制</button>
+      </div>
+      <div class="row">
+        <div class="switch">
+          <input type="checkbox" id="syn-proxy-enabled">
+          <label for="syn-proxy-enabled" style="margin:0">启用 SYN Cookie 代理</label>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="l7-enabled">
+          <label for="l7-enabled" style="margin:0">启用 L7 指纹扫描</label>
+        </div>
+        <button onclick="updateSwitches()">更新开关</button>
+        <button class="secondary" onclick="reloadConfig()">重载配置文件</button>
+      </div>
+      <div class="msg" id="control-msg"></div>
+    </section>
+
+    <section>
+      <h2>TOP 攻击源</h2>
+      <table>
+        <thead><tr><th>源 IP</th><th>丢弃包数</th></tr></thead>
+        <tbody id="attackers-body"><tr><td colspan="2">加载中...</td></tr></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <a href="/metrics">Prometheus 指标</a>
+    <a href="/api/stats">JSON API</a>
+    <span>eShield v0.1.0 · Apache-2.0</span>
+  </footer>
+
+  <script>
+    const initialConfig = __CONFIG_JSON__;
+
+    async function refreshStats() {
+      try {
+        const r = await fetch('/api/stats');
+        const d = await r.json();
+        document.getElementById('total-dropped').textContent = d.total_dropped.toLocaleString();
+        document.getElementById('blacklist-blocked').textContent = d.blacklist_blocked.toLocaleString();
+        document.getElementById('rate-limited').textContent = d.rate_limited.toLocaleString();
+        document.getElementById('syn-flood-blocked').textContent = d.syn_flood_blocked.toLocaleString();
+        document.getElementById('l7-blocked').textContent = d.l7_blocked.toLocaleString();
+        document.getElementById('adaptive-blocked').textContent = d.adaptive_blocked.toLocaleString();
+
+        const tbody = document.getElementById('attackers-body');
+        tbody.innerHTML = '';
+        if (!d.top_attackers || d.top_attackers.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="2" style="color:var(--muted)">暂无数据</td></tr>';
+        } else {
+          d.top_attackers.forEach(a => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${a.ip}</td><td>${a.count.toLocaleString()}</td>`;
+            tbody.appendChild(tr);
+          });
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    async function refreshConfig() {
+      try {
+        const c = initialConfig;
+        document.getElementById('rl-enabled').checked = c.rate_limit_enabled;
+        document.getElementById('rl-threshold').value = c.rate_limit.threshold;
+        document.getElementById('rl-tick').value = c.rate_limit.tick_ms;
+        document.getElementById('syn-proxy-enabled').checked = c.syn_proxy_enabled;
+        document.getElementById('l7-enabled').checked = c.l7_scan_enabled;
+      } catch (e) { console.error(e); }
+    }
+
+    function setMsg(text, ok) {
+      const el = document.getElementById('control-msg');
+      el.textContent = text;
+      el.className = 'msg ' + (ok ? 'ok' : 'err');
+      setTimeout(() => el.textContent = '', 4000);
+    }
+
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body) opts.body = JSON.stringify(body);
+      const r = await fetch(path, opts);
+      const txt = await r.text();
+      setMsg(txt, r.ok);
+      if (r.ok) { refreshStats(); refreshConfig(); }
+    }
+
+    function blockIp() { api('POST', '/api/blacklist', { ip: document.getElementById('block-ip').value, duration_s: parseInt(document.getElementById('block-duration').value) }); }
+    function unblockIp() { api('DELETE', '/api/blacklist', { ip: document.getElementById('block-ip').value }); }
+    function allowCidr() { api('POST', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value }); }
+    function disallowCidr() { api('DELETE', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value }); }
+    function reloadConfig() { api('POST', '/api/config/reload'); }
+
+    async function updateRateLimit() {
+      await api('PATCH', '/api/config', {
+        rate_limit_enabled: document.getElementById('rl-enabled').checked,
+        rate_limit: {
+          enabled: document.getElementById('rl-enabled').checked,
+          threshold: parseInt(document.getElementById('rl-threshold').value),
+          tick_ms: parseInt(document.getElementById('rl-tick').value),
+          decay_num: 7,
+          decay_den: 8,
+          block_duration_s: 300
+        }
+      });
+    }
+
+    async function updateSwitches() {
+      await api('PATCH', '/api/config', {
+        syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
+        l7_scan_enabled: document.getElementById('l7-enabled').checked
+      });
+    }
+
+    refreshStats();
+    refreshConfig();
+    setInterval(refreshStats, 1000);
+  </script>
+</body>
+</html>

@@ -20,6 +20,7 @@ pub mod rules {
     pub const SYN_FLOOD: u16 = 3;
     pub const L7_PATTERN: u16 = 4;
     pub const ADAPTIVE: u16 = 5;
+    pub const API_BLOCK: u16 = 6;
 }
 
 /// 黑名单条目
@@ -95,7 +96,7 @@ pub struct CookieSecret {
 
 /// L7 轻量指纹模式（8 字节签名，验证器友好）
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct L7Pattern {
     pub signature: u64,
     pub mask: u64,

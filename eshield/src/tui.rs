@@ -14,6 +14,11 @@ use tokio::time::sleep;
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct StatsSnapshot {
     pub total_dropped: u64,
+    pub blacklist_blocked: u64,
+    pub rate_limited: u64,
+    pub syn_flood_blocked: u64,
+    pub l7_blocked: u64,
+    pub adaptive_blocked: u64,
     pub top_attackers: Vec<Attacker>,
 }
 
@@ -85,13 +90,13 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
         .margin(1)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(5),
+            Constraint::Length(8),
             Constraint::Min(10),
             Constraint::Length(3),
         ])
         .split(f.area());
 
-    let title = Paragraph::new("eShield // Host-Level CC Defense")
+    let title = Paragraph::new("eShield // 主机级 CC 防御盾")
         .style(
             Style::default()
                 .fg(Color::Cyan)
@@ -102,14 +107,19 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
     f.render_widget(title, chunks[0]);
 
     let total_dropped = snapshot.map(|s| s.total_dropped).unwrap_or(0);
+    let blacklist = snapshot.map(|s| s.blacklist_blocked).unwrap_or(0);
+    let rate = snapshot.map(|s| s.rate_limited).unwrap_or(0);
+    let syn = snapshot.map(|s| s.syn_flood_blocked).unwrap_or(0);
+    let l7 = snapshot.map(|s| s.l7_blocked).unwrap_or(0);
+    let adaptive = snapshot.map(|s| s.adaptive_blocked).unwrap_or(0);
+    let top_count = snapshot.map(|s| s.top_attackers.len()).unwrap_or(0);
+
     let stats_text = format!(
-        "Endpoint: {}\nDropped: {}\nTop Attackers: {}",
-        "local eShield",
-        total_dropped,
-        snapshot.map(|s| s.top_attackers.len()).unwrap_or(0)
+        "总丢弃: {} | 黑名单: {} | 速率限制: {} | SYN Flood: {} | L7: {} | 自适应: {}\nTOP 攻击源数量: {}",
+        total_dropped, blacklist, rate, syn, l7, adaptive, top_count
     );
-    let stats_widget = Paragraph::new(stats_text)
-        .block(Block::default().title("Statistics").borders(Borders::ALL));
+    let stats_widget =
+        Paragraph::new(stats_text).block(Block::default().title("实时统计").borders(Borders::ALL));
     f.render_widget(stats_widget, chunks[1]);
 
     let mut top: Vec<(String, u64)> = snapshot
@@ -130,16 +140,11 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
         [Constraint::Percentage(50), Constraint::Percentage(50)],
     )
     .header(
-        Row::new(vec!["Source IP", "Dropped Packets"])
-            .style(Style::default().add_modifier(Modifier::BOLD)),
+        Row::new(vec!["源 IP", "丢弃包数"]).style(Style::default().add_modifier(Modifier::BOLD)),
     )
-    .block(
-        Block::default()
-            .title("Top Attackers")
-            .borders(Borders::ALL),
-    );
+    .block(Block::default().title("TOP 攻击源").borders(Borders::ALL));
     f.render_widget(table, chunks[2]);
 
-    let help = Paragraph::new("[q] Quit").block(Block::default().borders(Borders::ALL));
+    let help = Paragraph::new("[q] 退出").block(Block::default().borders(Borders::ALL));
     f.render_widget(help, chunks[3]);
 }

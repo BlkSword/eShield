@@ -1,21 +1,44 @@
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
+use serde::{Deserialize, Serialize};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
+use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::state::Stats;
 
-pub async fn run(stats: Arc<Stats>, port: u16) -> anyhow::Result<()> {
+pub struct WebState {
+    pub stats: Arc<Stats>,
+    pub control: Arc<ControlState>,
+}
+
+pub async fn run(stats: Arc<Stats>, control: Arc<ControlState>, port: u16) -> anyhow::Result<()> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    let state = Arc::new(WebState { stats, control });
+
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/api/stats", get(stats_handler))
+        .route(
+            "/api/config",
+            get(config_handler).patch(patch_config_handler),
+        )
+        .route("/api/config/reload", post(reload_config_handler))
+        .route(
+            "/api/blacklist",
+            post(block_ip_handler).delete(unblock_ip_handler),
+        )
+        .route(
+            "/api/whitelist",
+            post(allow_cidr_handler).delete(disallow_cidr_handler),
+        )
         .route("/metrics", get(metrics_handler))
-        .with_state(stats);
+        .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("web dashboard listening on http://{}", addr);
@@ -23,60 +46,134 @@ pub async fn run(stats: Arc<Stats>, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct StatsResponse {
     total_dropped: u64,
+    blacklist_blocked: u64,
+    rate_limited: u64,
+    syn_flood_blocked: u64,
+    l7_blocked: u64,
+    adaptive_blocked: u64,
     top_attackers: Vec<Attacker>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Serialize)]
 struct Attacker {
     ip: String,
     count: u64,
 }
 
-async fn index_handler(State(stats): State<Arc<Stats>>) -> Html<String> {
-    let total_dropped = stats
-        .total_dropped
-        .load(std::sync::atomic::Ordering::Relaxed);
-    let mut rows = String::new();
-    for entry in stats.top_attackers.iter() {
-        let ip = Ipv4Addr::from(entry.key().to_be_bytes());
-        let count = entry.value().load(std::sync::atomic::Ordering::Relaxed);
-        rows.push_str(&format!("<tr><td>{}</td><td>{}</td></tr>\n", ip, count));
-    }
-
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>eShield Dashboard</title>
-  <style>
-    body {{ font-family: sans-serif; margin: 2rem; }}
-    table {{ border-collapse: collapse; margin-top: 1rem; }}
-    th, td {{ border: 1px solid #ccc; padding: 0.5rem 1rem; text-align: left; }}
-  </style>
-</head>
-<body>
-  <h1>eShield Dashboard</h1>
-  <p>Total dropped: <strong>{}</strong></p>
-  <h2>Top attackers</h2>
-  <table>
-    <tr><th>Source IP</th><th>Dropped</th></tr>
-    {}
-  </table>
-  <p><a href="/metrics">Prometheus metrics</a> | <a href="/api/stats">JSON API</a></p>
-</body>
-</html>"#,
-        total_dropped, rows
-    ))
+#[derive(Deserialize)]
+struct BlockIpReq {
+    ip: String,
+    #[serde(default)]
+    duration_s: u64,
 }
 
-async fn stats_handler(State(stats): State<Arc<Stats>>) -> Json<StatsResponse> {
-    let total_dropped = stats
-        .total_dropped
-        .load(std::sync::atomic::Ordering::Relaxed);
+#[derive(Deserialize)]
+struct UnblockIpReq {
+    ip: String,
+}
+
+#[derive(Deserialize)]
+struct AllowCidrReq {
+    cidr: String,
+}
+
+#[derive(Deserialize)]
+struct DisallowCidrReq {
+    cidr: String,
+}
+
+async fn stats_handler(State(state): State<Arc<WebState>>) -> Json<StatsResponse> {
+    Json(stats_snapshot(&state.stats).await)
+}
+
+async fn config_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let rt = state.control.runtime.read().await.clone();
+    Json(serde_json::to_value(rt).unwrap_or_default())
+}
+
+async fn patch_config_handler(
+    State(state): State<Arc<WebState>>,
+    Json(patch): Json<RuntimeConfigPatch>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .patch_runtime(patch)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok("配置已更新")
+}
+
+async fn reload_config_handler(
+    State(state): State<Arc<WebState>>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .reload_config_file()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok("配置已从文件重新加载")
+}
+
+async fn block_ip_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<BlockIpReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .block_ip(&req.ip, req.duration_s)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("已封禁")
+}
+
+async fn unblock_ip_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<UnblockIpReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .unblock_ip(&req.ip)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("已解封")
+}
+
+async fn allow_cidr_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<AllowCidrReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .allow_cidr(&req.cidr)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("已加入白名单")
+}
+
+async fn disallow_cidr_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<DisallowCidrReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .disallow_cidr(&req.cidr)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("已移除白名单")
+}
+
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+
+async fn index_handler(State(state): State<Arc<WebState>>) -> Html<String> {
+    let config_json = serde_json::to_string(&*state.control.runtime.read().await)
+        .unwrap_or_else(|_| "{}".to_string());
+    Html(DASHBOARD_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
+}
+
+async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
     let mut top_attackers: Vec<Attacker> = stats
         .top_attackers
         .iter()
@@ -87,31 +184,63 @@ async fn stats_handler(State(stats): State<Arc<Stats>>) -> Json<StatsResponse> {
         .collect();
     top_attackers.sort_by_key(|a| std::cmp::Reverse(a.count));
     top_attackers.truncate(20);
-    Json(StatsResponse {
-        total_dropped,
+
+    StatsResponse {
+        total_dropped: stats
+            .total_dropped
+            .load(std::sync::atomic::Ordering::Relaxed),
+        blacklist_blocked: stats
+            .blacklist_blocked
+            .load(std::sync::atomic::Ordering::Relaxed),
+        rate_limited: stats
+            .rate_limited
+            .load(std::sync::atomic::Ordering::Relaxed),
+        syn_flood_blocked: stats
+            .syn_flood_blocked
+            .load(std::sync::atomic::Ordering::Relaxed),
+        l7_blocked: stats.l7_blocked.load(std::sync::atomic::Ordering::Relaxed),
+        adaptive_blocked: stats
+            .adaptive_blocked
+            .load(std::sync::atomic::Ordering::Relaxed),
         top_attackers,
-    })
+    }
 }
 
-async fn metrics_handler(State(stats): State<Arc<Stats>>) -> Response {
-    let total_dropped = stats
-        .total_dropped
-        .load(std::sync::atomic::Ordering::Relaxed);
+async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
+    let stats = stats_snapshot(&state.stats).await;
     let mut body = format!(
         "# HELP eshield_dropped_total Total dropped packets\n\
          # TYPE eshield_dropped_total counter\n\
-         eshield_dropped_total {}\n",
-        total_dropped
+         eshield_dropped_total {}\n\n\
+         # HELP eshield_blacklist_blocked_total Blacklist blocked packets\n\
+         # TYPE eshield_blacklist_blocked_total counter\n\
+         eshield_blacklist_blocked_total {}\n\n\
+         # HELP eshield_rate_limited_total Rate limited packets\n\
+         # TYPE eshield_rate_limited_total counter\n\
+         eshield_rate_limited_total {}\n\n\
+         # HELP eshield_syn_flood_blocked_total SYN flood blocked packets\n\
+         # TYPE eshield_syn_flood_blocked_total counter\n\
+         eshield_syn_flood_blocked_total {}\n\n\
+         # HELP eshield_l7_blocked_total L7 scan blocked packets\n\
+         # TYPE eshield_l7_blocked_total counter\n\
+         eshield_l7_blocked_total {}\n\n\
+         # HELP eshield_adaptive_blocked_total Adaptive threshold blocked packets\n\
+         # TYPE eshield_adaptive_blocked_total counter\n\
+         eshield_adaptive_blocked_total {}\n",
+        stats.total_dropped,
+        stats.blacklist_blocked,
+        stats.rate_limited,
+        stats.syn_flood_blocked,
+        stats.l7_blocked,
+        stats.adaptive_blocked,
     );
 
-    for entry in stats.top_attackers.iter() {
-        let ip = Ipv4Addr::from(entry.key().to_be_bytes());
-        let count = entry.value().load(std::sync::atomic::Ordering::Relaxed);
+    for attacker in &stats.top_attackers {
         body.push_str(&format!(
-            "# HELP eshield_source_dropped_total Dropped packets per source IP\n\
+            "\n# HELP eshield_source_dropped_total Dropped packets per source IP\n\
              # TYPE eshield_source_dropped_total counter\n\
              eshield_source_dropped_total{{ip=\"{}\"}} {}\n",
-            ip, count
+            attacker.ip, attacker.count
         ));
     }
 
