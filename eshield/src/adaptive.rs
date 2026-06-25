@@ -1,9 +1,10 @@
 use aya::maps::HashMap as LruHashMap;
 use aya::Ebpf;
-use eshield_common::{rules, BlockEntry};
+use eshield_common::{rules, BlockEntry, IpKey};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AdaptiveConfig;
+use crate::ip::format_ip_key;
 use crate::state::Stats;
 
 /// 用户态自适应阈值引擎：根据 Ring Buffer 中的 DROP 事件，
@@ -11,9 +12,9 @@ use crate::state::Stats;
 pub struct AdaptiveEngine {
     config: AdaptiveConfig,
     /// 每个 IP 的最近事件时间戳（秒），用于滑动窗口计数
-    windows: dashmap::DashMap<u32, Vec<u64>>,
+    windows: dashmap::DashMap<IpKey, Vec<u64>>,
     /// 已自适应封禁的 IP 及其解封时间戳（秒）
-    blocked: dashmap::DashMap<u32, u64>,
+    blocked: dashmap::DashMap<IpKey, u64>,
 }
 
 impl AdaptiveEngine {
@@ -26,7 +27,7 @@ impl AdaptiveEngine {
     }
 
     /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map。
-    pub fn on_event(&self, _stats: &Stats, src_ip: u32, ebpf: &mut Ebpf) -> anyhow::Result<()> {
+    pub fn on_event(&self, _stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
         if !self.config.enabled {
             return Ok(());
         }
@@ -57,7 +58,7 @@ impl AdaptiveEngine {
                 now_ns.saturating_add(block_ns)
             };
 
-            let mut blacklist: LruHashMap<_, u32, BlockEntry> = ebpf
+            let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = ebpf
                 .map_mut("BLACKLIST")
                 .ok_or_else(|| anyhow::anyhow!("BLACKLIST map not found"))?
                 .try_into()?;
@@ -76,7 +77,7 @@ impl AdaptiveEngine {
 
             tracing::info!(
                 "adaptive block: src={} threshold={}/{}s duration={}s",
-                format_addr(src_ip),
+                format_ip_key(&src_ip),
                 threshold,
                 window_s,
                 block_duration_s
@@ -99,8 +100,4 @@ fn now_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
-}
-
-fn format_addr(addr: u32) -> String {
-    std::net::Ipv4Addr::from(addr.to_be_bytes()).to_string()
 }

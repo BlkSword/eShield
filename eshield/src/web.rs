@@ -1,27 +1,47 @@
 use axum::{
     extract::State,
     http::StatusCode,
+    middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
+    Json, Request, Router,
 };
 use serde::{Deserialize, Serialize};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
+use crate::auth::{self, AuthState};
+use crate::audit::{AuditAction, Auditor};
 use crate::control::{ControlState, RuntimeConfigPatch};
+use crate::health;
+use crate::ip::format_ip_key;
 use crate::state::Stats;
 
 pub struct WebState {
     pub stats: Arc<Stats>,
     pub control: Arc<ControlState>,
+    pub auditor: Auditor,
+    pub auth: AuthState,
 }
 
-pub async fn run(stats: Arc<Stats>, control: Arc<ControlState>, port: u16) -> anyhow::Result<()> {
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    let state = Arc::new(WebState { stats, control });
+pub async fn run(
+    stats: Arc<Stats>,
+    control: Arc<ControlState>,
+    auditor: Auditor,
+    auth: AuthState,
+    bind: String,
+) -> anyhow::Result<()> {
+    let state = Arc::new(WebState {
+        stats,
+        control,
+        auditor,
+        auth,
+    });
 
-    let app = Router::new()
+    let public = Router::new()
+        .route("/healthz", get(health::healthz_handler))
+        .route("/ready", get(health::ready_handler));
+
+    let protected = Router::new()
         .route("/", get(index_handler))
         .route("/api/stats", get(stats_handler))
         .route(
@@ -37,13 +57,26 @@ pub async fn run(stats: Arc<Stats>, control: Arc<ControlState>, port: u16) -> an
             "/api/whitelist",
             post(allow_cidr_handler).delete(disallow_cidr_handler),
         )
+        .route("/api/audit", get(audit_handler))
         .route("/metrics", get(metrics_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware)));
+
+    let app = public
+        .merge(protected)
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("web dashboard listening on http://{}", addr);
+    let listener = tokio::net::TcpListener::bind(&bind).await?;
+    tracing::info!("web dashboard listening on http://{}", bind);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn auth_middleware(
+    State(state): State<Arc<WebState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    auth::auth_middleware(State(state.auth.clone()), request, next).await
 }
 
 #[derive(Serialize)]
@@ -54,6 +87,8 @@ struct StatsResponse {
     syn_flood_blocked: u64,
     l7_blocked: u64,
     adaptive_blocked: u64,
+    udp_flood_blocked: u64,
+    icmp_flood_blocked: u64,
     top_attackers: Vec<Attacker>,
 }
 
@@ -165,6 +200,28 @@ async fn disallow_cidr_handler(
     Ok("已移除白名单")
 }
 
+#[derive(Deserialize)]
+struct AuditQuery {
+    #[serde(default = "default_audit_limit")]
+    limit: usize,
+}
+
+fn default_audit_limit() -> usize {
+    100
+}
+
+async fn audit_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<AuditQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let entries = state
+        .auditor
+        .list(q.limit)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::json!({ "entries": entries })))
+}
+
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 async fn index_handler(State(state): State<Arc<WebState>>) -> Html<String> {
@@ -178,7 +235,7 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         .top_attackers
         .iter()
         .map(|entry| Attacker {
-            ip: Ipv4Addr::from(entry.key().to_be_bytes()).to_string(),
+            ip: format_ip_key(entry.key()),
             count: entry.value().load(std::sync::atomic::Ordering::Relaxed),
         })
         .collect();
@@ -201,6 +258,12 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         l7_blocked: stats.l7_blocked.load(std::sync::atomic::Ordering::Relaxed),
         adaptive_blocked: stats
             .adaptive_blocked
+            .load(std::sync::atomic::Ordering::Relaxed),
+        udp_flood_blocked: stats
+            .udp_flood_blocked
+            .load(std::sync::atomic::Ordering::Relaxed),
+        icmp_flood_blocked: stats
+            .icmp_flood_blocked
             .load(std::sync::atomic::Ordering::Relaxed),
         top_attackers,
     }
@@ -226,13 +289,21 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
          eshield_l7_blocked_total {}\n\n\
          # HELP eshield_adaptive_blocked_total Adaptive threshold blocked packets\n\
          # TYPE eshield_adaptive_blocked_total counter\n\
-         eshield_adaptive_blocked_total {}\n",
+         eshield_adaptive_blocked_total {}\n\n\
+         # HELP eshield_udp_flood_blocked_total UDP flood blocked packets\n\
+         # TYPE eshield_udp_flood_blocked_total counter\n\
+         eshield_udp_flood_blocked_total {}\n\n\
+         # HELP eshield_icmp_flood_blocked_total ICMP flood blocked packets\n\
+         # TYPE eshield_icmp_flood_blocked_total counter\n\
+         eshield_icmp_flood_blocked_total {}\n",
         stats.total_dropped,
         stats.blacklist_blocked,
         stats.rate_limited,
         stats.syn_flood_blocked,
         stats.l7_blocked,
         stats.adaptive_blocked,
+        stats.udp_flood_blocked,
+        stats.icmp_flood_blocked,
     );
 
     for attacker in &stats.top_attackers {

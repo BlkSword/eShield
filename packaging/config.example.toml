@@ -7,8 +7,31 @@ interface = "eth0"
 # 日志级别: trace, debug, info, warn, error
 log_level = "info"
 
+# 是否以 JSON 格式输出日志（默认文本）
+log_json = false
+
 # 是否启用 eBPF 内核调试日志（通过 AYA_LOGS PerfEventArray 输出，默认关闭）
 ebpf_log_enabled = false
+
+# 是否启用 UDP Flood 检测
+udp_flood_enabled = false
+
+# 是否启用 ICMP/ICMPv6 Flood 检测
+icmp_flood_enabled = false
+
+# Web 控制台监听地址，默认 0.0.0.0:8443
+web_bind = "0.0.0.0:8443"
+
+# API 访问 Token（未设置则允许匿名访问）
+# api_token = "changeme"
+
+# 动态规则持久化路径（redb）
+store_path = "/var/lib/eshield/rules.redb"
+
+# 告警 Webhook 配置（可选）
+# alert_webhook_url = "https://hooks.example.com/eshield"
+alert_threshold_dps = 1000
+alert_cooldown_s = 60
 
 # 白名单 CIDR 列表（永不被拦截）
 whitelist = [
@@ -20,3 +43,17 @@ whitelist = [
 blacklist = [
     # "192.0.2.1",
 ]
+
+# 端口/协议 ACL 规则表（可选）
+# protocol: tcp / udp / icmp / icmpv6 / any
+# dport:    端口号、范围（如 1000-2000）或 any
+# action:   allow / drop
+# [[port_acl]]
+# protocol = "tcp"
+# dport = "22"
+# action = "allow"
+
+# [[port_acl]]
+# protocol = "tcp"
+# dport = "23"
+# action = "drop"

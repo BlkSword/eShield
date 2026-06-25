@@ -1,0 +1,14 @@
+#!/bin/bash
+set -e
+
+# Create data/state directories
+mkdir -p /var/lib/eshield
+mkdir -p /var/log/eshield
+
+# Reload systemd and enable service
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload || true
+    systemctl enable eshield.service || true
+fi
+
+exit 0

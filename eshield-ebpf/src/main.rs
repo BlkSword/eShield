@@ -2,21 +2,24 @@
 #![no_main]
 
 mod blacklist;
+mod icmp_flood;
 mod l7_scan;
 mod maps;
 mod parser;
+mod port_acl;
 mod rate_limit;
 mod syn_cookie;
 mod syn_flood;
+mod udp_flood;
 
 use aya_ebpf::maps::lpm_trie::Key as LpmKey;
 use aya_ebpf::{
     bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, macros::xdp, programs::XdpContext,
 };
 use aya_log_ebpf::debug;
-use eshield_common::WhitelistKey;
-use maps::{CONFIG, GLOBAL_STATS, WHITELIST};
-use parser::{ptr_at, EthHdr, IpHdr};
+use eshield_common::{IpKey, WhitelistKeyV4, WhitelistKeyV6};
+use maps::{CONFIG, GLOBAL_STATS, WHITELIST_V4, WHITELIST_V6};
+use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, UdpHdr, ETH_HDR_LEN};
 
 #[xdp]
 pub fn eshield(ctx: XdpContext) -> u32 {
@@ -30,25 +33,19 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     // 1. 解析以太网头
     let eth: *const EthHdr = unsafe { ptr_at(ctx, 0).ok_or(())? };
     let eth_proto = unsafe { (*eth).proto };
-    if eth_proto != u16::to_be(0x0800) {
-        // 非 IPv4，直接放行
+
+    let (src_key, protocol, ip_hdr_len, dport) = if eth_proto == parser::ETH_P_IP {
+        parse_ipv4(ctx)?
+    } else if eth_proto == parser::ETH_P_IPV6 {
+        parse_ipv6(ctx)?
+    } else {
+        // 非 IPv4/IPv6，直接放行
         return Ok(xdp_action::XDP_PASS);
-    }
+    };
 
-    // 2. 解析 IP 头
-    let ip: *const IpHdr = unsafe { ptr_at(ctx, parser::ETH_HDR_LEN).ok_or(())? };
-    let ip_hdr_len = ((unsafe { (*ip).ver_ihl } & 0x0f) as usize) * 4;
-    if ip_hdr_len < parser::IP_HDR_LEN {
-        return Ok(xdp_action::XDP_DROP);
-    }
-
-    let saddr = unsafe { (*ip).saddr };
-    // saddr 是网络字节序；Map 中统一按主机字节序存储 IP 键
-    let saddr_host = u32::from_be(saddr);
-    let protocol = unsafe { (*ip).proto };
     let now_ns = unsafe { bpf_ktime_get_ns() };
 
-    // 3. 更新全局统计
+    // 2. 更新全局统计
     unsafe {
         if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
             let stats = &mut *stats;
@@ -56,8 +53,8 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
-    // 4. 白名单检查（CIDR）
-    if is_whitelisted(saddr_host) {
+    // 3. 白名单检查（CIDR）
+    if is_whitelisted(&src_key) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 (*stats).total_passed += 1;
@@ -66,68 +63,122 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // 5. SYN Cookie 代理 / SYN Flood 检测
+    // 4. 端口/协议 ACL
+    if port_acl::check_port_acl(ctx, &src_key, protocol, dport) {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                let stats = &mut *stats;
+                stats.total_dropped += 1;
+            }
+        }
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    // 5. 获取运行时配置
     let runtime = match CONFIG.get(0) {
         Some(c) => *c,
         None => return Ok(xdp_action::XDP_PASS),
     };
 
     if runtime.ebpf_debug != 0 {
-        debug!(
-            ctx,
-            "eshield packet src={:i} proto={} action=begin", saddr_host, protocol as u32
-        );
+        if src_key.family == (eshield_common::IpFamily::Ipv4 as u8) {
+            debug!(
+                ctx,
+                "eshield packet src={:i} proto={} dport={} action=begin",
+                src_key.ipv4(),
+                protocol as u32,
+                dport as u32
+            );
+        } else {
+            debug!(
+                ctx,
+                "eshield packet src={:i} proto={} dport={} action=begin",
+                src_key.addr,
+                protocol as u32,
+                dport as u32
+            );
+        }
     }
 
-    let mut tcp_hdr_len: usize = 0;
-    if protocol == 6 {
-        // TCP
-        if let Some(tcp) =
-            unsafe { parser::ptr_at::<parser::TcpHdr>(ctx, parser::ETH_HDR_LEN + ip_hdr_len) }
+    // 6. SYN Cookie 代理（仅 IPv4 TCP） / SYN Flood 检测
+    if protocol == parser::IPPROTO_TCP {
+        if src_key.family == (eshield_common::IpFamily::Ipv4 as u8)
+            && runtime.syn_proxy_enabled != 0
         {
-            tcp_hdr_len = (unsafe { (*tcp).doff() } as usize) * 4;
-
-            if runtime.syn_proxy_enabled != 0 {
-                // SYN Cookie 代理：对 SYN 回复 SYN-ACK，对合法 ACK 放行
-                if let Some(action) = syn_cookie::handle_syn(ctx, ip, ip_hdr_len) {
-                    unsafe {
-                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                            let stats = &mut *stats;
-                            if action == xdp_action::XDP_TX {
-                                stats.syn_flood_blocked += 1;
-                            } else {
-                                stats.total_dropped += 1;
-                            }
-                        }
-                    }
-                    return Ok(action);
-                }
-                if let Some(action) = syn_cookie::handle_ack(ctx, ip, ip_hdr_len) {
-                    unsafe {
-                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                            (*stats).total_passed += 1;
-                        }
-                    }
-                    return Ok(action);
-                }
-            } else {
-                let tcp_flags = unsafe { (*tcp).flags() };
-                if syn_flood::handle_syn_flood(ctx, saddr_host, tcp_flags, now_ns) {
-                    unsafe {
-                        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                            let stats = &mut *stats;
-                            stats.total_dropped += 1;
+            // SYN Cookie 代理：对 SYN 回复 SYN-ACK，对合法 ACK 放行
+            if let Some(action) = syn_cookie::handle_syn(
+                ctx,
+                unsafe { parser::ptr_at::<IpHdr>(ctx, ETH_HDR_LEN).ok_or(())? },
+                ip_hdr_len,
+            ) {
+                unsafe {
+                    if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                        let stats = &mut *stats;
+                        if action == xdp_action::XDP_TX {
                             stats.syn_flood_blocked += 1;
+                        } else {
+                            stats.total_dropped += 1;
                         }
                     }
-                    return Ok(xdp_action::XDP_DROP);
                 }
+                return Ok(action);
+            }
+            if let Some(action) = syn_cookie::handle_ack(
+                ctx,
+                unsafe { parser::ptr_at::<IpHdr>(ctx, ETH_HDR_LEN).ok_or(())? },
+                ip_hdr_len,
+            ) {
+                unsafe {
+                    if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                        (*stats).total_passed += 1;
+                    }
+                }
+                return Ok(action);
+            }
+        } else if let Some(tcp) = unsafe { parser::ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) }
+        {
+            let tcp_flags = unsafe { (*tcp).flags() };
+            if syn_flood::handle_syn_flood(ctx, &src_key, tcp_flags, now_ns) {
+                unsafe {
+                    if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                        let stats = &mut *stats;
+                        stats.total_dropped += 1;
+                        stats.syn_flood_blocked += 1;
+                    }
+                }
+                return Ok(xdp_action::XDP_DROP);
             }
         }
     }
 
-    // 6. L7 轻量指纹扫描（TCP 载荷前 64 字节）
-    if protocol == 6 && tcp_hdr_len > 0 && l7_scan::scan(ctx, saddr_host, ip_hdr_len) {
+    // 7. UDP Flood 检测
+    if protocol == parser::IPPROTO_UDP && udp_flood::handle_udp_flood(ctx, &src_key, now_ns) {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                let stats = &mut *stats;
+                stats.total_dropped += 1;
+                stats.udp_flood_blocked += 1;
+            }
+        }
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    // 8. ICMP/ICMPv6 Flood 检测
+    if (protocol == parser::IPPROTO_ICMP || protocol == parser::IPPROTO_ICMPV6)
+        && icmp_flood::handle_icmp_flood(ctx, &src_key, now_ns, protocol)
+    {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                let stats = &mut *stats;
+                stats.total_dropped += 1;
+                stats.icmp_flood_blocked += 1;
+            }
+        }
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    // 9. L7 轻量指纹扫描（TCP 载荷前 64 字节）
+    if l7_scan::scan(ctx, &src_key, ip_hdr_len, protocol) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
@@ -138,8 +189,8 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_DROP);
     }
 
-    // 7. 速率限制检查（触发则加入黑名单并 DROP）
-    if rate_limit::check_rate_limit(saddr_host, now_ns) {
+    // 10. 速率限制检查（触发则加入黑名单并 DROP）
+    if rate_limit::check_rate_limit(&src_key, now_ns) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
@@ -147,23 +198,27 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.rate_limited += 1;
             }
         }
-        rate_limit::emit_rate_limit_event(ctx, saddr_host, protocol);
+        rate_limit::emit_rate_limit_event(ctx, &src_key, protocol);
         return Ok(xdp_action::XDP_DROP);
     }
 
-    // 6. 黑名单检查
-    if blacklist::is_blacklisted(saddr_host, now_ns) {
+    // 11. 黑名单检查
+    let blacklisted = blacklist::is_blacklisted(&src_key, now_ns);
+    if runtime.ebpf_debug != 0 {
+        debug!(ctx, "blacklist check family={} last_octet={} result={}", src_key.family as u32, src_key.addr[15] as u32, blacklisted as u32);
+    }
+    if blacklisted {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
             }
         }
-        blacklist::emit_blacklist_event(ctx, saddr_host, protocol);
+        blacklist::emit_blacklist_event(ctx, &src_key, protocol);
         return Ok(xdp_action::XDP_DROP);
     }
 
-    // 6. 默认放行
+    // 12. 默认放行
     unsafe {
         if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
             (*stats).total_passed += 1;
@@ -172,15 +227,57 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     Ok(xdp_action::XDP_PASS)
 }
 
-fn is_whitelisted(saddr: u32) -> bool {
-    // 精确匹配 /32
-    let key = LpmKey::new(32, WhitelistKey { addr: saddr });
-    if WHITELIST.get(&key).is_some() {
-        return true;
+fn parse_ipv4(ctx: &XdpContext) -> Result<(IpKey, u8, usize, u16), ()> {
+    let ip: *const IpHdr = unsafe { ptr_at(ctx, ETH_HDR_LEN).ok_or(())? };
+    let ip_hdr_len = ((unsafe { (*ip).ver_ihl } & 0x0f) as usize) * 4;
+    if ip_hdr_len < parser::IP_HDR_LEN {
+        return Ok((IpKey::default(), 0, 0, 0));
     }
 
-    // TODO(phase1+): 支持任意 CIDR 前缀匹配
-    false
+    let saddr = unsafe { (*ip).saddr };
+    let src_key = IpKey::from_ipv4(saddr.to_ne_bytes());
+    let protocol = unsafe { (*ip).proto };
+    let dport = read_dport(ctx, ETH_HDR_LEN + ip_hdr_len, protocol)?;
+
+    Ok((src_key, protocol, ip_hdr_len, dport))
+}
+
+fn parse_ipv6(ctx: &XdpContext) -> Result<(IpKey, u8, usize, u16), ()> {
+    let ip: *const Ipv6Hdr = unsafe { ptr_at(ctx, ETH_HDR_LEN).ok_or(())? };
+    let src_key = IpKey::from_ipv6(unsafe { (*ip).saddr });
+    let protocol = unsafe { (*ip).next_header };
+    let ip_hdr_len = parser::IPV6_HDR_LEN;
+    let dport = read_dport(ctx, ETH_HDR_LEN + ip_hdr_len, protocol)?;
+
+    Ok((src_key, protocol, ip_hdr_len, dport))
+}
+
+fn read_dport(ctx: &XdpContext, transport_offset: usize, protocol: u8) -> Result<u16, ()> {
+    match protocol {
+        parser::IPPROTO_TCP => {
+            let tcp: *const TcpHdr = unsafe { ptr_at(ctx, transport_offset).ok_or(())? };
+            Ok(u16::from_be(unsafe { (*tcp).dest }))
+        }
+        parser::IPPROTO_UDP => {
+            let udp: *const UdpHdr = unsafe { ptr_at(ctx, transport_offset).ok_or(())? };
+            Ok(u16::from_be(unsafe { (*udp).dest }))
+        }
+        _ => Ok(0),
+    }
+}
+
+fn is_whitelisted(src: &IpKey) -> bool {
+    match src.family() {
+        Some(eshield_common::IpFamily::Ipv4) => {
+            let key = LpmKey::new(32, WhitelistKeyV4 { addr: src.ipv4() });
+            WHITELIST_V4.get(&key).is_some()
+        }
+        Some(eshield_common::IpFamily::Ipv6) => {
+            let key = LpmKey::new(128, WhitelistKeyV6 { addr: src.addr });
+            WHITELIST_V6.get(&key).is_some()
+        }
+        None => false,
+    }
 }
 
 #[cfg(not(test))]

@@ -1,10 +1,10 @@
 use aya_ebpf::programs::XdpContext;
 
 use crate::maps::{BLACKLIST, CONFIG, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
-use eshield_common::{rules, BlockEntry, DropEvent, RateCounter, RateLimitConfig};
+use eshield_common::{rules, BlockEntry, DropEvent, IpKey, RateCounter, RateLimitConfig};
 
-/// 检查并更新 src_ip 的速率计数器；若超限则加入黑名单并返回 true。
-pub fn check_rate_limit(src_ip: u32, now_ns: u64) -> bool {
+/// 检查并更新 src 的速率计数器；若超限则加入黑名单并返回 true。
+pub fn check_rate_limit(src: &IpKey, now_ns: u64) -> bool {
     let cfg = match RATE_LIMIT_CFG.get(0) {
         Some(c) => *c,
         None => RateLimitConfig::default(),
@@ -32,7 +32,7 @@ pub fn check_rate_limit(src_ip: u32, now_ns: u64) -> bool {
     let mut counter: u64 = 1;
     let mut last_decay_ns: u64 = now_ns;
 
-    match unsafe { RATE_MAP.get(&src_ip) } {
+    match unsafe { RATE_MAP.get(src) } {
         Some(entry) => {
             let elapsed_ns = now_ns.saturating_sub(entry.last_decay_ns);
             let ticks = elapsed_ns / tick_ns;
@@ -56,17 +56,17 @@ pub fn check_rate_limit(src_ip: u32, now_ns: u64) -> bool {
         last_decay_ns,
         padding: [0; 16],
     };
-    let _ = RATE_MAP.insert(&src_ip, &updated, 0);
+    let _ = RATE_MAP.insert(src, &updated, 0);
 
     if counter > cfg.threshold {
-        add_to_blacklist(src_ip, now_ns, cfg.block_duration_s);
+        add_to_blacklist(src, now_ns, cfg.block_duration_s);
         return true;
     }
 
     false
 }
 
-fn add_to_blacklist(src_ip: u32, now_ns: u64, block_duration_s: u64) {
+fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     let blocked_until_ns = if block_duration_s == 0 {
         0
     } else {
@@ -85,18 +85,19 @@ fn add_to_blacklist(src_ip: u32, now_ns: u64, block_duration_s: u64) {
         first_seen_ns: now_ns,
     };
 
-    let _ = BLACKLIST.insert(&src_ip, &entry, 0);
+    let _ = BLACKLIST.insert(src, &entry, 0);
 }
 
-pub fn emit_rate_limit_event(_ctx: &XdpContext, src_ip: u32, protocol: u8) {
+pub fn emit_rate_limit_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
                 timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip,
+                src_ip: src.addr,
+                family: src.family,
                 protocol,
                 rule_id: rules::RATE_LIMIT,
-                padding: [0; 5],
+                padding: [0; 4],
             };
             entry.write(event);
             entry.submit(0);

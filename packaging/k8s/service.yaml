@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: eshield
+  namespace: eshield
+spec:
+  selector:
+    app: eshield
+  ports:
+    - name: api
+      port: 8443
+      targetPort: 8443
+  type: ClusterIP

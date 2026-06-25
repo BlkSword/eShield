@@ -35,15 +35,18 @@
 | 能力 | 说明 |
 |---|---|
 | **eBPF/XDP 包过滤** | 流量在进入内核协议栈前被处理，开销远低于 iptables/nftables。 |
-| **CIDR 白名单** | 基于 LPM Trie，支持 IPv4 CIDR（如 `10.0.0.0/8`），优先放行可信流量。 |
+| **CIDR 白名单** | 基于 LPM Trie，支持 IPv4/IPv6 CIDR（如 `10.0.0.0/8`、`2001:db8::/32`），优先放行可信流量。 |
 | **动态黑名单** | 命中防御策略的源 IP 自动加入 LRU Hash，到期自动解封。 |
 | **Per-IP 速率限制** | 指数衰减滑动窗口，灵敏识别突发 CC 流量，避免误杀正常用户。 |
+| **UDP / ICMP Flood 防护** | 对 UDP、ICMP/ICMPv6 无连接流量做 per-IP 速率抑制。 |
+| **端口/协议 ACL** | 基于协议与目的端口的规则引擎，支持 allow/drop。 |
 | **SYN Cookie 代理** | SYN Flood 场景下用 SYN-ACK Cookie 挑战替换原始 SYN，合法 ACK 验证后放行。 |
 | **L7 轻量指纹扫描** | 检查 TCP 载荷前 64 字节，匹配特征即 DROP（如恶意 UA、扫描指纹）。 |
 | **自适应阈值引擎** | 重复触发规则的 IP 自动提升为更长时间的封禁。 |
 | **实时控制** | REST API + 中文 Web 表单 + CLI，可实时封禁/解封 IP、更新速率限制与开关。 |
 | **配置热加载** | 通过 `SIGHUP` 或 `systemctl reload` 重新加载配置文件，无需重启服务。 |
-| **双观测面** | 中文 Web Dashboard、Prometheus `/metrics`、中文 TUI 仪表盘。 |
+| **认证/审计/持久化** | 可选 Bearer Token；审计日志；动态规则持久化到 redb。 |
+| **可观测性** | 中文 Web Dashboard、Prometheus `/metrics`、健康检查、告警 Webhook、JSON/文本日志、中文 TUI 仪表盘。 |
 | **单二进制静态链接** | 基于 musl 静态编译，发布时仅需一个 `eshield` 可执行文件。 |
 
 ---
@@ -63,7 +66,7 @@
                                │ BPF Maps / Ring Buffer
 ┌──────────────────────────────▼──────────────────────────┐
 │ 数据面 (Data Plane) — eBPF/XDP 内核态                    │
-│ 包解析 → 白名单 → 速率限制 → SYN Proxy → L7 扫描 → 决策  │
+│ 包解析 → 白名单 → 端口 ACL → UDP/ICMP Flood → 速率限制 → SYN Proxy → L7 扫描 → 决策 │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -95,7 +98,7 @@ curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install
 指定版本：
 
 ```bash
-VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.1.0 bash
+VERSION=0.1.2 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.1.2 bash
 ```
 
 ### 从源码构建并安装
@@ -160,10 +163,13 @@ eshield block 192.0.2.1 --endpoint http://eshield-host:8443
 ```toml
 interface = "eth0"          # 要挂载 XDP 的网卡
 log_level = "info"          # trace/debug/info/warn/error
+log_json = false            # 是否以 JSON 格式输出日志
 ebpf_log_enabled = false    # 是否启用 eBPF 内核调试日志（AYA_LOGS）
 whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
 blacklist = ["192.0.2.1"]
-web_port = 8443             # Web / Prometheus / API 端口
+web_bind = "0.0.0.0:8443"   # Web / Prometheus / API 监听地址
+# api_token = "changeme"    # 可选：启用 API 认证
+store_path = "/var/lib/eshield/rules.redb"  # 动态规则持久化
 
 [rate_limit]
 enabled = true
@@ -215,13 +221,14 @@ sudo kill -HUP $(pidof eshield)
 http://<host>:8443/
 ```
 
-中文界面，展示实时包统计、按规则维度命中数、TOP 攻击源，并提供实时控制表单：
+中文界面，展示实时包统计、按规则维度命中数、TOP 攻击源、审计日志，并提供实时控制表单：
 
-- 封禁 / 解封 IPv4
-- 放行 / 移除 CIDR
-- 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描
+- 封禁 / 解封 IPv4/IPv6
+- 放行 / 移除 IPv4/IPv6 CIDR
+- 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描、UDP/ICMP Flood 防护
 - 实时开关 eBPF 内核调试日志
 - 调整速率限制阈值与 tick
+- 输入 API Token（启用认证时）
 - 一键重载配置文件
 
 ### Prometheus 指标
@@ -269,7 +276,7 @@ cargo test --workspace --exclude eshield-ebpf
 需要 root，会在 netns 中创建 veth 对并运行 7 项场景测试：
 
 ```bash
-sudo ./tests/netns_test.sh
+sudo bash ./tests/netns_test.sh
 ```
 
 覆盖：黑名单、速率限制、SYN Flood、L7 指纹、SIGHUP 热加载、自适应阈值、停止后恢复。
@@ -318,7 +325,7 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 - **主机级 CC 防御盾**：面向“带宽没满、但 CPU/连接数被耗尽”的 CC / 慢速攻击场景。
 - **不是 DDoS 银弹**：T 级带宽耗尽型攻击需要云厂商黑洞/清洗，eShield 无法突破物理网络天花板。
 - **SYN Proxy 当前实现**：提供 SYN Cookie 挑战与 ACK 验证，但不维护完整后端连接状态；正常 TCP 业务请勿长期开启。
-- **IPv6**：当前版本仅支持 IPv4，IPv6 支持在后续路线图中。
+- **IPv6**：已支持 IPv6 数据面与配置，部分部署文档示例仍以 IPv4 为主。
 
 ---
 

@@ -1,6 +1,6 @@
 [package]
 name = "eshield"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "Apache-2.0"
 description = "eBPF/XDP host-level CC defense shield - userspace control plane"
@@ -21,6 +21,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 dashmap = "6"
+chrono = { version = "0.4", features = ["serde"] }
+time = { version = "0.3", features = ["macros", "formatting"] }
+async-trait = "0.1"
+redb = "1.5"
+subtle = "2"
 ratatui = "0.29"
 crossterm = "0.28"
 axum = "0.7"
@@ -29,3 +34,30 @@ rand = "0.8"
 
 [build-dependencies]
 anyhow = { workspace = true }
+
+[package.metadata.deb]
+maintainer = "eShield Maintainers <maintainers@eshield.io>"
+copyright = "2026 eShield Contributors"
+extended-description = "eBPF/XDP host-level CC defense shield"
+section = "net"
+priority = "optional"
+assets = [
+    ["target/x86_64-unknown-linux-musl/release/eshield", "usr/local/bin/eshield", "755"],
+    ["packaging/config.example.toml", "etc/eshield/config.toml", "640"],
+    ["packaging/eshield.service", "lib/systemd/system/eshield.service", "644"],
+]
+maintainer-scripts = "packaging/debian/"
+depends = "$auto"
+
+[package.metadata.rpm]
+package = "eshield"
+
+[package.metadata.rpm.cargo]
+buildflags = ["--release"]
+
+[package.metadata.rpm.targets]
+eshield = { path = "/usr/local/bin/eshield" }
+
+[package.metadata.rpm.files]
+"packaging/config.example.toml" = { path = "/etc/eshield/config.toml", mode = "640" }
+"packaging/eshield.service" = { path = "/usr/lib/systemd/system/eshield.service", mode = "644" }

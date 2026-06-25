@@ -1,7 +1,7 @@
 use anyhow::Context;
+use eshield_common::{IpKey, PortAclEntry};
 use serde::Deserialize;
 use std::fs;
-use std::net::IpAddr;
 use std::path::Path;
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -14,6 +14,10 @@ pub struct Config {
     pub log_level: String,
     #[serde(default = "default_false")]
     pub ebpf_log_enabled: bool,
+    #[serde(default = "default_false")]
+    pub udp_flood_enabled: bool,
+    #[serde(default = "default_false")]
+    pub icmp_flood_enabled: bool,
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
@@ -22,12 +26,47 @@ pub struct Config {
     pub l7_scan: L7ScanConfig,
     #[serde(default)]
     pub adaptive: AdaptiveConfig,
+    #[serde(default)]
+    pub port_acl: Vec<PortAclItem>,
     #[serde(default = "default_web_port")]
     pub web_port: u16,
+    #[serde(default)]
+    pub web_bind: Option<String>,
+    #[serde(default)]
+    pub api_token: Option<String>,
+    #[serde(default = "default_false")]
+    pub log_json: bool,
+    #[serde(default = "default_store_path")]
+    pub store_path: String,
+    #[serde(default)]
+    pub alert_webhook_url: Option<String>,
+    #[serde(default = "default_alert_threshold_dps")]
+    pub alert_threshold_dps: u64,
+    #[serde(default = "default_alert_cooldown_s")]
+    pub alert_cooldown_s: u64,
 }
 
 fn default_web_port() -> u16 {
     8443
+}
+
+fn default_store_path() -> String {
+    "/var/lib/eshield/rules.redb".to_string()
+}
+
+fn default_alert_threshold_dps() -> u64 {
+    1000
+}
+
+fn default_alert_cooldown_s() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PortAclItem {
+    pub protocol: String,
+    pub dport: String,
+    pub action: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -156,11 +195,24 @@ impl Config {
         }
 
         for cidr in &self.whitelist {
-            parse_cidr(cidr).with_context(|| format!("invalid whitelist CIDR: {}", cidr))?;
+            crate::ip::parse_cidr(cidr)
+                .with_context(|| format!("invalid whitelist CIDR: {}", cidr))?;
         }
         for ip in &self.blacklist {
-            parse_ip(ip).with_context(|| format!("invalid blacklist IP: {}", ip))?;
+            crate::ip::parse_ip_or_cidr(ip)
+                .with_context(|| format!("invalid blacklist IP/CIDR: {}", ip))?;
         }
+
+        // 持久化目录必须可创建
+        if let Some(parent) = std::path::Path::new(&self.store_path).parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("cannot create store directory: {}", parent.display())
+                })?;
+            }
+        }
+
+        validate_port_acl(self)?;
 
         if self.rate_limit.enabled {
             if self.rate_limit.threshold == 0 {
@@ -201,47 +253,179 @@ impl Config {
     }
 
     #[allow(dead_code)]
-    pub fn parse_blacklist(&self) -> anyhow::Result<Vec<u32>> {
+    pub fn parse_blacklist(&self) -> anyhow::Result<Vec<IpKey>> {
         self.blacklist
             .iter()
-            .map(|s| parse_ip(s))
+            .map(|s| crate::ip::parse_ip_or_cidr(s))
             .collect::<anyhow::Result<Vec<_>>>()
     }
+}
+
+fn validate_port_acl(config: &Config) -> anyhow::Result<()> {
+    for (i, entry) in config.port_acl.iter().enumerate() {
+        let protocol = entry.protocol.to_lowercase();
+        if !matches!(protocol.as_str(), "tcp" | "udp" | "icmp" | "icmpv6" | "any") {
+            anyhow::bail!(
+                "port_acl[{}]: invalid protocol '{}', expected tcp/udp/icmp/icmpv6/any",
+                i,
+                entry.protocol
+            );
+        }
+        let action = entry.action.to_lowercase();
+        if !matches!(action.as_str(), "allow" | "drop") {
+            anyhow::bail!(
+                "port_acl[{}]: invalid action '{}', expected allow/drop",
+                i,
+                entry.action
+            );
+        }
+        if entry.dport == "*" || entry.dport == "any" {
+            continue;
+        }
+        if let Some((low, high)) = entry.dport.split_once('-') {
+            let low: u16 = low
+                .parse()
+                .with_context(|| format!("port_acl[{}]: invalid dport low", i))?;
+            let high: u16 = high
+                .parse()
+                .with_context(|| format!("port_acl[{}]: invalid dport high", i))?;
+            if low > high {
+                anyhow::bail!("port_acl[{}]: invalid port range {}-{}", i, low, high);
+            }
+        } else {
+            let _: u16 = entry
+                .dport
+                .parse()
+                .with_context(|| format!("port_acl[{}]: invalid dport", i))?;
+        }
+    }
+    Ok(())
 }
 
 fn interface_exists(iface: &str) -> bool {
     std::path::Path::new("/sys/class/net").join(iface).exists()
 }
 
-pub fn parse_ip(s: &str) -> anyhow::Result<u32> {
-    let addr: IpAddr = s.parse().context("invalid IP address")?;
-    match addr {
-        IpAddr::V4(v4) => Ok(u32::from_be_bytes(v4.octets())),
-        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
+impl PortAclItem {
+    pub fn to_entry(&self) -> anyhow::Result<PortAclEntry> {
+        let protocol = match self.protocol.to_lowercase().as_str() {
+            "any" => 0u8,
+            "tcp" => 6u8,
+            "udp" => 17u8,
+            "icmp" => 1u8,
+            "icmpv6" => 58u8,
+            _ => anyhow::bail!("invalid protocol: {}", self.protocol),
+        };
+        let action = match self.action.to_lowercase().as_str() {
+            "allow" => 1u8,
+            "drop" => 2u8,
+            _ => anyhow::bail!("invalid action: {}", self.action),
+        };
+        let (low, high) = if self.dport == "*" || self.dport == "any" {
+            (0u16, 0u16)
+        } else if let Some((a, b)) = self.dport.split_once('-') {
+            let low: u16 = a.parse().context("invalid dport low")?;
+            let high: u16 = b.parse().context("invalid dport high")?;
+            if low > high {
+                anyhow::bail!("invalid port range");
+            }
+            (low, high)
+        } else {
+            let p: u16 = self.dport.parse().context("invalid dport")?;
+            (p, p)
+        };
+        Ok(PortAclEntry {
+            protocol,
+            dport_low: low,
+            dport_high: high,
+            action,
+            padding: [0; 11],
+        })
     }
 }
 
-fn parse_cidr(s: &str) -> anyhow::Result<(u32, u32)> {
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("invalid CIDR: {}", s);
-    }
-    let addr: IpAddr = parts[0].parse().context("invalid IP address")?;
-    let prefix: u32 = parts[1].parse().context("invalid prefix length")?;
-    if prefix > 32 {
-        anyhow::bail!("invalid prefix length: {}", prefix);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eshield_common::IpFamily;
+
+    #[test]
+    fn test_parse_ip_ipv4_ok() {
+        let key = crate::ip::parse_ip("192.0.2.1").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv4 as u8);
+        assert_eq!(key.ipv4(), 0xc000_0201);
     }
 
-    match addr {
-        IpAddr::V4(v4) => {
-            let addr = u32::from_be_bytes(v4.octets());
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            Ok((addr & mask, prefix))
-        }
-        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
+    #[test]
+    fn test_parse_ip_ipv6_ok() {
+        let key = crate::ip::parse_ip("2001:db8::1").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv6 as u8);
+        let expected: [u8; 16] = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+        assert_eq!(key.addr, expected);
+    }
+
+    #[test]
+    fn test_parse_cidr_ipv4_ok() {
+        let (key, prefix) = crate::ip::parse_cidr("10.0.0.0/8").unwrap();
+        assert_eq!(prefix, 8);
+        assert_eq!(key.family, IpFamily::Ipv4 as u8);
+        assert_eq!(key.ipv4(), 0x0a00_0000);
+    }
+
+    #[test]
+    fn test_parse_cidr_ipv6_ok() {
+        let (key, prefix) = crate::ip::parse_cidr("2001:db8::/32").unwrap();
+        assert_eq!(prefix, 32);
+        assert_eq!(key.family, IpFamily::Ipv6 as u8);
+        assert_eq!(&key.addr[..4], &[0x20, 0x01, 0x0d, 0xb8]);
+        assert!(key.addr[4..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_parse_cidr_invalid_prefix_rejected() {
+        assert!(crate::ip::parse_cidr("192.0.2.0/33").is_err());
+        assert!(crate::ip::parse_cidr("2001:db8::/129").is_err());
+    }
+
+    #[test]
+    fn test_port_acl_item_to_entry() {
+        let item = PortAclItem {
+            protocol: "tcp".to_string(),
+            dport: "80".to_string(),
+            action: "drop".to_string(),
+        };
+        let entry = item.to_entry().unwrap();
+        assert_eq!(entry.protocol, 6);
+        assert_eq!(entry.dport_low, 80);
+        assert_eq!(entry.dport_high, 80);
+        assert_eq!(entry.action, 2);
+    }
+
+    #[test]
+    fn test_port_acl_item_range_to_entry() {
+        let item = PortAclItem {
+            protocol: "udp".to_string(),
+            dport: "1000-2000".to_string(),
+            action: "allow".to_string(),
+        };
+        let entry = item.to_entry().unwrap();
+        assert_eq!(entry.protocol, 17);
+        assert_eq!(entry.dport_low, 1000);
+        assert_eq!(entry.dport_high, 2000);
+        assert_eq!(entry.action, 1);
+    }
+
+    #[test]
+    fn test_port_acl_item_any_to_entry() {
+        let item = PortAclItem {
+            protocol: "any".to_string(),
+            dport: "any".to_string(),
+            action: "drop".to_string(),
+        };
+        let entry = item.to_entry().unwrap();
+        assert_eq!(entry.protocol, 0);
+        assert_eq!(entry.dport_low, 0);
+        assert_eq!(entry.dport_high, 0);
+        assert_eq!(entry.action, 2);
     }
 }

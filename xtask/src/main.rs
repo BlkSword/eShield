@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Run { iface } => {
             build_ebpf("release")?;
             build_userspace("release")?;
-            run(&iface)
+            run(iface)
         }
         Commands::Test => run_tests(),
     }
@@ -113,7 +113,8 @@ fn build_userspace(profile: &str) -> anyhow::Result<()> {
 
 fn run(iface: &str) -> anyhow::Result<()> {
     let mut cmd = Command::new("target/x86_64-unknown-linux-musl/release/eshield");
-    cmd.args(["start", "--iface", iface]);
+    cmd.args(["start", "--config", "/etc/eshield/config.toml"]);
+    cmd.env("ESHIELD_INTERFACE", iface);
     cmd.spawn()?.wait()?;
     Ok(())
 }

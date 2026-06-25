@@ -19,6 +19,8 @@ pub struct StatsSnapshot {
     pub syn_flood_blocked: u64,
     pub l7_blocked: u64,
     pub adaptive_blocked: u64,
+    pub udp_flood_blocked: u64,
+    pub icmp_flood_blocked: u64,
     pub top_attackers: Vec<Attacker>,
 }
 
@@ -90,7 +92,7 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
         .margin(1)
         .constraints([
             Constraint::Length(3),
-            Constraint::Length(8),
+            Constraint::Length(10),
             Constraint::Min(10),
             Constraint::Length(3),
         ])
@@ -112,11 +114,13 @@ fn draw(f: &mut ratatui::Frame, snapshot: Option<&StatsSnapshot>) {
     let syn = snapshot.map(|s| s.syn_flood_blocked).unwrap_or(0);
     let l7 = snapshot.map(|s| s.l7_blocked).unwrap_or(0);
     let adaptive = snapshot.map(|s| s.adaptive_blocked).unwrap_or(0);
+    let udp = snapshot.map(|s| s.udp_flood_blocked).unwrap_or(0);
+    let icmp = snapshot.map(|s| s.icmp_flood_blocked).unwrap_or(0);
     let top_count = snapshot.map(|s| s.top_attackers.len()).unwrap_or(0);
 
     let stats_text = format!(
-        "总丢弃: {} | 黑名单: {} | 速率限制: {} | SYN Flood: {} | L7: {} | 自适应: {}\nTOP 攻击源数量: {}",
-        total_dropped, blacklist, rate, syn, l7, adaptive, top_count
+        "总丢弃: {} | 黑名单: {} | 速率限制: {}\nSYN Flood: {} | L7: {} | 自适应: {} | UDP Flood: {} | ICMP Flood: {}\nTOP 攻击源数量: {}",
+        total_dropped, blacklist, rate, syn, l7, adaptive, udp, icmp, top_count
     );
     let stats_widget =
         Paragraph::new(stats_text).block(Block::default().title("实时统计").borders(Borders::ALL));

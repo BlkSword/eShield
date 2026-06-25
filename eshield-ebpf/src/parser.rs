@@ -3,12 +3,21 @@ use core::mem;
 
 pub const ETH_HDR_LEN: usize = 14;
 pub const IP_HDR_LEN: usize = 20;
+pub const IPV6_HDR_LEN: usize = 40;
 
 #[allow(dead_code)]
 pub const TCP_HDR_LEN: usize = 20;
 
 #[allow(dead_code)]
 pub const UDP_HDR_LEN: usize = 8;
+
+pub const ETH_P_IP: u16 = u16::to_be(0x0800);
+pub const ETH_P_IPV6: u16 = u16::to_be(0x86dd);
+
+pub const IPPROTO_TCP: u8 = 6;
+pub const IPPROTO_UDP: u8 = 17;
+pub const IPPROTO_ICMP: u8 = 1;
+pub const IPPROTO_ICMPV6: u8 = 58;
 
 #[repr(C)]
 pub struct EthHdr {
@@ -29,6 +38,24 @@ pub struct IpHdr {
     pub check: u16,
     pub saddr: u32,
     pub daddr: u32,
+}
+
+#[repr(C)]
+pub struct Ipv6Hdr {
+    pub ver_tc_fl: u32,
+    pub payload_len: u16,
+    pub next_header: u8,
+    pub hop_limit: u8,
+    pub saddr: [u8; 16],
+    pub daddr: [u8; 16],
+}
+
+impl Ipv6Hdr {
+    #[inline]
+    #[allow(dead_code)]
+    pub fn version(&self) -> u8 {
+        (u32::from_be(self.ver_tc_fl) >> 28) as u8
+    }
 }
 
 #[repr(C)]
@@ -70,15 +97,17 @@ pub enum Protocol {
     Icmp,
     Tcp,
     Udp,
+    IcmpV6,
     Other(u8),
 }
 
 impl From<u8> for Protocol {
     fn from(proto: u8) -> Self {
         match proto {
-            1 => Protocol::Icmp,
-            6 => Protocol::Tcp,
-            17 => Protocol::Udp,
+            IPPROTO_ICMP => Protocol::Icmp,
+            IPPROTO_TCP => Protocol::Tcp,
+            IPPROTO_UDP => Protocol::Udp,
+            IPPROTO_ICMPV6 => Protocol::IcmpV6,
             other => Protocol::Other(other),
         }
     }

@@ -1,11 +1,12 @@
 use aya::Ebpf;
-use eshield_common::DropEvent;
+use eshield_common::{DropEvent, IpFamily, IpKey};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::debug;
 
 use crate::adaptive::AdaptiveEngine;
+use crate::ip::format_ip_key;
 use crate::state::Stats;
 
 /// 消费一批 Ring Buffer 事件（最多 256 条），然后返回。
@@ -36,20 +37,33 @@ pub async fn run(
     };
 
     // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争
-    let mut by_source: HashMap<u32, u64> = HashMap::new();
+    let mut by_source: HashMap<IpKey, u64> = HashMap::new();
     let mut by_reason: HashMap<u16, u64> = HashMap::new();
 
     for event in &events {
-        *by_source.entry(event.src_ip).or_insert(0) += 1;
+        let src_key = match IpFamily::from_u8(event.family) {
+            Some(IpFamily::Ipv4) => IpKey::from_ipv4([
+                event.src_ip[12],
+                event.src_ip[13],
+                event.src_ip[14],
+                event.src_ip[15],
+            ]),
+            Some(IpFamily::Ipv6) => IpKey::from_ipv6(event.src_ip),
+            None => continue,
+        };
+
+        *by_source.entry(src_key).or_insert(0) += 1;
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
 
-        if let Err(e) = adaptive.on_event(&stats, event.src_ip, ebpf) {
+        if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
             debug!("adaptive engine error: {}", e);
         }
 
         debug!(
-            "drop event: src={:#x}, proto={}, rule={}",
-            event.src_ip, event.protocol, event.rule_id
+            "drop event: src={}, proto={}, rule={}",
+            format_ip_key(&src_key),
+            event.protocol,
+            event.rule_id
         );
     }
 

@@ -1,0 +1,27 @@
+interface = "{{ eshield_interface }}"
+log_level = "info"
+ebpf_log_enabled = false
+web_port = {{ eshield_web_port }}
+whitelist = ["127.0.0.1/32", "::1/128"]
+blacklist = []
+
+[rate_limit]
+enabled = true
+threshold = 200
+tick_ms = 100
+decay_num = 7
+decay_den = 8
+block_duration_s = 300
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+patterns = []
+
+[adaptive]
+enabled = true
+threshold = 10
+window_s = 5
+block_duration_s = 300

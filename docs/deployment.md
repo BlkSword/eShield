@@ -1,83 +1,80 @@
 # eShield 部署指南
 
-## 环境要求
+## 系统要求
 
-- Linux 内核 >= 5.10，且启用 BTF（`/sys/kernel/btf/vmlinux` 存在）
-- root 权限或 `CAP_BPF`、`CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_PERFMON`、`CAP_IPC_LOCK`
+- Linux 内核 >= 5.10，启用 BTF：
+  ```bash
+  ls /sys/kernel/btf/vmlinux
+  ```
+-  root 或以下 capability：
+  - `CAP_BPF`
+  - `CAP_NET_ADMIN`
+  - `CAP_NET_RAW`
+  - `CAP_PERFMON`
+  - `CAP_IPC_LOCK`
 
-## 一键安装（从 Release）
+## 一键安装
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo bash
 ```
 
-或指定版本：
+## 手动部署
+
+### 1. 下载静态二进制
 
 ```bash
-VERSION=0.1.0 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.1.0 bash
+VERSION=0.1.2
+curl -LO "https://github.com/eshield/eshield/releases/download/v${VERSION}/eshield-x86_64-unknown-linux-musl"
+sudo install -m 755 eshield-x86_64-unknown-linux-musl /usr/local/bin/eshield
 ```
 
-## 从源码构建并安装
+### 2. 创建配置
 
 ```bash
-sudo bash scripts/install.sh --build
+sudo mkdir -p /etc/eshield
+sudo curl -o /etc/eshield/config.toml \
+  https://raw.githubusercontent.com/eshield/eshield/v0.1.2/packaging/config.example.toml
+sudoedit /etc/eshield/config.toml
 ```
 
-这会：
-
-1. 使用 nightly 工具链编译 eBPF 程序
-2. 使用 musl target 静态编译用户态二进制
-3. 将 `eshield` 安装到 `/usr/local/bin`
-4. 创建默认配置 `/etc/eshield/config.toml`
-5. 安装并启用 systemd 服务
-
-## 服务管理
+### 3. 安装 systemd 服务
 
 ```bash
-# 查看状态
+sudo curl -o /lib/systemd/system/eshield.service \
+  https://raw.githubusercontent.com/eshield/eshield/v0.1.2/packaging/eshield.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now eshield
+```
+
+### 4. 查看状态
+
+```bash
 sudo systemctl status eshield
-
-# 启动 / 停止 / 重启
-sudo systemctl start eshield
-sudo systemctl stop eshield
-sudo systemctl restart eshield
-
-# 热加载配置（发送 SIGHUP，不中断连接）
-sudo systemctl reload eshield
-
-# 查看日志
-sudo journalctl -u eshield -f
+sudo eshield status
 ```
 
-## 卸载
+## 容器部署
 
 ```bash
-sudo bash scripts/uninstall.sh
+docker run -d --name eshield \
+  --cap-add BPF --cap-add NET_ADMIN --cap-add NET_RAW \
+  --cap-add PERFMON --cap-add IPC_LOCK \
+  -v /etc/eshield/config.toml:/etc/eshield/config.toml:ro \
+  -p 8443:8443 \
+  ghcr.io/eshield/eshield:v0.1.2
 ```
 
-## 配置文件示例
+## Kubernetes DaemonSet
 
-```toml
-interface = "eth0"
-log_level = "info"
-whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
-blacklist = ["192.0.2.1"]
-web_port = 8443
+见 `packaging/k8s/`（TODO）。
 
-[rate_limit]
-enabled = true
-threshold = 200
-tick_ms = 100
-decay_num = 7
-decay_den = 8
-block_duration_s = 300
+## 升级
 
-[syn_proxy]
-enabled = false
-
-[l7_scan]
-enabled = false
-patterns = [
-    { pattern = "ATTACKER" },
-]
+```bash
+sudo systemctl stop eshield
+# 替换二进制
+sudo systemctl start eshield
 ```
+
+配置文件与动态规则库默认位于 `/var/lib/eshield/rules.db`，升级后自动恢复。

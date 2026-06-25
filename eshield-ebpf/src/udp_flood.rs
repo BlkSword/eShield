@@ -1,14 +1,16 @@
 use aya_ebpf::programs::XdpContext;
 
-use crate::maps::{BLACKLIST, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
+use crate::maps::{BLACKLIST, CONFIG, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
 use eshield_common::{rules, BlockEntry, DropEvent, IpKey, RateCounter, RateLimitConfig};
 
-/// TCP flags
-const TCP_FLAG_SYN: u8 = 0x02;
+/// 检测并处理 UDP Flood：对单 IP 的 UDP 包做速率限制，超限即 DROP 并加黑名单。
+pub fn handle_udp_flood(ctx: &XdpContext, src: &IpKey, now_ns: u64) -> bool {
+    let runtime = match CONFIG.get(0) {
+        Some(c) => *c,
+        None => return false,
+    };
 
-/// 检测并处理 SYN Flood：对单 IP 的 SYN 包做速率限制，超限即 DROP 并加黑名单。
-pub fn handle_syn_flood(ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u64) -> bool {
-    if tcp_flags != TCP_FLAG_SYN {
+    if runtime.udp_flood_enabled == 0 {
         return false;
     }
 
@@ -52,7 +54,7 @@ pub fn handle_syn_flood(ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u6
 
     if counter > cfg.threshold {
         add_to_blacklist(src, now_ns, cfg.block_duration_s);
-        emit_syn_flood_event(ctx, src);
+        emit_udp_flood_event(ctx, src);
         return true;
     }
 
@@ -73,7 +75,7 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
 
     let entry = BlockEntry {
         blocked_until_ns,
-        block_reason: rules::SYN_FLOOD as u8,
+        block_reason: rules::UDP_FLOOD as u8,
         hit_count: 0,
         first_seen_ns: now_ns,
     };
@@ -81,15 +83,15 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     let _ = BLACKLIST.insert(src, &entry, 0);
 }
 
-pub fn emit_syn_flood_event(_ctx: &XdpContext, src: &IpKey) {
+pub fn emit_udp_flood_event(_ctx: &XdpContext, src: &IpKey) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
                 timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
                 src_ip: src.addr,
                 family: src.family,
-                protocol: 6, // TCP
-                rule_id: rules::SYN_FLOOD,
+                protocol: 17, // UDP
+                rule_id: rules::UDP_FLOOD,
                 padding: [0; 4],
             };
             entry.write(event);

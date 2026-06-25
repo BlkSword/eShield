@@ -3,23 +3,30 @@ use aya::{
     maps::{lpm_trie::Key as LpmKey, Array, HashMap as LruHashMap, LpmTrie},
     Ebpf,
 };
-use eshield_common::{rules, BlockEntry, L7Pattern, RateLimitConfig, RuntimeConfig, WhitelistKey};
+use eshield_common::{
+    rules, BlockEntry, IpFamily, IpKey, L7Pattern, PortAclEntry, RateLimitConfig, RuntimeConfig,
+    WhitelistKeyV4, WhitelistKeyV6,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
+use crate::audit::{AuditAction, Auditor};
 use crate::config::Config;
+use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
+use crate::store::RuleStore;
 
 /// 控制面共享状态，Web / CLI / SIGHUP 都通过它操作 eBPF Maps。
 pub struct ControlState {
     pub ebpf: Arc<Mutex<Ebpf>>,
     pub config_path: String,
     pub runtime: RwLock<RuntimeConfigSnapshot>,
-    pub whitelist: Mutex<Vec<(u32, u32)>>,
-    pub blacklist: Mutex<Vec<u32>>,
+    pub whitelist: Mutex<Vec<(IpKey, u32)>>,
+    pub blacklist: Mutex<Vec<IpKey>>,
+    pub auditor: Option<Auditor>,
+    pub store: Option<RuleStore>,
 }
 
 /// 运行时可读快照（用于 Web / CLI 展示）。
@@ -29,6 +36,8 @@ pub struct RuntimeConfigSnapshot {
     pub syn_proxy_enabled: bool,
     pub l7_scan_enabled: bool,
     pub ebpf_debug_enabled: bool,
+    pub udp_flood_enabled: bool,
+    pub icmp_flood_enabled: bool,
     pub rate_limit: RateLimitParams,
 }
 
@@ -48,6 +57,8 @@ pub struct RuntimeConfigPatch {
     pub syn_proxy_enabled: Option<bool>,
     pub l7_scan_enabled: Option<bool>,
     pub ebpf_debug_enabled: Option<bool>,
+    pub udp_flood_enabled: Option<bool>,
+    pub icmp_flood_enabled: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
 }
 
@@ -56,6 +67,8 @@ impl ControlState {
         ebpf: Arc<Mutex<Ebpf>>,
         config_path: String,
         config: &Config,
+        auditor: Option<Auditor>,
+        store: Option<RuleStore>,
     ) -> anyhow::Result<Self> {
         let state = Self {
             ebpf,
@@ -63,6 +76,8 @@ impl ControlState {
             runtime: RwLock::new(RuntimeConfigSnapshot::from_config(config)),
             whitelist: Mutex::new(Vec::new()),
             blacklist: Mutex::new(Vec::new()),
+            auditor,
+            store,
         };
 
         // 初始化运行时配置与策略
@@ -71,6 +86,7 @@ impl ControlState {
             init_config_map(&mut guard, config)?;
             init_rate_limit_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, config)?;
+            init_port_acl_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
             apply_blacklist_map(&mut guard, config, &mut blacklist).await?;
@@ -90,18 +106,56 @@ impl ControlState {
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config)?;
+        init_port_acl_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
 
         *self.runtime.write().await = RuntimeConfigSnapshot::from_config(&config);
+        drop(guard);
+        drop(whitelist);
+        drop(blacklist);
+
+        // 重新应用持久化的动态规则，避免配置文件覆盖 API/自适应 产生的规则
+        if let Err(e) = self.load_persisted_rules().await {
+            tracing::warn!("failed to reload persisted rules: {}", e);
+        }
+
+        self.audit("system", AuditAction::ReloadConfig, serde_json::json!({}))
+            .await;
         Ok(())
     }
 
-    /// 实时封禁某个 IP（API 控制）。
+    /// 实时封禁某个 IP（API 控制）。支持 IPv4/IPv6。
     pub async fn block_ip(&self, ip_str: &str, duration_s: u64) -> anyhow::Result<()> {
-        let ip = parse_ip(ip_str)?;
+        let key = parse_ip_or_cidr(ip_str)?;
+        self.block_ip_raw(key, duration_s).await?;
+
+        if let Some(store) = &self.store {
+            let now_ns = now_ns();
+            let blocked_until_ns = if duration_s == 0 {
+                0
+            } else {
+                let block_ns = duration_s.saturating_mul(1_000_000_000);
+                now_ns.saturating_add(block_ns)
+            };
+            store
+                .save_blacklist(key, blocked_until_ns, rules::API_BLOCK as u8, now_ns)
+                .await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::BlockIp,
+            serde_json::json!({ "ip": ip_str, "duration_s": duration_s }),
+        )
+        .await;
+        info!("API block: {} duration={}s", ip_str, duration_s);
+        Ok(())
+    }
+
+    async fn block_ip_raw(&self, key: IpKey, duration_s: u64) -> anyhow::Result<()> {
         let mut guard = self.ebpf.lock().await;
-        let mut blacklist: LruHashMap<_, u32, BlockEntry> = guard
+        let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
             .map_mut("BLACKLIST")
             .context("BLACKLIST map not found")?
             .try_into()?;
@@ -115,7 +169,7 @@ impl ControlState {
         };
 
         blacklist.insert(
-            ip,
+            key,
             BlockEntry {
                 blocked_until_ns,
                 block_reason: rules::API_BLOCK as u8,
@@ -124,53 +178,122 @@ impl ControlState {
             },
             0,
         )?;
-
-        self.blacklist.lock().await.push(ip);
-        info!("API block: {} duration={}s", ip_str, duration_s);
         Ok(())
     }
 
     /// 实时解封某个 IP。
     pub async fn unblock_ip(&self, ip_str: &str) -> anyhow::Result<()> {
-        let ip = parse_ip(ip_str)?;
+        let key = parse_ip_or_cidr(ip_str)?;
         let mut guard = self.ebpf.lock().await;
-        let mut blacklist: LruHashMap<_, u32, BlockEntry> = guard
+        let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
             .map_mut("BLACKLIST")
             .context("BLACKLIST map not found")?
             .try_into()?;
-        blacklist.remove(&ip)?;
+        blacklist.remove(&key)?;
+        drop(guard);
 
-        self.blacklist.lock().await.retain(|&x| x != ip);
+        self.blacklist.lock().await.retain(|&x| x != key);
+
+        if let Some(store) = &self.store {
+            store.remove_blacklist(key).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::UnblockIp,
+            serde_json::json!({ "ip": ip_str }),
+        )
+        .await;
         info!("API unblock: {}", ip_str);
         Ok(())
     }
 
     /// 实时放行某个 CIDR。
     pub async fn allow_cidr(&self, cidr: &str) -> anyhow::Result<()> {
-        let (addr, prefix) = parse_cidr(cidr)?;
-        let mut guard = self.ebpf.lock().await;
-        let mut whitelist: LpmTrie<_, WhitelistKey, u8> = guard
-            .map_mut("WHITELIST")
-            .context("WHITELIST map not found")?
-            .try_into()?;
-        whitelist.insert(&LpmKey::new(prefix, WhitelistKey { addr }), 1, 0)?;
+        let (key, prefix) = parse_cidr(cidr)?;
+        self.allow_cidr_raw(key, prefix).await?;
 
-        self.whitelist.lock().await.push((addr, prefix));
+        if let Some(store) = &self.store {
+            store.save_whitelist(key, prefix).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::AllowCidr,
+            serde_json::json!({ "cidr": cidr }),
+        )
+        .await;
         info!("API whitelist add: {}", cidr);
+        Ok(())
+    }
+
+    async fn allow_cidr_raw(&self, key: IpKey, prefix: u32) -> anyhow::Result<()> {
+        let mut guard = self.ebpf.lock().await;
+
+        match key.family() {
+            Some(IpFamily::Ipv4) => {
+                let mut whitelist: LpmTrie<_, WhitelistKeyV4, u8> = guard
+                    .map_mut("WHITELIST_V4")
+                    .context("WHITELIST_V4 map not found")?
+                    .try_into()?;
+                whitelist.insert(
+                    &LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4() }),
+                    1,
+                    0,
+                )?;
+            }
+            Some(IpFamily::Ipv6) => {
+                let mut whitelist: LpmTrie<_, WhitelistKeyV6, u8> = guard
+                    .map_mut("WHITELIST_V6")
+                    .context("WHITELIST_V6 map not found")?
+                    .try_into()?;
+                whitelist.insert(
+                    &LpmKey::new(prefix, WhitelistKeyV6 { addr: key.addr }),
+                    1,
+                    0,
+                )?;
+            }
+            _ => anyhow::bail!("unknown IP family"),
+        }
         Ok(())
     }
 
     /// 实时移除某个 CIDR 放行。
     pub async fn disallow_cidr(&self, cidr: &str) -> anyhow::Result<()> {
-        let (addr, prefix) = parse_cidr(cidr)?;
+        let (key, prefix) = parse_cidr(cidr)?;
         let mut guard = self.ebpf.lock().await;
-        let mut whitelist: LpmTrie<_, WhitelistKey, u8> = guard
-            .map_mut("WHITELIST")
-            .context("WHITELIST map not found")?
-            .try_into()?;
-        whitelist.remove(&LpmKey::new(prefix, WhitelistKey { addr }))?;
 
-        self.whitelist.lock().await.retain(|&x| x != (addr, prefix));
+        match key.family() {
+            Some(IpFamily::Ipv4) => {
+                let mut whitelist: LpmTrie<_, WhitelistKeyV4, u8> = guard
+                    .map_mut("WHITELIST_V4")
+                    .context("WHITELIST_V4 map not found")?
+                    .try_into()?;
+                whitelist.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4() }))?;
+            }
+            Some(IpFamily::Ipv6) => {
+                let mut whitelist: LpmTrie<_, WhitelistKeyV6, u8> = guard
+                    .map_mut("WHITELIST_V6")
+                    .context("WHITELIST_V6 map not found")?
+                    .try_into()?;
+                whitelist.remove(&LpmKey::new(prefix, WhitelistKeyV6 { addr: key.addr }))?;
+            }
+            _ => anyhow::bail!("unknown IP family"),
+        }
+        drop(guard);
+
+        self.whitelist.lock().await.retain(|&x| x != (key, prefix));
+
+        if let Some(store) = &self.store {
+            store.remove_whitelist(key, prefix).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::DisallowCidr,
+            serde_json::json!({ "cidr": cidr }),
+        )
+        .await;
         info!("API whitelist remove: {}", cidr);
         Ok(())
     }
@@ -191,6 +314,12 @@ impl ControlState {
         }
         if let Some(enabled) = patch.ebpf_debug_enabled {
             snapshot.ebpf_debug_enabled = enabled;
+        }
+        if let Some(enabled) = patch.udp_flood_enabled {
+            snapshot.udp_flood_enabled = enabled;
+        }
+        if let Some(enabled) = patch.icmp_flood_enabled {
+            snapshot.icmp_flood_enabled = enabled;
         }
 
         let mut guard = self.ebpf.lock().await;
@@ -227,14 +356,59 @@ impl ControlState {
                     syn_proxy_enabled: u8::from(snapshot.syn_proxy_enabled),
                     l7_scan_enabled: u8::from(snapshot.l7_scan_enabled),
                     ebpf_debug: u8::from(snapshot.ebpf_debug_enabled),
-                    padding: [0; 4],
+                    udp_flood_enabled: u8::from(snapshot.udp_flood_enabled),
+                    icmp_flood_enabled: u8::from(snapshot.icmp_flood_enabled),
+                    padding: [0; 2],
                 },
                 0,
             )?;
         }
 
         *self.runtime.write().await = snapshot;
+
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "patch": patch }),
+        )
+        .await;
         Ok(())
+    }
+
+    /// 从持久化存储加载动态规则并应用（不记录审计，避免启动/重载时产生大量日志）。
+    pub async fn load_persisted_rules(&self) -> anyhow::Result<()> {
+        let Some(store) = &self.store else { return Ok(()) };
+
+        let now_ns = now_ns();
+        for (key, blocked_until_ns, _reason, _first_seen_ns) in store.load_blacklist().await? {
+            // 已过期则跳过
+            if blocked_until_ns != 0 && blocked_until_ns <= now_ns {
+                continue;
+            }
+            let duration_s = if blocked_until_ns == 0 {
+                0
+            } else {
+                blocked_until_ns.saturating_sub(now_ns) / 1_000_000_000
+            };
+            self.block_ip_raw(key, duration_s).await?;
+        }
+
+        for (key, prefix) in store.load_whitelist().await? {
+            self.allow_cidr_raw(key, prefix).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn audit(
+        &self,
+        actor: impl Into<String>,
+        action: AuditAction,
+        detail: serde_json::Value,
+    ) {
+        if let Some(auditor) = &self.auditor {
+            auditor.log(actor, action, detail, None).await;
+        }
     }
 }
 
@@ -245,6 +419,8 @@ impl RuntimeConfigSnapshot {
             syn_proxy_enabled: config.syn_proxy.enabled,
             l7_scan_enabled: config.l7_scan.enabled,
             ebpf_debug_enabled: config.ebpf_log_enabled,
+            udp_flood_enabled: config.udp_flood_enabled,
+            icmp_flood_enabled: config.icmp_flood_enabled,
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
                 threshold: config.rate_limit.threshold,
@@ -269,7 +445,9 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
             syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
             l7_scan_enabled: u8::from(config.l7_scan.enabled),
             ebpf_debug: u8::from(config.ebpf_log_enabled),
-            padding: [0; 4],
+            udp_flood_enabled: u8::from(config.udp_flood_enabled),
+            icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
+            padding: [0; 2],
         },
         0,
     )?;
@@ -342,17 +520,36 @@ fn init_l7_patterns_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> 
     Ok(())
 }
 
+fn init_port_acl_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
+    let mut port_acl: Array<_, PortAclEntry> = ebpf
+        .map_mut("PORT_ACL")
+        .context("PORT_ACL map not found")?
+        .try_into()?;
+
+    // 清空全部 128 个槽位
+    for i in 0..128u32 {
+        let _ = port_acl.set(i, PortAclEntry::default(), 0);
+    }
+
+    for (i, item) in config.port_acl.iter().enumerate() {
+        if i >= 128 {
+            anyhow::bail!("too many port_acl entries (max 128)");
+        }
+        let entry = item
+            .to_entry()
+            .with_context(|| format!("invalid port_acl entry {}", i))?;
+        port_acl.set(i as u32, entry, 0)?;
+    }
+
+    Ok(())
+}
+
 async fn apply_whitelist_map(
     ebpf: &mut Ebpf,
     config: &Config,
-    current: &mut Vec<(u32, u32)>,
+    current: &mut Vec<(IpKey, u32)>,
 ) -> anyhow::Result<()> {
-    let mut whitelist: LpmTrie<_, WhitelistKey, u8> = ebpf
-        .map_mut("WHITELIST")
-        .context("WHITELIST map not found")?
-        .try_into()?;
-
-    let new: HashSet<(u32, u32)> = config
+    let new: HashSet<(IpKey, u32)> = config
         .whitelist
         .iter()
         .map(|s| parse_cidr(s))
@@ -360,17 +557,56 @@ async fn apply_whitelist_map(
         .into_iter()
         .collect();
 
-    for key in current.iter().copied() {
-        if !new.contains(&key) {
-            whitelist.remove(&LpmKey::new(key.1, WhitelistKey { addr: key.0 }))?;
-            info!("removed whitelist entry: {}/{}", format_addr(key.0), key.1);
+    // 先分别收集 v4 / v6 的删除与新增项，避免同时借用两个 map
+    let mut remove_v4 = Vec::new();
+    let mut remove_v6 = Vec::new();
+    for (key, prefix) in current.iter().copied() {
+        if !new.contains(&(key, prefix)) {
+            match key.family() {
+                Some(IpFamily::Ipv4) => remove_v4.push((key.ipv4(), prefix)),
+                Some(IpFamily::Ipv6) => remove_v6.push((key.addr, prefix)),
+                _ => {}
+            }
+            info!("removed whitelist entry: {}/{}", format_ip_key(&key), prefix);
         }
     }
 
+    let mut add_v4 = Vec::new();
+    let mut add_v6 = Vec::new();
     for (addr, prefix) in &new {
         if !current.contains(&(*addr, *prefix)) {
-            whitelist.insert(&LpmKey::new(*prefix, WhitelistKey { addr: *addr }), 1, 0)?;
-            info!("added whitelist entry: {}/{}", format_addr(*addr), prefix);
+            match addr.family() {
+                Some(IpFamily::Ipv4) => add_v4.push((addr.ipv4(), *prefix)),
+                Some(IpFamily::Ipv6) => add_v6.push((addr.addr, *prefix)),
+                _ => {}
+            }
+            info!("added whitelist entry: {}/{}", format_ip_key(addr), prefix);
+        }
+    }
+
+    {
+        let mut whitelist_v4: LpmTrie<_, WhitelistKeyV4, u8> = ebpf
+            .map_mut("WHITELIST_V4")
+            .context("WHITELIST_V4 map not found")?
+            .try_into()?;
+        for (addr, prefix) in remove_v4 {
+            whitelist_v4.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr }))?;
+        }
+        for (addr, prefix) in add_v4 {
+            whitelist_v4.insert(&LpmKey::new(prefix, WhitelistKeyV4 { addr }), 1, 0)?;
+        }
+    }
+
+    {
+        let mut whitelist_v6: LpmTrie<_, WhitelistKeyV6, u8> = ebpf
+            .map_mut("WHITELIST_V6")
+            .context("WHITELIST_V6 map not found")?
+            .try_into()?;
+        for (addr, prefix) in remove_v6 {
+            whitelist_v6.remove(&LpmKey::new(prefix, WhitelistKeyV6 { addr }))?;
+        }
+        for (addr, prefix) in add_v6 {
+            whitelist_v6.insert(&LpmKey::new(prefix, WhitelistKeyV6 { addr }), 1, 0)?;
         }
     }
 
@@ -382,86 +618,49 @@ async fn apply_whitelist_map(
 async fn apply_blacklist_map(
     ebpf: &mut Ebpf,
     config: &Config,
-    current: &mut Vec<u32>,
+    current: &mut Vec<IpKey>,
 ) -> anyhow::Result<()> {
-    let mut blacklist: LruHashMap<_, u32, BlockEntry> = ebpf
+    let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = ebpf
         .map_mut("BLACKLIST")
         .context("BLACKLIST map not found")?
         .try_into()?;
 
-    let new: HashSet<u32> = config
+    let new: HashSet<IpKey> = config
         .blacklist
         .iter()
-        .map(|s| parse_ip(s))
+        .map(|s| parse_ip_or_cidr(s))
         .collect::<anyhow::Result<Vec<_>>>()?
         .into_iter()
         .collect();
 
     // 仅移除由配置文件加入的静态黑名单（reason == BLACKLIST），保留 API / 自适应封禁
-    for ip in current.iter().copied() {
-        if !new.contains(&ip) {
-            if let Ok(entry) = blacklist.get(&ip, 0) {
+    for key in current.iter() {
+        if !new.contains(key) {
+            if let Ok(entry) = blacklist.get(key, 0) {
                 if entry.block_reason == rules::BLACKLIST as u8 {
-                    blacklist.remove(&ip)?;
-                    info!("removed static blacklist entry: {}", format_addr(ip));
+                    blacklist.remove(key)?;
+                    info!("removed static blacklist entry: {}", format_ip_key(key));
                 }
             }
         }
     }
 
-    for ip in &new {
-        if !current.contains(ip) {
+    for key in &new {
+        if !current.contains(key) {
             let entry = BlockEntry {
                 blocked_until_ns: 0,
                 block_reason: rules::BLACKLIST as u8,
                 hit_count: 0,
                 first_seen_ns: 0,
             };
-            blacklist.insert(*ip, entry, 0)?;
-            info!("added static blacklist entry: {}", format_addr(*ip));
+            blacklist.insert(*key, entry, 0)?;
+            info!("added static blacklist entry: {}", format_ip_key(key));
         }
     }
 
     current.clear();
     current.extend(new);
     Ok(())
-}
-
-pub fn parse_ip(s: &str) -> anyhow::Result<u32> {
-    let addr: IpAddr = s.parse().context("invalid IP address")?;
-    match addr {
-        IpAddr::V4(v4) => Ok(u32::from_be_bytes(v4.octets())),
-        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
-    }
-}
-
-pub fn parse_cidr(s: &str) -> anyhow::Result<(u32, u32)> {
-    let parts: Vec<&str> = s.split('/').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("invalid CIDR: {}", s);
-    }
-    let addr: IpAddr = parts[0].parse().context("invalid IP address")?;
-    let prefix: u32 = parts[1].parse().context("invalid prefix length")?;
-    if prefix > 32 {
-        anyhow::bail!("invalid prefix length: {}", prefix);
-    }
-
-    match addr {
-        IpAddr::V4(v4) => {
-            let addr = u32::from_be_bytes(v4.octets());
-            let mask = if prefix == 0 {
-                0
-            } else {
-                u32::MAX << (32 - prefix)
-            };
-            Ok((addr & mask, prefix))
-        }
-        IpAddr::V6(_) => anyhow::bail!("IPv6 is not supported yet"),
-    }
-}
-
-pub fn format_addr(addr: u32) -> String {
-    Ipv4Addr::from(addr.to_be_bytes()).to_string()
 }
 
 fn now_ns() -> u64 {
@@ -474,32 +673,40 @@ fn now_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eshield_common::IpFamily;
 
     #[test]
     fn test_parse_ip_ipv4_ok() {
-        assert_eq!(parse_ip("192.0.2.1").unwrap(), 0xc000_0201);
+        let key = parse_ip("192.0.2.1").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv4 as u8);
+        assert_eq!(key.ipv4(), 0xc000_0201);
     }
 
     #[test]
-    fn test_parse_ip_ipv6_rejected() {
-        assert!(parse_ip("::1").is_err());
+    fn test_parse_ip_ipv6_ok() {
+        let key = parse_ip("::1").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv6 as u8);
     }
 
     #[test]
     fn test_parse_cidr_ok() {
-        let (addr, prefix) = parse_cidr("10.0.0.0/8").unwrap();
-        assert_eq!(addr, 0x0a00_0000);
+        let (key, prefix) = parse_cidr("10.0.0.0/8").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv4 as u8);
+        assert_eq!(key.ipv4(), 0x0a00_0000);
         assert_eq!(prefix, 8);
+    }
+
+    #[test]
+    fn test_parse_cidr_ipv6_ok() {
+        let (key, prefix) = parse_cidr("2001:db8::/32").unwrap();
+        assert_eq!(key.family, IpFamily::Ipv6 as u8);
+        assert_eq!(prefix, 32);
     }
 
     #[test]
     fn test_parse_cidr_invalid_prefix_rejected() {
         assert!(parse_cidr("192.0.2.0/33").is_err());
-    }
-
-    #[test]
-    fn test_format_addr() {
-        assert_eq!(format_addr(0xc000_0201), "192.0.2.1");
+        assert!(parse_cidr("2001:db8::/129").is_err());
     }
 
     #[test]

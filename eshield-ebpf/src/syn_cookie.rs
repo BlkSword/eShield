@@ -4,6 +4,7 @@ use core::mem;
 use crate::maps::COOKIE_SECRETS;
 use crate::parser::{ptr_at, ptr_at_mut, EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN};
 use crate::syn_flood;
+use eshield_common::IpKey;
 
 const TCP_FLAG_SYN: u8 = 0x02;
 const TCP_FLAG_ACK: u8 = 0x10;
@@ -44,8 +45,8 @@ pub fn handle_syn(ctx: &XdpContext, ip: *const IpHdr, ip_hdr_len: usize) -> Opti
     let original_seq = u32::from_be(unsafe { (*tcp).seq });
 
     let now_ns = unsafe { bpf_ktime_get_ns() };
-    let saddr_host = u32::from_be(saddr);
-    if syn_flood::handle_syn_flood(ctx, saddr_host, TCP_FLAG_SYN, now_ns) {
+    let src_key = IpKey::from_ipv4(saddr.to_ne_bytes());
+    if syn_flood::handle_syn_flood(ctx, &src_key, TCP_FLAG_SYN, now_ns) {
         return Some(xdp_action::XDP_DROP);
     }
 

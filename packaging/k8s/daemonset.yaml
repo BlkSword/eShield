@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: eshield
+  namespace: eshield
+  labels:
+    app: eshield
+spec:
+  selector:
+    matchLabels:
+      app: eshield
+  template:
+    metadata:
+      labels:
+        app: eshield
+    spec:
+      hostNetwork: true
+      hostPID: false
+      containers:
+        - name: eshield
+          image: ghcr.io/eshield/eshield:v0.1.2
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add:
+                - BPF
+                - NET_ADMIN
+                - NET_RAW
+                - PERFMON
+                - IPC_LOCK
+          volumeMounts:
+            - name: config
+              mountPath: /etc/eshield
+              readOnly: true
+            - name: rules
+              mountPath: /var/lib/eshield
+            - name: logs
+              mountPath: /var/log/eshield
+          ports:
+            - containerPort: 8443
+              hostPort: 8443
+      volumes:
+        - name: config
+          configMap:
+            name: eshield-config
+        - name: rules
+          hostPath:
+            path: /var/lib/eshield
+            type: DirectoryOrCreate
+        - name: logs
+          hostPath:
+            path: /var/log/eshield
+            type: DirectoryOrCreate

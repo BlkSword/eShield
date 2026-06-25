@@ -3,17 +3,21 @@ use aya_ebpf::{
     maps::{Array, LpmTrie, LruHashMap, PerCpuArray, RingBuf},
 };
 use eshield_common::{
-    BlockEntry, CookieSecret, GlobalStats, L7Pattern, RateCounter, RateLimitConfig, RuntimeConfig,
-    WhitelistKey,
+    BlockEntry, CookieSecret, GlobalStats, IpKey, L7Pattern, PortAclEntry, RateCounter,
+    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
 };
 
-/// 白名单 CIDR 匹配（LPM Trie）
+/// IPv4 白名单 CIDR 匹配（LPM Trie）
 #[map]
-pub static WHITELIST: LpmTrie<WhitelistKey, u8> = LpmTrie::with_max_entries(1024, 0);
+pub static WHITELIST_V4: LpmTrie<WhitelistKeyV4, u8> = LpmTrie::with_max_entries(1024, 0);
 
-/// 动态黑名单（LRU Hash）
+/// IPv6 白名单 CIDR 匹配（LPM Trie）
 #[map]
-pub static BLACKLIST: LruHashMap<u32, BlockEntry> = LruHashMap::with_max_entries(100000, 0);
+pub static WHITELIST_V6: LpmTrie<WhitelistKeyV6, u8> = LpmTrie::with_max_entries(1024, 0);
+
+/// 动态黑名单（LRU Hash）：支持 IPv4 / IPv6
+#[map]
+pub static BLACKLIST: LruHashMap<IpKey, BlockEntry> = LruHashMap::with_max_entries(100000, 0);
 
 /// Per-CPU 全局统计
 #[map]
@@ -35,9 +39,9 @@ pub static CONFIG: Array<RuntimeConfig> = Array::with_max_entries(1, 0);
 #[map]
 pub static RATE_LIMIT_CFG: Array<RateLimitConfig> = Array::with_max_entries(1, 0);
 
-/// Per-CPU Per-IP 速率计数器（LRU Hash）
+/// Per-CPU Per-IP 速率计数器（LRU Hash）：支持 IPv4 / IPv6
 #[map]
-pub static RATE_MAP: LruHashMap<u32, RateCounter> = LruHashMap::with_max_entries(100000, 0);
+pub static RATE_MAP: LruHashMap<IpKey, RateCounter> = LruHashMap::with_max_entries(100000, 0);
 
 /// SYN Cookie 密钥
 #[map]
@@ -46,3 +50,7 @@ pub static COOKIE_SECRETS: Array<CookieSecret> = Array::with_max_entries(1, 0);
 /// L7 轻量指纹模式
 #[map]
 pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(16, 0);
+
+/// 端口/协议 ACL 规则表
+#[map]
+pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);

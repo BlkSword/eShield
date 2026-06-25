@@ -113,8 +113,14 @@
       <h2>实时控制</h2>
       <div class="row">
         <div>
-          <label>封禁 IPv4</label>
-          <input type="text" id="block-ip" placeholder="例如 192.0.2.1">
+          <label>API Token（如启用认证）</label>
+          <input type="password" id="api-token" placeholder="Bearer Token" onchange="saveToken()">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>封禁 IP（IPv4/IPv6）</label>
+          <input type="text" id="block-ip" placeholder="例如 192.0.2.1 或 2001:db8::1">
         </div>
         <div>
           <label>时长（秒，0=永久）</label>
@@ -125,8 +131,8 @@
       </div>
       <div class="row">
         <div>
-          <label>放行 CIDR</label>
-          <input type="text" id="allow-cidr" placeholder="例如 10.0.0.0/8">
+          <label>放行 CIDR（IPv4/IPv6）</label>
+          <input type="text" id="allow-cidr" placeholder="例如 10.0.0.0/8 或 2001:db8::/32">
         </div>
         <button onclick="allowCidr()">放行</button>
         <button class="secondary" onclick="disallowCidr()">移除</button>
@@ -159,6 +165,14 @@
           <input type="checkbox" id="ebpf-debug-enabled">
           <label for="ebpf-debug-enabled" style="margin:0">启用 eBPF 调试日志</label>
         </div>
+        <div class="switch">
+          <input type="checkbox" id="udp-flood-enabled">
+          <label for="udp-flood-enabled" style="margin:0">启用 UDP Flood 防护</label>
+        </div>
+        <div class="switch">
+          <input type="checkbox" id="icmp-flood-enabled">
+          <label for="icmp-flood-enabled" style="margin:0">启用 ICMP Flood 防护</label>
+        </div>
         <button onclick="updateSwitches()">更新开关</button>
         <button class="secondary" onclick="reloadConfig()">重载配置文件</button>
       </div>
@@ -172,16 +186,38 @@
         <tbody id="attackers-body"><tr><td colspan="2">加载中...</td></tr></tbody>
       </table>
     </section>
+
+    <section>
+      <h2>审计日志 <button class="secondary" onclick="refreshAudit()">刷新</button></h2>
+      <table>
+        <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead>
+        <tbody id="audit-body"><tr><td colspan="4">加载中...</td></tr></tbody>
+      </table>
+    </section>
   </main>
 
   <footer>
     <a href="/metrics">Prometheus 指标</a>
     <a href="/api/stats">JSON API</a>
-    <span>eShield v0.1.0 · Apache-2.0</span>
+    <span>eShield v0.1.2 · Apache-2.0</span>
   </footer>
 
   <script>
     const initialConfig = __CONFIG_JSON__;
+
+    function loadToken() {
+      const t = localStorage.getItem('eshield-token') || '';
+      document.getElementById('api-token').value = t;
+    }
+    function saveToken() {
+      localStorage.setItem('eshield-token', document.getElementById('api-token').value);
+    }
+    function authHeaders() {
+      const t = document.getElementById('api-token').value.trim();
+      const h = { 'Content-Type': 'application/json' };
+      if (t) h['Authorization'] = 'Bearer ' + t;
+      return h;
+    }
 
     async function refreshStats() {
       try {
@@ -217,6 +253,8 @@
         document.getElementById('syn-proxy-enabled').checked = c.syn_proxy_enabled;
         document.getElementById('l7-enabled').checked = c.l7_scan_enabled;
         document.getElementById('ebpf-debug-enabled').checked = c.ebpf_debug_enabled;
+        document.getElementById('udp-flood-enabled').checked = c.udp_flood_enabled;
+        document.getElementById('icmp-flood-enabled').checked = c.icmp_flood_enabled;
       } catch (e) { console.error(e); }
     }
 
@@ -228,12 +266,12 @@
     }
 
     async function api(method, path, body) {
-      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      const opts = { method, headers: authHeaders() };
       if (body) opts.body = JSON.stringify(body);
       const r = await fetch(path, opts);
       const txt = await r.text();
       setMsg(txt, r.ok);
-      if (r.ok) { refreshStats(); refreshConfig(); }
+      if (r.ok) { refreshStats(); refreshConfig(); refreshAudit(); }
     }
 
     function blockIp() { api('POST', '/api/blacklist', { ip: document.getElementById('block-ip').value, duration_s: parseInt(document.getElementById('block-duration').value) }); }
@@ -260,12 +298,35 @@
       await api('PATCH', '/api/config', {
         syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
         l7_scan_enabled: document.getElementById('l7-enabled').checked,
-        ebpf_debug_enabled: document.getElementById('ebpf-debug-enabled').checked
+        ebpf_debug_enabled: document.getElementById('ebpf-debug-enabled').checked,
+        udp_flood_enabled: document.getElementById('udp-flood-enabled').checked,
+        icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked
       });
     }
 
+    async function refreshAudit() {
+      try {
+        const r = await fetch('/api/audit', { headers: authHeaders() });
+        const d = await r.json();
+        const tbody = document.getElementById('audit-body');
+        tbody.innerHTML = '';
+        if (!d.entries || d.entries.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">暂无数据</td></tr>';
+          return;
+        }
+        d.entries.slice().reverse().forEach(e => {
+          const tr = document.createElement('tr');
+          const detail = JSON.stringify(e.detail);
+          tr.innerHTML = `<td>${e.timestamp}</td><td>${e.actor}</td><td>${e.action}</td><td title="${detail.replace(/"/g,'&quot;')}">${detail.length > 60 ? detail.slice(0,60)+'...' : detail}</td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    loadToken();
     refreshStats();
     refreshConfig();
+    refreshAudit();
     setInterval(refreshStats, 1000);
   </script>
 </body>

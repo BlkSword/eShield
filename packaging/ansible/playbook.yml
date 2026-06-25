@@ -1,0 +1,69 @@
+---
+- name: Deploy eShield
+  hosts: eshield_nodes
+  become: true
+  vars:
+    eshield_version: "0.1.2"
+    eshield_interface: "eth0"
+    eshield_web_port: 8443
+  tasks:
+    - name: Ensure dependencies are installed
+      ansible.builtin.package:
+        name:
+          - curl
+          - ca-certificates
+        state: present
+
+    - name: Download eShield release binary
+      ansible.builtin.get_url:
+        url: "https://github.com/eshield/eshield/releases/download/v{{ eshield_version }}/eshield-x86_64-unknown-linux-musl"
+        dest: /usr/local/bin/eshield
+        mode: "0755"
+        owner: root
+        group: root
+
+    - name: Create config directory
+      ansible.builtin.file:
+        path: /etc/eshield
+        state: directory
+        mode: "0755"
+
+    - name: Deploy config file
+      ansible.builtin.template:
+        src: config.toml.j2
+        dest: /etc/eshield/config.toml
+        mode: "0640"
+      notify: Reload eShield
+
+    - name: Deploy systemd service
+      ansible.builtin.template:
+        src: eshield.service.j2
+        dest: /lib/systemd/system/eshield.service
+        mode: "0644"
+      notify: Reload systemd
+
+    - name: Ensure state directories exist
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /var/lib/eshield
+        - /var/log/eshield
+
+    - name: Enable and start eShield
+      ansible.builtin.systemd:
+        name: eshield
+        enabled: true
+        state: started
+        daemon_reload: true
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Reload eShield
+      ansible.builtin.systemd:
+        name: eshield
+        state: reloaded

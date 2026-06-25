@@ -3,55 +3,73 @@
 ## 三层架构
 
 ```text
-┌─────────────────────────────────────────────────────────┐
-│ 管理面 (Management Plane)                               │
-│ Web Dashboard (axum+htmx) │ TUI (ratatui) │ CLI         │
-└──────────────────────────────┬──────────────────────────┘
-                               │ REST API / Config Watch
-┌──────────────────────────────▼──────────────────────────┐
-│ 控制面 (Control Plane) — Rust 用户态                     │
-│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐    │
-│ │ 配置管理 │ │ 事件消费 │ │ 指标聚合 │ │ 自适应   │    │
-│ │ (热加载) │ │(Ring Buf)│ │(Per-CPU) │ │ 阈值引擎 │    │
-│ └──────────┘ └──────────┘ └──────────┘ └──────────┘    │
-└──────────────────────────────┬──────────────────────────┘
-                               │ BPF Maps / Ring Buffer
-┌──────────────────────────────▼──────────────────────────┐
-│ 数据面 (Data Plane) — eBPF/XDP 内核态                    │
-│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐    │
-│ │ 包解析   │→│ 白名单   │→│ 速率限制 │→│ SYN Proxy│    │
-│ │(有界读取)│ │ 匹配     │ │(滑窗计数)│ │(Cookie)  │    │
-│ └──────────┘ └──────────┘ └──────────┘ └──────────┘    │
-│            ↓                                             │
-│ ┌──────────┐                                             │
-│ │ L7 轻量  │ → 决策: PASS / DROP / TX / REDIRECT        │
-│ │ 指纹扫描 │                                             │
-│ └──────────┘                                             │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ 管理面 (Management Plane)                                    │
+│ Web Dashboard (axum+htmx) │ TUI (ratatui) │ CLI             │
+└─────────────────────────────────┬────────────────────────────┘
+                                  │ REST API / Config Watch
+┌─────────────────────────────────▼────────────────────────────┐
+│ 控制面 (Control Plane) — Rust 用户态                          │
+│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+│ │ 配置管理 │ │ 事件消费 │ │ 指标聚合 │ │ 自适应   │         │
+│ │ (热加载) │ │(Ring Buf)│ │(Per-CPU) │ │ 阈值引擎 │         │
+│ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
+│ ┌──────────┐ ┌──────────┐ ┌──────────┐                      │
+│ │ 审计日志 │ │ 规则持久 │ │ API 认证 │                      │
+│ │          │ │ (SQLite) │ │ (Token)  │                      │
+│ └──────────┘ └──────────┘ └──────────┘                      │
+└─────────────────────────────────┬────────────────────────────┘
+                                  │ BPF Maps / Ring Buffer
+┌─────────────────────────────────▼────────────────────────────┐
+│ 数据面 (Data Plane) — eBPF/XDP 内核态                         │
+│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+│ │ 包解析   │→│ 白名单   │→│ 端口/协议│→│ 速率限制 │         │
+│ │ IPv4/v6  │ │ 匹配     │ │ ACL      │ │(滑窗计数)│         │
+│ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
+│            ↓                                                 │
+│ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
+│ │ SYN Proxy│ │ SYN Flood│ │ UDP Flood│ │ ICMP Flood│        │
+│ │(Cookie)  │ │ 检测     │ │ 检测     │ │ 检测     │         │
+│ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
+│            ↓                                                 │
+│ ┌──────────┐ ┌──────────┐                                    │
+│ │ L7 轻量  │ │ 黑名单   │ → 决策: PASS / DROP / TX           │
+│ │ 指纹扫描 │ │ 检查     │                                    │
+│ └──────────┘ └──────────┘                                    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## 数据包旅程
 
-1. 包解析：有界读取 Eth / IP / TCP / UDP 头部（~20 ns）
-2. 白名单：LPM Trie 查询 CIDR（~15 ns）
-3. 黑名单：LRU Hash 查询（~15 ns）
-4. 速率限制：Per-CPU LRU Hash + 指数衰减滑动窗口（~30 ns）
-5. SYN Proxy：SYN Cookie 挑战（可选，~50 ns）
-6. L7 扫描：读取前 64 字节载荷模式匹配（可选，~40 ns）
-7. 默认放行：XDP_PASS（~5 ns）
-
-单包总耗时约 175 ns，即 5.7 Mpps/核。
+1. 包解析：有界读取 Eth / IP(v4/v6) / TCP / UDP / ICMP 头部
+2. 白名单：LPM Trie 查询 CIDR（IPv4 / IPv6）
+3. 端口/协议 ACL：按目的端口与协议匹配 allow/drop 规则
+4. 速率限制：Per-CPU LRU Hash + 指数衰减滑动窗口
+5. SYN Proxy / SYN Flood / UDP Flood / ICMP Flood：按协议检测
+6. L7 扫描：读取前 64 字节载荷模式匹配
+7. 黑名单：LRU Hash 查询到期自动解封
+8. 默认放行：XDP_PASS
 
 ## BPF Maps
 
 | Map | Type | Key | Value | 容量 | 用途 |
 |---|---|---|---|---|---|
-| WHITELIST | LPM Trie | CIDR (8B) | u8 | 1,024 | 白名单 |
-| BLACKLIST | LRU Hash | u32 src_ip | BlockEntry | 100,000 | 动态封禁 |
-| RATE_LIMIT | Per-CPU LRU Hash | u32 src_ip | RateCounter | 100,000 | 速率计数 |
+| WHITELIST_V4 | LPM Trie | WhitelistKeyV4 | u8 | 1,024 | IPv4 白名单 |
+| WHITELIST_V6 | LPM Trie | WhitelistKeyV6 | u8 | 1,024 | IPv6 白名单 |
+| BLACKLIST | LRU Hash | IpKey | BlockEntry | 100,000 | 动态封禁 |
+| RATE_MAP | Per-CPU LRU Hash | IpKey | RateCounter | 100,000 | 速率计数 |
 | GLOBAL_STATS | Per-CPU Array | u32 | GlobalStats | 1 | 全局统计 |
-| RULE_HITS | Per-CPU Array | u32 | u64 | 256 | 规则命中 |
+| RULE_HITS | Per-CPU Array | u32 | u64 | 16 | 规则命中 |
 | EVENTS | Ring Buffer | — | DropEvent | 4 MB | 事件上报 |
 | COOKIE_SECRETS | Array | u32 | CookieSecret | 1 | SYN Cookie 密钥 |
 | L7_PATTERNS | Array | u32 | L7Pattern | 16 | L7 特征 |
-| CONFIG | Array | u32 | ConfigBlob | 1 | 运行时配置 |
+| PORT_ACL | Array | u32 | PortAclEntry | 128 | 端口/协议 ACL |
+| CONFIG | Array | u32 | RuntimeConfig | 1 | 运行时配置 |
+
+## 控制面数据流
+
+1. Web / CLI / SIGHUP 调用 `ControlState` 方法。
+2. `ControlState` 通过 `tokio::sync::Mutex<Ebpf>` 串行访问 eBPF Maps。
+3. 变更同时写入 SQLite 规则库，重启后自动恢复。
+4. Ring Buffer 事件由 `event_consumer` 批量聚合，更新 `Stats` 与自适应引擎。
+5. 自适应引擎对重复触发规则的源 IP 追加动态黑名单。

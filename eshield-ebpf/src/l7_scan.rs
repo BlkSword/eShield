@@ -2,7 +2,7 @@ use aya_ebpf::programs::XdpContext;
 
 use crate::maps::{CONFIG, EVENTS, L7_PATTERNS};
 use crate::parser::{ptr_at, TcpHdr, ETH_HDR_LEN};
-use eshield_common::{rules, DropEvent};
+use eshield_common::{rules, DropEvent, IpKey};
 
 const MAX_PATTERNS: u32 = 16;
 const SIGNATURE_BYTES: usize = 8;
@@ -10,13 +10,18 @@ const SIGNATURE_BYTES: usize = 8;
 /// 读取 TCP 载荷前 8 字节进行轻量指纹匹配。
 /// 返回 true 表示命中并应 DROP。
 #[inline(always)]
-pub fn scan(ctx: &XdpContext, src_ip: u32, ip_hdr_len: usize) -> bool {
+pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => *c,
         None => return false,
     };
 
     if runtime.l7_scan_enabled == 0 {
+        return false;
+    }
+
+    // 仅处理 TCP 协议
+    if protocol != 6 {
         return false;
     }
 
@@ -56,7 +61,7 @@ pub fn scan(ctx: &XdpContext, src_ip: u32, ip_hdr_len: usize) -> bool {
         }
 
         if (chunk & pat.mask) == (pat.signature & pat.mask) {
-            emit_l7_event(ctx, src_ip);
+            emit_l7_event(ctx, src);
             return true;
         }
 
@@ -66,15 +71,16 @@ pub fn scan(ctx: &XdpContext, src_ip: u32, ip_hdr_len: usize) -> bool {
     false
 }
 
-fn emit_l7_event(_ctx: &XdpContext, src_ip: u32) {
+fn emit_l7_event(_ctx: &XdpContext, src: &IpKey) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
                 timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip,
+                src_ip: src.addr,
+                family: src.family,
                 protocol: 6,
                 rule_id: rules::L7_PATTERN,
-                padding: [0; 5],
+                padding: [0; 4],
             };
             entry.write(event);
             entry.submit(0);

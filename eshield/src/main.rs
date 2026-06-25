@@ -1,8 +1,15 @@
 mod adaptive;
+mod alert;
+mod audit;
+mod auth;
 mod config;
 mod control;
 mod event_consumer;
+mod health;
+mod ip;
+mod logging;
 mod state;
+mod store;
 mod tui;
 mod web;
 
@@ -17,7 +24,15 @@ use tokio::signal;
 use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tracing::{info, warn};
 
-use crate::{config::Config, control::ControlState, state::AppStateInner};
+use crate::{
+    alert::{AlertConfig, AlertManager},
+    audit::{AuditAction, Auditor, MemoryAuditBackend},
+    auth::AuthState,
+    config::Config,
+    control::ControlState,
+    state::AppStateInner,
+    store::RuleStore,
+};
 
 const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
 
@@ -114,12 +129,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         .validate()
         .context("配置校验失败，请检查 /etc/eshield/config.toml")?;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&config.log_level)),
-        )
-        .init();
+    logging::init_tracing(&config.log_level, config.log_json);
 
     info!("loading eShield eBPF program");
 
@@ -163,25 +173,69 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // Ebpf 状态由控制面、事件消费任务与热加载共享
     let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
 
+    // 可观测性组件
+    let auditor = Auditor::new(MemoryAuditBackend::new(10_000));
+    let store = RuleStore::new(&config.store_path)
+        .context("failed to open rule store")?;
+    let alert = AlertManager::new(AlertConfig {
+        webhook_url: config.alert_webhook_url.clone(),
+        threshold_dps: config.alert_threshold_dps,
+        cooldown_s: config.alert_cooldown_s,
+    });
+    let auth = AuthState::new(config.api_token.clone());
+
     // 控制面：封装所有 eBPF Map 操作，供 Web / CLI / SIGHUP 使用
     let control = Arc::new(
-        ControlState::new(ebpf.clone(), config_path.to_string(), &config)
-            .await
-            .context("failed to initialize control state")?,
+        ControlState::new(
+            ebpf.clone(),
+            config_path.to_string(),
+            &config,
+            Some(auditor.clone()),
+            Some(store.clone()),
+        )
+        .await
+        .context("failed to initialize control state")?,
     );
 
+    // 加载之前持久化的动态规则
+    if let Err(e) = control.load_persisted_rules().await {
+        warn!("failed to load persisted rules: {}", e);
+    }
+
+    auditor
+        .log("system", AuditAction::Start, serde_json::json!({}), None)
+        .await;
+
     // 启动 Web 观测与控制面板
-    let web_port = if config.web_port == 0 {
-        8443
-    } else {
-        config.web_port
-    };
+    let web_bind = config
+        .web_bind
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("0.0.0.0:{}", config.web_port));
     let _web_handle = {
         let stats = state.stats.clone();
         let control = control.clone();
+        let auditor = auditor.clone();
+        let alert = alert.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run(stats, control, web_port).await {
+            if let Err(e) = web::run(stats, control, auditor, alert, auth, web_bind).await {
                 warn!("web server exited: {}", e);
+            }
+        })
+    };
+
+    // 告警检查任务
+    let alert_handle = {
+        let stats = state.stats.clone();
+        tokio::spawn(async move {
+            let mut last_total = 0u64;
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                let total = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
+                let delta = total.saturating_sub(last_total);
+                last_total = total;
+                alert.check(delta, 60).await;
             }
         })
     };
@@ -224,6 +278,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         tokio::select! {
             _ = signal::ctrl_c() => {
                 info!("shutting down eShield");
+                auditor
+                    .log("system", AuditAction::Stop, serde_json::json!({}), None)
+                    .await;
                 break;
             }
             _ = sighup.recv() => {
@@ -238,8 +295,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
 
     event_handle.abort();
     rotator_handle.abort();
+    alert_handle.abort();
     let _ = event_handle.await;
     let _ = rotator_handle.await;
+    let _ = alert_handle.await;
 
     Ok(())
 }
@@ -277,6 +336,14 @@ async fn show_status(endpoint: &str) -> anyhow::Result<()> {
     println!(
         "自适应阈值拦截: {}",
         stats["adaptive_blocked"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "UDP Flood 拦截: {}",
+        stats["udp_flood_blocked"].as_u64().unwrap_or(0)
+    );
+    println!(
+        "ICMP Flood 拦截: {}",
+        stats["icmp_flood_blocked"].as_u64().unwrap_or(0)
     );
 
     if let Some(top) = stats["top_attackers"].as_array() {
