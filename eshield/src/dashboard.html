@@ -188,6 +188,41 @@
     </section>
 
     <section>
+      <h2>WAF 规则</h2>
+      <table>
+        <thead><tr><th>名称</th><th>启用</th><th>动作</th><th>方法</th><th>路径前缀</th><th>Host</th><th>UA</th><th>Body 前缀</th></tr></thead>
+        <tbody id="waf-body"><tr><td colspan="8">加载中...</td></tr></tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>GeoIP 配置</h2>
+      <div id="geoip-config" style="color:var(--muted)">加载中...</div>
+    </section>
+
+    <section>
+      <h2>威胁情报 Feeds</h2>
+      <table>
+        <thead><tr><th>名称</th><th>URL</th><th>间隔（秒）</th><th>置信度</th><th>动作</th></tr></thead>
+        <tbody id="ti-body"><tr><td colspan="5">加载中...</td></tr></tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2>静态策略</h2>
+      <div class="row" style="align-items:start">
+        <div style="flex:1">
+          <h3 style="margin-top:0">白名单</h3>
+          <ul id="whitelist-list" style="color:var(--muted);padding-left:1.2rem"><li>加载中...</li></ul>
+        </div>
+        <div style="flex:1">
+          <h3 style="margin-top:0">黑名单</h3>
+          <ul id="blacklist-list" style="color:var(--muted);padding-left:1.2rem"><li>加载中...</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section>
       <h2>审计日志 <button class="secondary" onclick="refreshAudit()">刷新</button></h2>
       <table>
         <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead>
@@ -199,7 +234,7 @@
   <footer>
     <a href="/metrics">Prometheus 指标</a>
     <a href="/api/stats">JSON API</a>
-    <span>eShield v0.1.2 · Apache-2.0</span>
+    <span>eShield v0.2.0 · Apache-2.0</span>
   </footer>
 
   <script>
@@ -255,6 +290,56 @@
         document.getElementById('ebpf-debug-enabled').checked = c.ebpf_debug_enabled;
         document.getElementById('udp-flood-enabled').checked = c.udp_flood_enabled;
         document.getElementById('icmp-flood-enabled').checked = c.icmp_flood_enabled;
+
+        // WAF rules
+        const wafBody = document.getElementById('waf-body');
+        wafBody.innerHTML = '';
+        const rules = c.waf_rules || [];
+        if (rules.length === 0) {
+          wafBody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">未配置</td></tr>';
+        } else {
+          rules.forEach(r => {
+            const m = r.match || {};
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.name}</td><td>${r.enabled ? '是' : '否'}</td><td>${r.action}</td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td><td>${m.body_prefix || '-'}</td>`;
+            wafBody.appendChild(tr);
+          });
+        }
+
+        // GeoIP
+        const g = c.geoip || {};
+        document.getElementById('geoip-config').innerHTML = `
+          <div>启用: ${g.enabled ? '是' : '否'}, 默认动作: ${g.default_action || 'pass'}</div>
+          <div>封禁国家: ${(g.block_countries || []).join(', ') || '-'}</div>
+          <div>封禁 ASN: ${(g.block_asns || []).join(', ') || '-'}</div>
+          <div>国家 CSV: ${g.country_blocks_csv || '-'}</div>
+          <div>ASN CSV: ${g.asn_blocks_csv || '-'}</div>
+        `;
+
+        // Threat intel feeds
+        const tiBody = document.getElementById('ti-body');
+        tiBody.innerHTML = '';
+        const feeds = c.threat_intel_feeds || [];
+        if (feeds.length === 0) {
+          tiBody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">未配置</td></tr>';
+        } else {
+          feeds.forEach(f => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${f.name}</td><td>${f.url}</td><td>${f.interval_s}</td><td>${f.confidence}</td><td>${f.action}</td>`;
+            tiBody.appendChild(tr);
+          });
+        }
+
+        // Static whitelist / blacklist
+        const wl = document.getElementById('whitelist-list');
+        wl.innerHTML = '';
+        (c.whitelist_entries || []).forEach(x => wl.innerHTML += `<li>${x}</li>`);
+        if (wl.innerHTML === '') wl.innerHTML = '<li style="color:var(--muted)">无</li>';
+
+        const bl = document.getElementById('blacklist-list');
+        bl.innerHTML = '';
+        (c.blacklist_entries || []).forEach(x => bl.innerHTML += `<li>${x}</li>`);
+        if (bl.innerHTML === '') bl.innerHTML = '<li style="color:var(--muted)">无</li>';
       } catch (e) { console.error(e); }
     }
 

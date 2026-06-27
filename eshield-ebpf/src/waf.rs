@@ -1,4 +1,4 @@
-use aya_ebpf::{helpers::gen::bpf_ktime_get_ns, programs::XdpContext};
+use aya_ebpf::{helpers::gen::bpf_ktime_get_ns};
 use eshield_common::{rules, waf_match, HttpMethod, IpKey, WafAction, WafRule, WAF_FIELD_LEN, WAF_RULES_MAX};
 
 use crate::maps::{EVENTS, GLOBAL_STATS, WAF_RULES};
@@ -7,7 +7,7 @@ use crate::parser;
 /// WAF 只检查 TCP payload 前 32 字节，使用 8 字节签名 + 掩码匹配方法与 URI 前缀。
 const MAX_PAYLOAD: usize = 32;
 
-pub fn check(ctx: &XdpContext, src: &IpKey, payload_offset: usize) -> Option<u8> {
+pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: usize) -> Option<u8> {
     let start = ctx.data();
     let end = ctx.data_end();
     if start + payload_offset + MAX_PAYLOAD > end {
@@ -58,6 +58,7 @@ pub fn check(ctx: &XdpContext, src: &IpKey, payload_offset: usize) -> Option<u8>
                 }
             }
             emit_event(src, rules::CHALLENGE);
+            return Some(rule.action);
         } else {
             emit_event(src, rules::WAF);
         }

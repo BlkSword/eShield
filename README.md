@@ -40,7 +40,11 @@
 | **Per-IP 速率限制** | 指数衰减滑动窗口，灵敏识别突发 CC 流量，避免误杀正常用户。 |
 | **UDP / ICMP Flood 防护** | 对 UDP、ICMP/ICMPv6 无连接流量做 per-IP 速率抑制。 |
 | **端口/协议 ACL** | 基于协议与目的端口的规则引擎，支持 allow/drop。 |
-| **SYN Cookie 代理** | SYN Flood 场景下用 SYN-ACK Cookie 挑战替换原始 SYN，合法 ACK 验证后放行。 |
+| **SYN Cookie 代理** | SYN Flood 场景下用 SYN-ACK Cookie 挑战替换原始 SYN，合法 ACK 验证后放行；支持 MSS 选项协商。 |
+| **HTTP WAF 规则引擎** | 基于 TCP 首包解析，支持 method / path_prefix / host / user_agent / body_prefix 多维度匹配，支持 drop / log / challenge 动作。 |
+| **JS Challenge 模式** | WAF action 为 `challenge` 时拦截请求，客户端完成 `/challenge` 页面 JS 验证后自动加入临时白名单。 |
+| **GeoIP/ASN 过滤** | 基于 LPM Trie CIDR 匹配，支持自定义国家/ASN CSV 或 MaxMind MMDB，按国家/ASN 批量拦截或放行。 |
+| **威胁情报联动** | 定时同步 AbuseIPDB、CINS 或自定义 URL 的 feed，自动拦截已知恶意 IP。 |
 | **L7 轻量指纹扫描** | 检查 TCP 载荷前 64 字节，匹配特征即 DROP（如恶意 UA、扫描指纹）。 |
 | **自适应阈值引擎** | 重复触发规则的 IP 自动提升为更长时间的封禁。 |
 | **实时控制** | REST API + 中文 Web 表单 + CLI，可实时封禁/解封 IP、更新速率限制与开关。 |
@@ -66,7 +70,7 @@
                                │ BPF Maps / Ring Buffer
 ┌──────────────────────────────▼──────────────────────────┐
 │ 数据面 (Data Plane) — eBPF/XDP 内核态                    │
-│ 包解析 → 白名单 → 端口 ACL → UDP/ICMP Flood → 速率限制 → SYN Proxy → L7 扫描 → 决策 │
+│ 包解析 → 白名单 → Challenge 临时白名单 → 端口 ACL → GeoIP → UDP/ICMP Flood → 速率限制 → SYN Proxy → WAF → L7 扫描 → 决策 │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -193,9 +197,36 @@ enabled = true
 threshold = 10              # 指定窗口内触发多少次后自动封禁
 window_s = 5
 block_duration_s = 300
+
+[waf]
+enabled = false
+rules = [
+    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } },
+    { name = "challenge-secret", enabled = true, priority = 2, action = "challenge", match = { method = "GET", path_prefix = "/secret" } },
+]
+
+[challenge]
+enabled = true
+mode = "js"
+ttl_s = 3600
+
+[geoip]
+enabled = false
+country_blocks_csv = "/etc/eshield/geoip_country.csv"
+block_countries = ["XX"]
+default_action = "pass"
+
+[threat_intel]
+enabled = false
+# [[threat_intel.feeds]]
+# name = "abuseipdb"
+# url = "https://api.abuseipdb.com/api/v2/blacklist"
+# interval_s = 3600
+# action = "drop"
+# confidence = 80
 ```
 
-> **注意**：`syn_proxy.enabled = true` 时，原始 SYN 会被改写为 SYN-ACK 并丢弃，合法 ACK 验证后才会放行。当前版本不维护后端连接状态，因此开启后正常 TCP 三次握手将无法完成，**仅在遭受 SYN Flood 攻击时启用**。
+> **注意**：`syn_proxy.enabled = true` 时，原始 SYN 会被改写为 SYN-ACK 并丢弃，合法 ACK 验证后才会放行。v0.2.0 已实现 SYN Cookie 代理的 MSS 选项协商，可支持正常 TCP 业务长期开启；但仍建议仅在 SYN Flood 场景或需要挑战/代理能力时启用。
 
 ### 热加载
 
@@ -225,11 +256,12 @@ http://<host>:8443/
 
 - 封禁 / 解封 IPv4/IPv6
 - 放行 / 移除 IPv4/IPv6 CIDR
-- 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描、UDP/ICMP Flood 防护
+- 启用/禁用速率限制、SYN Cookie 代理、L7 指纹扫描、UDP/ICMP Flood 防护、WAF、GeoIP
 - 实时开关 eBPF 内核调试日志
 - 调整速率限制阈值与 tick
 - 输入 API Token（启用认证时）
 - 一键重载配置文件
+- 展示 WAF 规则、GeoIP 配置、威胁情报 feed、黑白名单策略
 
 ### Prometheus 指标
 
@@ -245,6 +277,9 @@ http://<host>:8443/metrics
 - `eshield_syn_flood_blocked_total`
 - `eshield_l7_blocked_total`
 - `eshield_adaptive_blocked_total`
+- `eshield_waf_blocked_total`
+- `eshield_geoip_blocked_total`
+- `eshield_challenge_issued_total`
 - `eshield_source_dropped_total{ip="..."}`
 
 ### JSON 统计接口
@@ -279,7 +314,7 @@ cargo test --workspace --exclude eshield-ebpf
 sudo bash ./tests/netns_test.sh
 ```
 
-覆盖：黑名单、速率限制、SYN Flood、L7 指纹、SIGHUP 热加载、自适应阈值、停止后恢复。
+覆盖：黑名单、速率限制、SYN Flood、L7 指纹、HTTP WAF、JS Challenge、GeoIP/ASN、威胁情报、SIGHUP 热加载、自适应阈值、停止后恢复。
 
 ### 基准测试
 

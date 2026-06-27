@@ -249,7 +249,11 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             if action == eshield_common::WafAction::Drop as u8 {
                 return Ok(xdp_action::XDP_DROP);
             }
-            // log / challenge 动作不拦截，继续后续检查
+            // Challenge 动作同样先 DROP，用户需主动访问 challenge 页面完成验证后进入临时白名单。
+            if action == eshield_common::WafAction::Challenge as u8 {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            // log 动作不拦截，继续后续检查
         }
     }
 

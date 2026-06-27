@@ -39,6 +39,9 @@ ip netns del eshield-server 2>/dev/null || true
 ip link del veth-server 2>/dev/null || true
 ip link del veth-client 2>/dev/null || true
 
+# 清理持久化规则存储，保证每次测试从干净状态开始
+rm -f /var/lib/eshield/rules.redb
+
 ip netns add eshield-server
 ip netns add eshield-client
 ip link add veth-server type veth peer name veth-client
@@ -272,6 +275,96 @@ else
     echo "FAIL: WAF behavior unexpected"
     echo "recv1: '$(cat /tmp/waf_recv1)'"
     echo "recv2: '$(cat /tmp/waf_recv2)'"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+
+echo "=== Test 4.6: WAF Challenge should drop matching request and allow pass via challenge page ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[waf]
+enabled = true
+rules = [
+    { name = "challenge-secret", enabled = true, priority = 1, action = "challenge", match = { method = "GET", path_prefix = "/secret" } }
+]
+
+[challenge]
+enabled = true
+ttl_s = 60
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 3
+
+# 第一次访问 /secret 应被 Challenge DROP
+rm -f /tmp/challenge_recv1
+ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/challenge_recv1 &
+NC_PID=$!
+sleep 0.5
+printf 'GET /secret HTTP/1.1\r\nHost: example.com\r\n\r\n' | ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8080 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+if [ "$(cat /tmp/challenge_recv1)" != "" ]; then
+    echo "FAIL: challenge request was not dropped"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+# 通过 challenge 页面获取 nonce 并验证
+CHALLENGE_HTML=$(ip netns exec eshield-client curl -s http://10.0.0.1:8443/challenge)
+NONCE=$(echo "$CHALLENGE_HTML" | grep -oP 'id="nonce" value="\K[^"]+' || true)
+if [ -z "$NONCE" ]; then
+    echo "FAIL: failed to extract challenge nonce"
+    echo "$CHALLENGE_HTML"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+A=$(echo "$NONCE" | cut -d: -f1)
+B=$(echo "$NONCE" | cut -d: -f2)
+ANSWER=$(echo "$A + $B" | bc)
+
+PASS_RESP=$(ip netns exec eshield-client curl -s -X POST http://10.0.0.1:8443/api/challenge/pass \
+    -H 'Content-Type: application/json' \
+    -d "{\"ip\":\"10.0.0.2\",\"nonce\":\"$NONCE\",\"answer\":$ANSWER}")
+if ! echo "$PASS_RESP" | grep -q "验证通过"; then
+    echo "FAIL: challenge pass failed: $PASS_RESP"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+# 验证通过后再次访问 /secret 应被服务端收到
+rm -f /tmp/challenge_recv2
+ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/challenge_recv2 &
+NC_PID2=$!
+sleep 0.5
+printf 'GET /secret HTTP/1.1\r\nHost: example.com\r\n\r\n' | ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8080 || true
+sleep 0.5
+kill $NC_PID2 2>/dev/null || true
+
+if echo "$(cat /tmp/challenge_recv2)" | grep -q "GET /secret"; then
+    echo "PASS: WAF Challenge dropped request and allowed pass via challenge page"
+else
+    echo "FAIL: challenge allow did not unblock request"
+    echo "recv2: '$(cat /tmp/challenge_recv2)'"
     kill $ESHIELD_PID 2>/dev/null || true
     exit 1
 fi

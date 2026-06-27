@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
 use crate::audit::{AuditAction, Auditor};
-use crate::config::Config;
+use crate::config::{Config, GeoIpConfig, ThreatFeed, WafRuleItem};
 use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
 use crate::store::RuleStore;
 
@@ -41,8 +41,14 @@ pub struct RuntimeConfigSnapshot {
     pub icmp_flood_enabled: bool,
     pub waf_enabled: bool,
     pub challenge_enabled: bool,
+    pub challenge_ttl_s: u64,
     pub geoip_enabled: bool,
     pub rate_limit: RateLimitParams,
+    pub waf_rules: Vec<WafRuleItem>,
+    pub geoip: GeoIpConfig,
+    pub threat_intel_feeds: Vec<ThreatFeed>,
+    pub whitelist_entries: Vec<String>,
+    pub blacklist_entries: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -191,6 +197,30 @@ impl ControlState {
         )
         .await;
         info!("threat intel block: {} duration={}s", format_ip_key(&key), duration_s);
+        Ok(())
+    }
+
+    /// Challenge 验证通过：将源 IP 加入临时白名单。
+    pub async fn challenge_allow(&self, ip_str: &str, ttl_s: u64) -> anyhow::Result<()> {
+        let key = parse_ip(ip_str)?;
+        let now_ns = now_ns();
+        let expiry_ns = now_ns.saturating_add(ttl_s.saturating_mul(1_000_000_000));
+
+        let mut guard = self.ebpf.lock().await;
+        let mut allowlist: LruHashMap<_, IpKey, u64> = guard
+            .map_mut("CHALLENGE_ALLOWLIST")
+            .context("CHALLENGE_ALLOWLIST map not found")?
+            .try_into()?;
+        allowlist.insert(key, expiry_ns, 0)?;
+        drop(guard);
+
+        self.audit(
+            "challenge",
+            AuditAction::ChallengePass,
+            serde_json::json!({ "ip": ip_str, "ttl_s": ttl_s }),
+        )
+        .await;
+        info!("challenge allow: {} ttl={}s", ip_str, ttl_s);
         Ok(())
     }
 
@@ -434,6 +464,10 @@ impl ControlState {
 
         let now_ns = now_ns();
         for (key, blocked_until_ns, reason, _first_seen_ns) in store.load_blacklist().await? {
+            // 静态黑名单由配置文件管理，不重复从持久化存储加载，避免旧配置残留。
+            if reason == rules::BLACKLIST as u8 {
+                continue;
+            }
             // 已过期则跳过
             if blocked_until_ns != 0 && blocked_until_ns <= now_ns {
                 continue;
@@ -476,6 +510,7 @@ impl RuntimeConfigSnapshot {
             icmp_flood_enabled: config.icmp_flood_enabled,
             waf_enabled: config.waf.enabled,
             challenge_enabled: config.challenge.enabled,
+            challenge_ttl_s: config.challenge.ttl_s,
             geoip_enabled: config.geoip.enabled,
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
@@ -485,6 +520,11 @@ impl RuntimeConfigSnapshot {
                 decay_den: config.rate_limit.decay_den,
                 block_duration_s: config.rate_limit.block_duration_s,
             },
+            waf_rules: config.waf.rules.clone(),
+            geoip: config.geoip.clone(),
+            threat_intel_feeds: config.threat_intel.feeds.clone(),
+            whitelist_entries: config.whitelist.clone(),
+            blacklist_entries: config.blacklist.clone(),
         }
     }
 }

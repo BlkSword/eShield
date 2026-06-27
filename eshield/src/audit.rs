@@ -15,6 +15,7 @@ pub enum AuditAction {
     PatchConfig,
     Start,
     Stop,
+    ChallengePass,
 }
 
 /// 单条审计记录

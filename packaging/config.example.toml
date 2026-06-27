@@ -44,6 +44,70 @@ blacklist = [
     # "192.0.2.1",
 ]
 
+[rate_limit]
+enabled = true
+threshold = 200             # 每个 tick 内允许的最大包数
+tick_ms = 100               # 计数窗口
+decay_num = 7
+decay_den = 8               # 指数衰减因子 7/8
+block_duration_s = 300      # 触发后封禁时长
+
+[syn_proxy]
+enabled = false             # SYN Flood 场景下启用 SYN Cookie 挑战
+
+[l7_scan]
+enabled = false
+patterns = [
+    { pattern = "ATTACKER" },
+]
+
+[adaptive]
+enabled = true
+threshold = 10              # 指定窗口内触发多少次后自动封禁
+window_s = 5
+block_duration_s = 300
+
+[waf]
+enabled = false
+# rules 支持 method/path_prefix/host/user_agent/body_prefix 匹配
+# action 支持 drop / log / challenge
+rules = [
+    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } },
+    { name = "challenge-secret", enabled = true, priority = 2, action = "challenge", match = { method = "GET", path_prefix = "/secret" } },
+]
+
+[challenge]
+enabled = true              # 需与 waf 的 challenge action 配合使用
+mode = "js"                 # js / 302（当前仅实现 js）
+ttl_s = 3600                # 验证通过后临时白名单有效期
+
+[geoip]
+enabled = false
+# db_path = "/usr/share/GeoIP/GeoLite2-Country.mmdb"   # MaxMind MMDB（预留）
+country_blocks_csv = "/etc/eshield/geoip_country.csv"   # 自定义国家 CSV
+# asn_blocks_csv = "/etc/eshield/geoip_asn.csv"         # 自定义 ASN CSV
+block_countries = ["XX"]                                # 阻止的国家代码
+# allow_countries = ["CN"]                              # 仅允许指定国家（与 block 互斥时使用）
+# block_asns = [12345]
+# allow_asns = []
+default_action = "pass"
+
+[threat_intel]
+enabled = false
+# feeds 支持纯文本、CSV、JSON；每行/每个元素一个 IP
+# [[threat_intel.feeds]]
+# name = "abuseipdb"
+# url = "https://api.abuseipdb.com/api/v2/blacklist"
+# interval_s = 3600
+# action = "drop"
+# confidence = 80
+
+# [[threat_intel.feeds]]
+# name = "cins"
+# url = "https://cinsscore.com/list/ci-badguys.txt"
+# interval_s = 3600
+# action = "drop"
+
 # 端口/协议 ACL 规则表（可选）
 # protocol: tcp / udp / icmp / icmpv6 / any
 # dport:    端口号、范围（如 1000-2000）或 any

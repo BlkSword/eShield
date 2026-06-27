@@ -96,7 +96,11 @@ impl RuleStore {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             let tx = db.begin_read()?;
-            let table = tx.open_table(BLACKLIST)?;
+            let table = match tx.open_table(BLACKLIST) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
             let mut out = Vec::new();
             for item in table.iter()? {
                 let (k, v) = item?;
@@ -153,7 +157,11 @@ impl RuleStore {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             let tx = db.begin_read()?;
-            let table = tx.open_table(WHITELIST)?;
+            let table = match tx.open_table(WHITELIST) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
             let mut out = Vec::new();
             for item in table.iter()? {
                 let (k, v) = item?;

@@ -1,6 +1,6 @@
 use anyhow::Context;
 use eshield_common::{IpKey, PortAclEntry};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
@@ -77,7 +77,7 @@ pub struct PortAclItem {
     pub action: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GeoIpConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -111,7 +111,7 @@ pub struct ThreatIntelConfig {
     pub feeds: Vec<ThreatFeed>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreatFeed {
     pub name: String,
     pub url: String,
@@ -144,7 +144,7 @@ pub struct WafConfig {
     pub rules: Vec<WafRuleItem>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WafRuleItem {
     pub name: String,
     #[serde(default)]
@@ -156,7 +156,7 @@ pub struct WafRuleItem {
     pub action: String,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WafMatch {
     pub method: Option<String>,
     pub path_prefix: Option<String>,
