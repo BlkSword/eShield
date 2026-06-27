@@ -175,10 +175,12 @@ pub struct ChallengeConfig {
     pub enabled: bool,
     #[serde(default = "default_challenge_mode")]
     pub mode: String,
+    #[allow(dead_code)]
     #[serde(default = "default_challenge_cookie")]
     pub cookie_name: String,
     #[serde(default = "default_challenge_ttl_s")]
     pub ttl_s: u64,
+    #[allow(dead_code)]
     pub template_html: Option<String>,
 }
 
@@ -231,12 +233,16 @@ fn default_adaptive_block_duration_s() -> u64 {
 pub struct SynProxyConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
+    #[allow(dead_code)]
     #[serde(default)]
     pub backend_ports: Vec<u16>,
+    #[allow(dead_code)]
     #[serde(default = "default_syn_max_conns")]
     pub max_conns: u32,
+    #[allow(dead_code)]
     #[serde(default = "default_syn_conn_timeout_s")]
     pub conn_timeout_s: u32,
+    #[allow(dead_code)]
     #[serde(default = "default_false")]
     pub challenge_on_syn: bool,
 }

@@ -1,4 +1,3 @@
-use aya_ebpf::programs::XdpContext;
 use eshield_common::IpKey;
 
 use crate::maps::CHALLENGE_ALLOWLIST;
@@ -14,5 +13,5 @@ pub fn is_allowed(src: &IpKey, now_ns: u64) -> bool {
 /// 从 eBPF 侧删除已过期或需要回收的条目（可选，LRU map 会自动回收）。
 #[allow(dead_code)]
 pub fn remove(src: &IpKey) {
-    let _ = unsafe { CHALLENGE_ALLOWLIST.remove(src) };
+    let _ = CHALLENGE_ALLOWLIST.remove(src);
 }

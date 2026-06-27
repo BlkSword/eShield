@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::auth::{self, AuthState};
-use crate::audit::{AuditAction, Auditor};
+use crate::audit::Auditor;
 use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::health;
 use crate::ip::format_ip_key;

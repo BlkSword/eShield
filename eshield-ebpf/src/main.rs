@@ -364,9 +364,9 @@ fn is_geoip_blocked(src: &IpKey) -> bool {
     }
 }
 
-fn emit_geoip_event(ctx: &XdpContext, src: &IpKey, protocol: u8) {
+fn emit_geoip_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
-        let event = unsafe { entry.as_mut_ptr() as *mut eshield_common::DropEvent };
+        let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;
         unsafe {
             (*event).timestamp_ns = bpf_ktime_get_ns();
             (*event).src_ip = src.addr;

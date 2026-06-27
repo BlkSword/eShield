@@ -1,5 +1,5 @@
 use aya_ebpf::{helpers::gen::bpf_ktime_get_ns};
-use eshield_common::{rules, waf_match, HttpMethod, IpKey, WafAction, WafRule, WAF_FIELD_LEN, WAF_RULES_MAX};
+use eshield_common::{rules, waf_match, HttpMethod, IpKey, WafAction, WAF_FIELD_LEN, WAF_RULES_MAX};
 
 use crate::maps::{EVENTS, GLOBAL_STATS, WAF_RULES};
 use crate::parser;
@@ -19,7 +19,7 @@ pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: 
     let path_offset = method_path_offset(method);
 
     for i in 0..WAF_RULES_MAX {
-        let rule = match unsafe { WAF_RULES.get(i as u32) } {
+        let rule = match WAF_RULES.get(i as u32) {
             Some(r) => r,
             None => continue,
         };

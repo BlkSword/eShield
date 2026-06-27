@@ -19,9 +19,6 @@ impl AuthState {
         }
     }
 
-    pub fn enabled(&self) -> bool {
-        self.token.is_some()
-    }
 }
 
 /// axum 中间件：若配置了 Token，则校验请求头中的 Bearer Token。

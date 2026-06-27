@@ -29,14 +29,6 @@ struct WhitelistRow {
     prefix: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-struct AclRow {
-    protocol: u8,
-    dport_low: u16,
-    dport_high: u16,
-    action: u8,
-}
-
 impl RuleStore {
     pub fn new<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let db = Database::create(path).context("failed to create/open rule store")?;
@@ -170,62 +162,6 @@ impl RuleStore {
                 let key = Self::bytes_to_ip_key(k.value());
                 let row: WhitelistRow = serde_json::from_slice(v.value())?;
                 out.push((key, row.prefix));
-            }
-            Ok(out)
-        })
-        .await
-        .context("store task panicked")?
-    }
-
-    pub async fn save_port_acl(
-        &self,
-        idx: u32,
-        entry: eshield_common::PortAclEntry,
-    ) -> anyhow::Result<()> {
-        let db = self.db.clone();
-        let row = AclRow {
-            protocol: entry.protocol,
-            dport_low: entry.dport_low,
-            dport_high: entry.dport_high,
-            action: entry.action,
-        };
-        let value = serde_json::to_vec(&row)?;
-        tokio::task::spawn_blocking(move || {
-            let tx = db.begin_write()?;
-            {
-                let mut table = tx.open_table(PORT_ACL)?;
-                table.insert(&idx, value.as_slice())?;
-            }
-            tx.commit()?;
-            Ok(())
-        })
-        .await
-        .context("store task panicked")?
-    }
-
-    pub async fn load_port_acl(&self) -> anyhow::Result<Vec<(u32, eshield_common::PortAclEntry)>> {
-        let db = self.db.clone();
-        tokio::task::spawn_blocking(move || {
-            let tx = db.begin_read()?;
-            let table = match tx.open_table(PORT_ACL) {
-                Ok(t) => t,
-                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
-                Err(e) => return Err(e.into()),
-            };
-            let mut out = Vec::new();
-            for item in table.iter()? {
-                let (k, v) = item?;
-                let row: AclRow = serde_json::from_slice(v.value())?;
-                out.push((
-                    k.value(),
-                    eshield_common::PortAclEntry {
-                        protocol: row.protocol,
-                        dport_low: row.dport_low,
-                        dport_high: row.dport_high,
-                        action: row.action,
-                        padding: [0; 11],
-                    },
-                ));
             }
             Ok(out)
         })

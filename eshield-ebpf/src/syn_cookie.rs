@@ -8,8 +8,6 @@ use eshield_common::IpKey;
 
 const TCP_FLAG_SYN: u8 = 0x02;
 const TCP_FLAG_ACK: u8 = 0x10;
-const TCP_OPT_END: u8 = 0;
-const TCP_OPT_NOP: u8 = 1;
 const TCP_OPT_MSS: u8 = 2;
 const BUCKET_DURATION_S: u64 = 60;
 const VALID_BUCKETS: u8 = 2;
