@@ -67,6 +67,8 @@ pub async fn run(
         .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
         .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
         .route("/api/l7-patterns", get(list_l7_patterns_handler).post(set_l7_patterns_handler))
+        .route("/api/geoip/reload", post(reload_geoip_handler))
+        .route("/api/threat-intel/sync", post(sync_threat_intel_handler))
         .route("/metrics", get(metrics_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
@@ -408,6 +410,30 @@ async fn set_l7_patterns_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("L7 指纹已更新")
+}
+
+async fn reload_geoip_handler(
+    State(state): State<Arc<WebState>>,
+) -> Result<&'static str, (StatusCode, String)> {
+    state
+        .control
+        .reload_geoip()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok("GeoIP 已重新加载")
+}
+
+async fn sync_threat_intel_handler(State(state): State<Arc<WebState>>) -> &'static str {
+    let feeds = state.control.runtime.read().await.threat_intel_feeds.clone();
+    for feed in feeds {
+        let control = state.control.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::threat_intel::sync_feed_now(control, feed).await {
+                tracing::warn!("manual threat intel sync failed: {}", e);
+            }
+        });
+    }
+    "威胁情报同步已触发"
 }
 
 async fn set_waf_rules_handler(

@@ -347,11 +347,11 @@
             <div class="section-body"><table><thead><tr><th>#</th><th>模式</th><th>掩码</th><th>操作</th></tr></thead><tbody id="l7-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table></div>
           </div>
           <div class="section">
-            <div class="section-header"><h3 class="section-title">GeoIP 配置</h3></div>
+            <div class="section-header"><h3 class="section-title">GeoIP 配置</h3><button class="btn btn-secondary btn-sm" onclick="reloadGeoIP()">重新加载 CSV</button></div>
             <div class="section-body" id="geoip-config">加载中...</div>
           </div>
           <div class="section">
-            <div class="section-header"><h3 class="section-title">威胁情报 Feeds</h3></div>
+            <div class="section-header"><h3 class="section-title">威胁情报 Feeds</h3><button class="btn btn-secondary btn-sm" onclick="syncThreatIntel()">立即同步</button></div>
             <div class="section-body"><table><thead><tr><th>名称</th><th>URL</th><th>间隔</th><th>置信度</th><th>动作</th></tr></thead><tbody id="ti-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table></div>
           </div>
         </div>
@@ -889,6 +889,15 @@
         toast('已删除', 'success');
         refreshRules();
       } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function reloadGeoIP() {
+      try { await api('POST', '/api/geoip/reload'); toast('GeoIP 已重新加载', 'success'); refreshRules(); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+    async function syncThreatIntel() {
+      try { await api('POST', '/api/threat-intel/sync'); toast('威胁情报同步已触发', 'success'); }
+      catch (e) { toast(e.message, 'error'); }
     }
 
     async function refreshRules() {

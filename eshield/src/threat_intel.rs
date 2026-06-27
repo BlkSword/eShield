@@ -17,35 +17,45 @@ impl ThreatIntelSync {
 
     /// 启动所有 feed 的后台同步任务。
     pub async fn run(&self, config: crate::config::ThreatIntelConfig) {
-        if !config.enabled || config.feeds.is_empty() {
-            return;
-        }
+        sync_all_feeds(self.control.clone(), config.feeds).await;
+    }
+}
 
-        for feed in config.feeds {
-            let control = self.control.clone();
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(feed.interval_s));
-                // 首次立即执行一次
+/// 同步所有威胁情报 feed（后台循环入口）。
+pub async fn sync_all_feeds(control: Arc<ControlState>, feeds: Vec<crate::config::ThreatFeed>) {
+    if feeds.is_empty() {
+        return;
+    }
+
+    for feed in feeds {
+        let control = control.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(feed.interval_s));
+            // 首次立即执行一次
+            if let Err(e) = sync_feed(&control, &feed).await {
+                tracing::warn!(
+                    "threat intel feed '{}' initial sync failed: {}",
+                    feed.name,
+                    e
+                );
+            }
+            loop {
+                interval.tick().await;
                 if let Err(e) = sync_feed(&control, &feed).await {
                     tracing::warn!(
-                        "threat intel feed '{}' initial sync failed: {}",
+                        "threat intel feed '{}' sync failed: {}",
                         feed.name,
                         e
                     );
                 }
-                loop {
-                    interval.tick().await;
-                    if let Err(e) = sync_feed(&control, &feed).await {
-                        tracing::warn!(
-                            "threat intel feed '{}' sync failed: {}",
-                            feed.name,
-                            e
-                        );
-                    }
-                }
-            });
-        }
+            }
+        });
     }
+}
+
+/// 立即同步单个 feed（手动触发用）。
+pub async fn sync_feed_now(control: Arc<ControlState>, feed: crate::config::ThreatFeed) -> Result<()> {
+    sync_feed(&control, &feed).await
 }
 
 async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> Result<()> {

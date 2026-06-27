@@ -460,6 +460,18 @@ impl ControlState {
         Ok(())
     }
 
+    /// 重新加载 GeoIP CSV 并应用。
+    pub async fn reload_geoip(&self) -> anyhow::Result<()> {
+        let config = Config::from_file(&self.config_path)?;
+        let mut guard = self.ebpf.lock().await;
+        let mut geoip_blocks = self.geoip_blocks.lock().await;
+        apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
+        self.runtime.write().await.geoip = config.geoip.clone();
+        self.audit("api", AuditAction::PatchConfig, serde_json::json!({"geoip": config.geoip})).await;
+        info!("GeoIP reloaded");
+        Ok(())
+    }
+
     /// 完全替换当前 L7 指纹模式，更新 eBPF Map、运行时快照与持久化存储。
     pub async fn set_l7_patterns(
         &self,
