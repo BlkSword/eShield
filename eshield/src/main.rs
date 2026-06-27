@@ -12,6 +12,7 @@ mod logging;
 mod state;
 mod store;
 mod threat_intel;
+mod timeseries;
 mod tui;
 mod web;
 
@@ -20,6 +21,7 @@ use aya::{include_bytes_aligned, programs::Xdp, Ebpf};
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
 use rand::Rng;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -277,6 +279,34 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动时序指标采样任务：每 10 秒记录一个数据点，并更新当前 PPS/DPS
+    let timeseries_handle = {
+        let stats = state.stats.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(10));
+            let mut last_packets = 0u64;
+            let mut last_dropped = 0u64;
+            loop {
+                tick.tick().await;
+                let ts = stats.timeseries.clone();
+                if let Ok(mut window) = ts.try_write() {
+                    window.record(&stats);
+                };
+
+                let total_packets = stats.total_packets.load(Ordering::Relaxed);
+                let total_dropped = stats.total_dropped.load(Ordering::Relaxed);
+                stats
+                    .current_pps
+                    .store((total_packets - last_packets) / 10, Ordering::Relaxed);
+                stats
+                    .current_dps
+                    .store((total_dropped - last_dropped) / 10, Ordering::Relaxed);
+                last_packets = total_packets;
+                last_dropped = total_dropped;
+            }
+        })
+    };
+
     let mut sighup = unix_signal(SignalKind::hangup())?;
 
     info!(
@@ -307,10 +337,12 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     rotator_handle.abort();
     alert_handle.abort();
     threat_intel_handle.abort();
+    timeseries_handle.abort();
     let _ = event_handle.await;
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
     let _ = threat_intel_handle.await;
+    let _ = timeseries_handle.await;
 
     Ok(())
 }

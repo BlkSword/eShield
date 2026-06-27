@@ -1,251 +1,521 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>eShield 控制台</title>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
   <style>
     :root {
-      --bg: #0f172a;
-      --panel: #1e293b;
-      --panel-hover: #26354d;
-      --text: #e2e8f0;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --danger: #ef4444;
-      --success: #22c55e;
-      --warn: #f59e0b;
+      --bg: #0b1120;
+      --bg-elevated: #151e32;
+      --bg-card: #1e293b;
+      --bg-hover: #26354d;
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
       --border: #334155;
+      --accent: #38bdf8;
+      --accent-dim: #0ea5e9;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --radius: 0.75rem;
+      --shadow: 0 4px 6px -1px rgba(0,0,0,0.3), 0 2px 4px -2px rgba(0,0,0,0.3);
+    }
+    [data-theme="light"] {
+      --bg: #f8fafc;
+      --bg-elevated: #ffffff;
+      --bg-card: #ffffff;
+      --bg-hover: #f1f5f9;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --accent: #0284c7;
+      --accent-dim: #0369a1;
+      --success: #16a34a;
+      --warning: #d97706;
+      --danger: #dc2626;
+      --shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -2px rgba(0,0,0,0.1);
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;
       background: var(--bg);
       color: var(--text);
-      line-height: 1.6;
+      line-height: 1.5;
     }
-    header {
-      padding: 1.25rem 2rem;
+    .app { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 240px;
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      z-index: 100;
+      transition: transform .2s;
+    }
+    .sidebar.collapsed { transform: translateX(-100%); }
+    .brand {
+      padding: 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: .75rem;
       border-bottom: 1px solid var(--border);
-      background: var(--panel);
+      font-weight: 700;
+      font-size: 1.1rem;
+    }
+    .brand svg { flex-shrink: 0; }
+    .nav { flex: 1; padding: .75rem; overflow-y: auto; }
+    .nav-group { margin-bottom: 1rem; }
+    .nav-label {
+      padding: .5rem .75rem;
+      font-size: .7rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-muted);
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: .75rem;
+      padding: .65rem .75rem;
+      border-radius: var(--radius);
+      cursor: pointer;
+      color: var(--text-muted);
+      text-decoration: none;
+      margin-bottom: .25rem;
+      transition: all .15s;
+    }
+    .nav-item:hover, .nav-item.active {
+      background: var(--bg-hover);
+      color: var(--text);
+    }
+    .nav-item.active { color: var(--accent); }
+    .sidebar-footer {
+      padding: 1rem;
+      border-top: 1px solid var(--border);
+      font-size: .75rem;
+      color: var(--text-muted);
+    }
+    .main { flex: 1; margin-left: 240px; display: flex; flex-direction: column; min-width: 0; }
+    header {
+      height: 64px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
       justify-content: space-between;
+      padding: 0 1.5rem;
+      position: sticky;
+      top: 0;
+      z-index: 50;
     }
-    header h1 { margin: 0; font-size: 1.4rem; display: flex; align-items: center; gap: .6rem; }
-    .status { display: inline-flex; align-items: center; gap: .4rem; font-size: .875rem; color: var(--success); }
-    .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
-    main { max-width: 1200px; margin: 2rem auto; padding: 0 1.5rem; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: .75rem;
-      padding: 1.25rem;
+    .header-left { display: flex; align-items: center; gap: 1rem; }
+    .menu-btn {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--text);
+      cursor: pointer;
+      padding: .5rem;
     }
-    .card h3 { margin: 0 0 .5rem; font-size: .8rem; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-    .card .value { font-size: 1.9rem; font-weight: 700; }
-    .card .value.danger { color: var(--danger); }
-    .card .value.accent { color: var(--accent); }
-    section {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: .75rem;
-      padding: 1.25rem;
-      margin-bottom: 1.5rem;
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+      font-size: .8rem;
+      color: var(--success);
+      background: color-mix(in srgb, var(--success) 12%, transparent);
+      padding: .35rem .75rem;
+      border-radius: 999px;
     }
-    section h2 { margin: 0 0 1rem; font-size: 1.1rem; }
-    .row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin-bottom: .75rem; }
-    label { display: block; font-size: .875rem; color: var(--muted); margin-bottom: .25rem; }
-    input, select {
-      background: #0b1220;
+    .status-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 6px currentColor; }
+    .header-right { display: flex; align-items: center; gap: .75rem; }
+    .icon-btn {
+      background: var(--bg-card);
       border: 1px solid var(--border);
       color: var(--text);
-      padding: .5rem .75rem;
-      border-radius: .5rem;
-      font-size: .9375rem;
-    }
-    button {
-      background: var(--accent);
-      border: none;
-      color: #0f172a;
-      padding: .55rem 1rem;
-      border-radius: .5rem;
-      font-weight: 600;
+      width: 36px;
+      height: 36px;
+      border-radius: var(--radius);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       cursor: pointer;
     }
-    button:hover { opacity: .9; }
-    button.secondary { background: var(--panel-hover); color: var(--text); border: 1px solid var(--border); }
-    button.danger { background: var(--danger); color: #fff; }
-    .switch { display: flex; align-items: center; gap: .5rem; }
-    table { width: 100%; border-collapse: collapse; font-size: .9375rem; }
+    .content { padding: 1.5rem; flex: 1; }
+    .page { display: none; }
+    .page.active { display: block; }
+    .page-title { font-size: 1.5rem; font-weight: 700; margin: 0 0 1.25rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 1.25rem;
+    }
+    .card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .75rem; }
+    .card-title { font-size: .75rem; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin: 0; }
+    .card-value { font-size: 1.75rem; font-weight: 700; margin-bottom: .25rem; }
+    .card-delta { font-size: .8rem; color: var(--text-muted); }
+    .card-delta.up { color: var(--danger); }
+    .card-delta.down { color: var(--success); }
+    .sparkline { height: 40px; margin-top: .75rem; }
+    .section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 1.5rem; overflow: hidden; }
+    .section-header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .section-title { font-size: 1rem; font-weight: 600; margin: 0; }
+    .section-body { padding: 1.25rem; }
+    .chart { height: 320px; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
     th, td { padding: .75rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-size: .8rem; text-transform: uppercase; }
+    th { color: var(--text-muted); font-weight: 600; font-size: .75rem; text-transform: uppercase; letter-spacing: .04em; }
     tr:last-child td { border-bottom: none; }
-    .msg { margin-top: .5rem; font-size: .875rem; min-height: 1.25rem; }
-    .msg.ok { color: var(--success); }
-    .msg.err { color: var(--danger); }
-    footer { max-width: 1200px; margin: 0 auto 2rem; padding: 0 1.5rem; color: var(--muted); font-size: .875rem; }
-    footer a { color: var(--accent); text-decoration: none; margin-right: 1rem; }
+    tr:hover td { background: var(--bg-hover); }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: .2rem .55rem;
+      border-radius: 999px;
+      font-size: .75rem;
+      font-weight: 600;
+    }
+    .tag-success { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+    .tag-danger { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+    .tag-warning { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
+    .tag-info { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+    .btn {
+      background: var(--accent);
+      border: none;
+      color: #fff;
+      padding: .55rem 1rem;
+      border-radius: var(--radius);
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: .4rem;
+    }
+    .btn:hover { background: var(--accent-dim); }
+    .btn-secondary { background: var(--bg-hover); color: var(--text); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: var(--danger); }
+    .btn-sm { padding: .4rem .75rem; font-size: .85rem; }
+    .form-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+    .form-group { display: flex; flex-direction: column; gap: .35rem; }
+    .form-group label { font-size: .85rem; color: var(--text-muted); }
+    input, select, textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: .55rem .75rem;
+      border-radius: var(--radius);
+      font-size: .95rem;
+      min-width: 140px;
+    }
+    .switch { display: flex; align-items: center; gap: .6rem; }
+    .switch input { min-width: auto; }
+    .empty { color: var(--text-muted); text-align: center; padding: 2rem; }
+    .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 200; display: flex; flex-direction: column; gap: .5rem; }
+    .toast {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: var(--radius);
+      padding: .9rem 1.1rem;
+      box-shadow: var(--shadow);
+      min-width: 260px;
+      animation: slideIn .2s ease;
+    }
+    .toast.error { border-left-color: var(--danger); }
+    .toast.success { border-left-color: var(--success); }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .drawer-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 150; display: none; }
+    .drawer-backdrop.active { display: block; }
+    .drawer {
+      position: fixed;
+      right: 0; top: 0; bottom: 0;
+      width: 420px;
+      max-width: 90vw;
+      background: var(--bg-elevated);
+      border-left: 1px solid var(--border);
+      z-index: 160;
+      transform: translateX(100%);
+      transition: transform .25s ease;
+      display: flex;
+      flex-direction: column;
+    }
+    .drawer.active { transform: translateX(0); }
+    .drawer-header { padding: 1.25rem; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .drawer-body { padding: 1.25rem; overflow-y: auto; flex: 1; }
+    .metric-list { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .metric-item { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+    .metric-item .label { font-size: .75rem; color: var(--text-muted); }
+    .metric-item .value { font-size: 1.1rem; font-weight: 700; margin-top: .25rem; }
+    .filters { display: flex; gap: .75rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    @media (max-width: 768px) {
+      .sidebar { width: 260px; }
+      .main { margin-left: 0; }
+      .menu-btn { display: inline-flex; }
+      .grid { grid-template-columns: repeat(2, 1fr); }
+      .form-row { flex-direction: column; align-items: stretch; }
+      .metric-list { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 480px) {
+      .grid { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>
-      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
-      eShield 控制台
-    </h1>
-    <span class="status">运行中</span>
-  </header>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        eShield
+      </div>
+      <nav class="nav">
+        <div class="nav-group">
+          <div class="nav-label">监控</div>
+          <a class="nav-item active" href="#/overview" data-page="overview"><span>📊</span> 总览</a>
+          <a class="nav-item" href="#/events" data-page="events"><span>📡</span> 事件流</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">策略</div>
+          <a class="nav-item" href="#/rules" data-page="rules"><span>🛡️</span> 规则中心</a>
+          <a class="nav-item" href="#/security" data-page="security"><span>🔒</span> 安全运营</a>
+          <a class="nav-item" href="#/network" data-page="network"><span>🌐</span> 网络防护</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-label">系统</div>
+          <a class="nav-item" href="#/audit" data-page="audit"><span>📝</span> 审计日志</a>
+          <a class="nav-item" href="#/settings" data-page="settings"><span>⚙️</span> 设置</a>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        v0.3.0-dev · Apache-2.0
+      </div>
+    </aside>
 
-  <main>
-    <div class="grid" id="stats-grid">
-      <div class="card"><h3>总丢弃包数</h3><div class="value danger" id="total-dropped">-</div></div>
-      <div class="card"><h3>黑名单拦截</h3><div class="value" id="blacklist-blocked">-</div></div>
-      <div class="card"><h3>速率限制拦截</h3><div class="value accent" id="rate-limited">-</div></div>
-      <div class="card"><h3>SYN Flood 拦截</h3><div class="value accent" id="syn-flood-blocked">-</div></div>
-      <div class="card"><h3>L7 指纹拦截</h3><div class="value accent" id="l7-blocked">-</div></div>
-      <div class="card"><h3>自适应阈值拦截</h3><div class="value accent" id="adaptive-blocked">-</div></div>
+    <main class="main">
+      <header>
+        <div class="header-left">
+          <button class="menu-btn" id="menu-btn" title="切换菜单">☰</button>
+          <h1 id="page-heading">总览</h1>
+        </div>
+        <div class="header-right">
+          <span class="status-badge">运行中</span>
+          <button class="icon-btn" id="theme-btn" title="切换主题">🌙</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <!-- Overview -->
+        <div class="page active" id="page-overview">
+          <div class="grid" id="overview-cards"></div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">流量趋势</h3><select id="series-range"><option value="3600">最近 1 小时</option><option value="1800">最近 30 分钟</option><option value="600">最近 10 分钟</option></select></div>
+            <div class="section-body"><div id="traffic-chart" class="chart"></div></div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">TOP 攻击源</h3><button class="btn btn-secondary btn-sm" onclick="refreshStats()">刷新</button></div>
+            <div class="section-body"><table><thead><tr><th>源 IP</th><th>丢弃包数</th><th>操作</th></tr></thead><tbody id="attackers-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody></table></div>
+          </div>
+        </div>
+
+        <!-- Events -->
+        <div class="page" id="page-events">
+          <h2 class="page-title">实时事件流</h2>
+          <div class="section"><div class="section-body" id="events-stream"><div class="empty">事件流开发中，请先使用审计日志页面。</div></div></div>
+        </div>
+
+        <!-- Rules -->
+        <div class="page" id="page-rules">
+          <h2 class="page-title">规则中心</h2>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">WAF 规则</h3></div>
+            <div class="section-body"><table><thead><tr><th>优先级</th><th>名称</th><th>状态</th><th>动作</th><th>方法</th><th>路径前缀</th><th>Host</th><th>UA</th></tr></thead><tbody id="waf-body"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table></div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">端口 / 协议 ACL</h3></div>
+            <div class="section-body"><table><thead><tr><th>协议</th><th>目的端口</th><th>动作</th></tr></thead><tbody id="port-acl-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody></table></div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">L7 指纹</h3></div>
+            <div class="section-body"><table><thead><tr><th>#</th><th>模式</th><th>掩码</th></tr></thead><tbody id="l7-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody></table></div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">GeoIP 配置</h3></div>
+            <div class="section-body" id="geoip-config">加载中...</div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">威胁情报 Feeds</h3></div>
+            <div class="section-body"><table><thead><tr><th>名称</th><th>URL</th><th>间隔</th><th>置信度</th><th>动作</th></tr></thead><tbody id="ti-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table></div>
+          </div>
+        </div>
+
+        <!-- Security -->
+        <div class="page" id="page-security">
+          <h2 class="page-title">安全运营</h2>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">封禁 / 解封 IP</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <div class="form-group"><label>IP 地址（IPv4/IPv6）</label><input type="text" id="block-ip" placeholder="例如 192.0.2.1"></div>
+                <div class="form-group"><label>时长（秒，0=永久）</label><input type="number" id="block-duration" value="300" min="0"></div>
+                <button class="btn btn-danger" onclick="blockIp()">封禁</button>
+                <button class="btn btn-secondary" onclick="unblockIp()">解封</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">放行 CIDR</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <div class="form-group"><label>CIDR（IPv4/IPv6）</label><input type="text" id="allow-cidr" placeholder="例如 10.0.0.0/8"></div>
+                <button class="btn" onclick="allowCidr()">放行</button>
+                <button class="btn btn-secondary" onclick="disallowCidr()">移除</button>
+              </div>
+              <h4 style="margin-top:1rem">当前白名单</h4>
+              <div id="whitelist-list" class="empty">加载中...</div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">静态黑名单</h3></div>
+            <div class="section-body"><div id="blacklist-list" class="empty">加载中...</div></div>
+          </div>
+        </div>
+
+        <!-- Network -->
+        <div class="page" id="page-network">
+          <h2 class="page-title">网络防护</h2>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">功能开关</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <label class="switch"><input type="checkbox" id="rl-enabled"> 启用速率限制</label>
+                <label class="switch"><input type="checkbox" id="syn-proxy-enabled"> 启用 SYN Cookie 代理</label>
+                <label class="switch"><input type="checkbox" id="l7-enabled"> 启用 L7 指纹扫描</label>
+                <label class="switch"><input type="checkbox" id="udp-flood-enabled"> 启用 UDP Flood 防护</label>
+                <label class="switch"><input type="checkbox" id="icmp-flood-enabled"> 启用 ICMP Flood 防护</label>
+                <button class="btn" onclick="updateSwitches()">更新开关</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">速率限制参数</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <div class="form-group"><label>阈值</label><input type="number" id="rl-threshold" value="200" min="1"></div>
+                <div class="form-group"><label>tick_ms</label><input type="number" id="rl-tick" value="100" min="1"></div>
+                <button class="btn" onclick="updateRateLimit()">更新</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Audit -->
+        <div class="page" id="page-audit">
+          <h2 class="page-title">审计日志</h2>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">操作记录</h3><button class="btn btn-secondary btn-sm" onclick="refreshAudit()">刷新</button></div>
+            <div class="section-body">
+              <div class="filters">
+                <input type="text" id="audit-filter" placeholder="搜索 IP / 动作 / 操作者" oninput="filterAudit()">
+              </div>
+              <table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead><tbody id="audit-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Settings -->
+        <div class="page" id="page-settings">
+          <h2 class="page-title">设置</h2>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">API 认证</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <div class="form-group"><label>Bearer Token</label><input type="password" id="api-token" placeholder="输入 Token" onchange="saveToken()"></div>
+                <button class="btn btn-secondary" onclick="testAuth()">测试连接</button>
+              </div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="section-header"><h3 class="section-title">系统操作</h3></div>
+            <div class="section-body">
+              <div class="form-row">
+                <button class="btn btn-secondary" onclick="reloadConfig()">从配置文件重载</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast-container" id="toast-container"></div>
+
+  <div class="drawer-backdrop" id="drawer-backdrop" onclick="closeDrawer()"></div>
+  <aside class="drawer" id="ip-drawer">
+    <div class="drawer-header">
+      <h3 id="drawer-title">IP 情报</h3>
+      <button class="icon-btn" onclick="closeDrawer()">✕</button>
     </div>
-
-    <section>
-      <h2>实时控制</h2>
-      <div class="row">
-        <div>
-          <label>API Token（如启用认证）</label>
-          <input type="password" id="api-token" placeholder="Bearer Token" onchange="saveToken()">
-        </div>
-      </div>
-      <div class="row">
-        <div>
-          <label>封禁 IP（IPv4/IPv6）</label>
-          <input type="text" id="block-ip" placeholder="例如 192.0.2.1 或 2001:db8::1">
-        </div>
-        <div>
-          <label>时长（秒，0=永久）</label>
-          <input type="number" id="block-duration" value="300" min="0">
-        </div>
-        <button class="danger" onclick="blockIp()">封禁</button>
-        <button class="secondary" onclick="unblockIp()">解封</button>
-      </div>
-      <div class="row">
-        <div>
-          <label>放行 CIDR（IPv4/IPv6）</label>
-          <input type="text" id="allow-cidr" placeholder="例如 10.0.0.0/8 或 2001:db8::/32">
-        </div>
-        <button onclick="allowCidr()">放行</button>
-        <button class="secondary" onclick="disallowCidr()">移除</button>
-      </div>
-      <div class="row">
-        <div class="switch">
-          <input type="checkbox" id="rl-enabled">
-          <label for="rl-enabled" style="margin:0">启用速率限制</label>
-        </div>
-        <div>
-          <label>阈值</label>
-          <input type="number" id="rl-threshold" value="200" min="1">
-        </div>
-        <div>
-          <label>tick_ms</label>
-          <input type="number" id="rl-tick" value="100" min="1">
-        </div>
-        <button onclick="updateRateLimit()">更新速率限制</button>
-      </div>
-      <div class="row">
-        <div class="switch">
-          <input type="checkbox" id="syn-proxy-enabled">
-          <label for="syn-proxy-enabled" style="margin:0">启用 SYN Cookie 代理</label>
-        </div>
-        <div class="switch">
-          <input type="checkbox" id="l7-enabled">
-          <label for="l7-enabled" style="margin:0">启用 L7 指纹扫描</label>
-        </div>
-        <div class="switch">
-          <input type="checkbox" id="ebpf-debug-enabled">
-          <label for="ebpf-debug-enabled" style="margin:0">启用 eBPF 调试日志</label>
-        </div>
-        <div class="switch">
-          <input type="checkbox" id="udp-flood-enabled">
-          <label for="udp-flood-enabled" style="margin:0">启用 UDP Flood 防护</label>
-        </div>
-        <div class="switch">
-          <input type="checkbox" id="icmp-flood-enabled">
-          <label for="icmp-flood-enabled" style="margin:0">启用 ICMP Flood 防护</label>
-        </div>
-        <button onclick="updateSwitches()">更新开关</button>
-        <button class="secondary" onclick="reloadConfig()">重载配置文件</button>
-      </div>
-      <div class="msg" id="control-msg"></div>
-    </section>
-
-    <section>
-      <h2>TOP 攻击源</h2>
-      <table>
-        <thead><tr><th>源 IP</th><th>丢弃包数</th></tr></thead>
-        <tbody id="attackers-body"><tr><td colspan="2">加载中...</td></tr></tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>WAF 规则</h2>
-      <table>
-        <thead><tr><th>名称</th><th>启用</th><th>动作</th><th>方法</th><th>路径前缀</th><th>Host</th><th>UA</th><th>Body 前缀</th></tr></thead>
-        <tbody id="waf-body"><tr><td colspan="8">加载中...</td></tr></tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>GeoIP 配置</h2>
-      <div id="geoip-config" style="color:var(--muted)">加载中...</div>
-    </section>
-
-    <section>
-      <h2>威胁情报 Feeds</h2>
-      <table>
-        <thead><tr><th>名称</th><th>URL</th><th>间隔（秒）</th><th>置信度</th><th>动作</th></tr></thead>
-        <tbody id="ti-body"><tr><td colspan="5">加载中...</td></tr></tbody>
-      </table>
-    </section>
-
-    <section>
-      <h2>静态策略</h2>
-      <div class="row" style="align-items:start">
-        <div style="flex:1">
-          <h3 style="margin-top:0">白名单</h3>
-          <ul id="whitelist-list" style="color:var(--muted);padding-left:1.2rem"><li>加载中...</li></ul>
-        </div>
-        <div style="flex:1">
-          <h3 style="margin-top:0">黑名单</h3>
-          <ul id="blacklist-list" style="color:var(--muted);padding-left:1.2rem"><li>加载中...</li></ul>
-        </div>
-      </div>
-    </section>
-
-    <section>
-      <h2>审计日志 <button class="secondary" onclick="refreshAudit()">刷新</button></h2>
-      <table>
-        <thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead>
-        <tbody id="audit-body"><tr><td colspan="4">加载中...</td></tr></tbody>
-      </table>
-    </section>
-  </main>
-
-  <footer>
-    <a href="/metrics">Prometheus 指标</a>
-    <a href="/api/stats">JSON API</a>
-    <span>eShield v0.2.0 · Apache-2.0</span>
-  </footer>
+    <div class="drawer-body" id="drawer-body"></div>
+  </aside>
 
   <script>
     const initialConfig = __CONFIG_JSON__;
+    let currentStats = {};
+    let currentConfig = {};
+    let trafficChart = null;
+    let auditEntries = [];
 
+    // Theme
+    function initTheme() {
+      const saved = localStorage.getItem('eshield-theme') || 'dark';
+      document.documentElement.setAttribute('data-theme', saved);
+      updateThemeIcon(saved);
+    }
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      localStorage.setItem('eshield-theme', next);
+      updateThemeIcon(next);
+      if (trafficChart) trafficChart.dispose();
+      initTrafficChart();
+    }
+    function updateThemeIcon(theme) { document.getElementById('theme-btn').textContent = theme === 'dark' ? '☀️' : '🌙'; }
+
+    // Routing
+    function navigate() {
+      const hash = location.hash.slice(2) || 'overview';
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+      const page = document.getElementById('page-' + hash);
+      if (page) page.classList.add('active');
+      const nav = document.querySelector(`.nav-item[data-page="${hash}"]`);
+      if (nav) nav.classList.add('active');
+      const titles = { overview: '总览', events: '事件流', rules: '规则中心', security: '安全运营', network: '网络防护', audit: '审计日志', settings: '设置' };
+      document.getElementById('page-heading').textContent = titles[hash] || hash;
+      if (hash === 'rules') refreshRules();
+      if (hash === 'security') refreshLists();
+      if (hash === 'audit') refreshAudit();
+      if (hash === 'network') refreshNetwork();
+      if (hash === 'overview') { setTimeout(initTrafficChart, 0); refreshStats(); }
+    }
+
+    // Token / Auth
     function loadToken() {
       const t = localStorage.getItem('eshield-token') || '';
       document.getElementById('api-token').value = t;
     }
     function saveToken() {
       localStorage.setItem('eshield-token', document.getElementById('api-token').value);
+      toast('Token 已保存', 'success');
     }
     function authHeaders() {
       const t = document.getElementById('api-token').value.trim();
@@ -254,165 +524,364 @@
       return h;
     }
 
+    // API helpers
+    async function api(method, path, body) {
+      const opts = { method, headers: authHeaders() };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const r = await fetch(path, opts);
+      const txt = await r.text();
+      if (!r.ok) throw new Error(txt);
+      return txt;
+    }
+    async function apiJson(method, path, body) {
+      const text = await api(method, path, body);
+      return text ? JSON.parse(text) : {};
+    }
+
+    // Stats & Cards
+    function metricCard(label, value, id, colorClass = '') {
+      return `<div class="card">
+        <div class="card-header"><h3 class="card-title">${label}</h3></div>
+        <div class="card-value ${colorClass}" id="${id}">-</div>
+        <div class="card-delta" id="${id}-delta"></div>
+        <div class="sparkline" id="${id}-spark"></div>
+      </div>`;
+    }
+    function renderOverviewCards() {
+      const container = document.getElementById('overview-cards');
+      container.innerHTML =
+        metricCard('总丢弃包数', '-', 'card-dropped', '') +
+        metricCard('当前 DPS', '-', 'card-dps', 'danger') +
+        metricCard('当前 PPS', '-', 'card-pps', 'accent') +
+        metricCard('速率限制拦截', '-', 'card-rate', '') +
+        metricCard('SYN Flood 拦截', '-', 'card-syn', '') +
+        metricCard('WAF 拦截', '-', 'card-waf', '') +
+        metricCard('GeoIP 拦截', '-', 'card-geoip', '') +
+        metricCard('黑名单拦截', '-', 'card-blacklist', '');
+    }
+    function setCard(id, value, delta) {
+      document.getElementById(id).textContent = Number(value).toLocaleString();
+      const d = document.getElementById(id + '-delta');
+      if (d) {
+        d.textContent = delta || '';
+        d.className = 'card-delta' + (delta && delta.startsWith('+') ? ' up' : delta && delta.startsWith('-') ? ' down' : '');
+      }
+    }
+
     async function refreshStats() {
       try {
-        const r = await fetch('/api/stats');
-        const d = await r.json();
-        document.getElementById('total-dropped').textContent = d.total_dropped.toLocaleString();
-        document.getElementById('blacklist-blocked').textContent = d.blacklist_blocked.toLocaleString();
-        document.getElementById('rate-limited').textContent = d.rate_limited.toLocaleString();
-        document.getElementById('syn-flood-blocked').textContent = d.syn_flood_blocked.toLocaleString();
-        document.getElementById('l7-blocked').textContent = d.l7_blocked.toLocaleString();
-        document.getElementById('adaptive-blocked').textContent = d.adaptive_blocked.toLocaleString();
+        const d = await apiJson('GET', '/api/stats');
+        currentStats = d;
+        setCard('card-dropped', d.total_dropped, '');
+        setCard('card-dps', d.current_dps, '');
+        setCard('card-pps', d.current_pps, '');
+        setCard('card-rate', d.rate_limited, '');
+        setCard('card-syn', d.syn_flood_blocked, '');
+        setCard('card-waf', d.waf_blocked, '');
+        setCard('card-geoip', d.geoip_blocked, '');
+        setCard('card-blacklist', d.blacklist_blocked, '');
 
         const tbody = document.getElementById('attackers-body');
         tbody.innerHTML = '';
         if (!d.top_attackers || d.top_attackers.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="2" style="color:var(--muted)">暂无数据</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
         } else {
           d.top_attackers.forEach(a => {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${a.ip}</td><td>${a.count.toLocaleString()}</td>`;
+            tr.innerHTML = `<td><a href="#/security" onclick="openIpDrawer('${a.ip}'); return false;" style="color:var(--accent);text-decoration:none">${a.ip}</a></td><td>${a.count.toLocaleString()}</td><td><button class="btn btn-sm btn-danger" onclick="blockIpValue('${a.ip}')">封禁</button></td>`;
             tbody.appendChild(tr);
           });
         }
+        updateSparklines();
       } catch (e) { console.error(e); }
     }
 
-    async function refreshConfig() {
+    function updateSparklines() {
+      // Placeholder: sparklines will be populated from series data
+    }
+
+    // Traffic chart
+    async function initTrafficChart() {
+      const el = document.getElementById('traffic-chart');
+      if (!el || !document.getElementById('page-overview').classList.contains('active')) return;
+      trafficChart = echarts.init(el, document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : null);
+      trafficChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['总丢弃', '速率限制', 'SYN Flood', 'WAF', 'GeoIP'], textStyle: { color: 'var(--text-muted)' } },
+        grid: { left: 50, right: 20, top: 40, bottom: 30 },
+        xAxis: { type: 'time', axisLine: { lineStyle: { color: 'var(--border)' } }, axisLabel: { color: 'var(--text-muted)' } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: 'var(--border)' } }, axisLabel: { color: 'var(--text-muted)' } },
+        series: [
+          { name: '总丢弃', type: 'line', smooth: true, showSymbol: false, data: [] },
+          { name: '速率限制', type: 'line', smooth: true, showSymbol: false, data: [] },
+          { name: 'SYN Flood', type: 'line', smooth: true, showSymbol: false, data: [] },
+          { name: 'WAF', type: 'line', smooth: true, showSymbol: false, data: [] },
+          { name: 'GeoIP', type: 'line', smooth: true, showSymbol: false, data: [] }
+        ]
+      });
+      refreshTrafficChart();
+    }
+    async function refreshTrafficChart() {
+      if (!trafficChart) return;
       try {
-        const c = initialConfig;
+        const duration = parseInt(document.getElementById('series-range').value);
+        const data = await apiJson('GET', '/api/metrics/series?duration_s=' + duration);
+        const total = [], rate = [], syn = [], waf = [], geoip = [];
+        (data.series || []).forEach(p => {
+          const t = new Date(p.timestamp * 1000);
+          total.push([t, p.dps]);
+          rate.push([t, p.rate_limited / 10]);
+          syn.push([t, p.syn_flood_blocked / 10]);
+          waf.push([t, p.waf_blocked / 10]);
+          geoip.push([t, p.geoip_blocked / 10]);
+        });
+        trafficChart.setOption({
+          series: [
+            { data: total },
+            { data: rate },
+            { data: syn },
+            { data: waf },
+            { data: geoip }
+          ]
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    // Rules page
+    async function refreshRules() {
+      try {
+        const c = await apiJson('GET', '/api/config');
+        currentConfig = c;
+
+        const wafBody = document.getElementById('waf-body');
+        wafBody.innerHTML = '';
+        const rules = c.waf_rules || [];
+        if (rules.length === 0) wafBody.innerHTML = '<tr><td colspan="8" class="empty">未配置</td></tr>';
+        rules.forEach(r => {
+          const m = r.match || {};
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${r.priority}</td><td>${r.name}</td><td>${r.enabled ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-secondary">禁用</span>'}</td><td><span class="tag ${r.action === 'drop' ? 'tag-danger' : r.action === 'challenge' ? 'tag-warning' : 'tag-info'}">${r.action}</span></td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td>`;
+          wafBody.appendChild(tr);
+        });
+
+        const portAclBody = document.getElementById('port-acl-body');
+        portAclBody.innerHTML = '';
+        const acls = c.port_acl || [];
+        if (acls.length === 0) portAclBody.innerHTML = '<tr><td colspan="3" class="empty">未配置</td></tr>';
+        acls.forEach(a => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${a.protocol}</td><td>${a.dport}</td><td><span class="tag ${a.action === 'drop' ? 'tag-danger' : 'tag-success'}">${a.action}</span></td>`;
+          portAclBody.appendChild(tr);
+        });
+
+        const l7Body = document.getElementById('l7-body');
+        l7Body.innerHTML = '';
+        const patterns = (c.l7_scan && c.l7_scan.patterns) || [];
+        if (patterns.length === 0) l7Body.innerHTML = '<tr><td colspan="3" class="empty">未配置</td></tr>';
+        patterns.forEach((p, i) => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${i}</td><td>${p.pattern}</td><td>${p.mask || '-'}</td>`;
+          l7Body.appendChild(tr);
+        });
+
+        const g = c.geoip || {};
+        document.getElementById('geoip-config').innerHTML = `
+          <div class="metric-list">
+            <div class="metric-item"><div class="label">启用</div><div class="value">${g.enabled ? '是' : '否'}</div></div>
+            <div class="metric-item"><div class="label">默认动作</div><div class="value">${g.default_action || 'pass'}</div></div>
+            <div class="metric-item"><div class="label">封禁国家</div><div class="value">${(g.block_countries || []).join(', ') || '-'}</div></div>
+            <div class="metric-item"><div class="label">封禁 ASN</div><div class="value">${(g.block_asns || []).join(', ') || '-'}</div></div>
+            <div class="metric-item"><div class="label">国家 CSV</div><div class="value">${g.country_blocks_csv || '-'}</div></div>
+            <div class="metric-item"><div class="label">ASN CSV</div><div class="value">${g.asn_blocks_csv || '-'}</div></div>
+          </div>`;
+
+        const tiBody = document.getElementById('ti-body');
+        tiBody.innerHTML = '';
+        const feeds = c.threat_intel_feeds || [];
+        if (feeds.length === 0) tiBody.innerHTML = '<tr><td colspan="5" class="empty">未配置</td></tr>';
+        feeds.forEach(f => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${f.name}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis" title="${f.url}">${f.url}</td><td>${f.interval_s}s</td><td>${f.confidence}</td><td><span class="tag tag-danger">${f.action}</span></td>`;
+          tiBody.appendChild(tr);
+        });
+      } catch (e) { console.error(e); }
+    }
+
+    // Security page
+    async function refreshLists() {
+      try {
+        const c = await apiJson('GET', '/api/config');
+        const wl = document.getElementById('whitelist-list');
+        wl.innerHTML = '';
+        (c.whitelist_entries || []).forEach(x => wl.innerHTML += `<span class="tag tag-success" style="margin:.25rem">${x}</span>`);
+        if (wl.innerHTML === '') wl.innerHTML = '<span class="empty">无</span>';
+
+        const bl = document.getElementById('blacklist-list');
+        bl.innerHTML = '';
+        (c.blacklist_entries || []).forEach(x => bl.innerHTML += `<span class="tag tag-danger" style="margin:.25rem">${x}</span>`);
+        if (bl.innerHTML === '') bl.innerHTML = '<span class="empty">无</span>';
+      } catch (e) { console.error(e); }
+    }
+    function blockIpValue(ip) { document.getElementById('block-ip').value = ip; }
+    async function blockIp() {
+      try {
+        await api('POST', '/api/blacklist', { ip: document.getElementById('block-ip').value, duration_s: parseInt(document.getElementById('block-duration').value) });
+        toast('已封禁', 'success');
+        refreshLists();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function unblockIp() {
+      try {
+        await api('DELETE', '/api/blacklist', { ip: document.getElementById('block-ip').value });
+        toast('已解封', 'success');
+        refreshLists();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function allowCidr() {
+      try {
+        await api('POST', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value });
+        toast('已放行', 'success');
+        refreshLists();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function disallowCidr() {
+      try {
+        await api('DELETE', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value });
+        toast('已移除', 'success');
+        refreshLists();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Network page
+    async function refreshNetwork() {
+      try {
+        const c = await apiJson('GET', '/api/config');
         document.getElementById('rl-enabled').checked = c.rate_limit_enabled;
         document.getElementById('rl-threshold').value = c.rate_limit.threshold;
         document.getElementById('rl-tick').value = c.rate_limit.tick_ms;
         document.getElementById('syn-proxy-enabled').checked = c.syn_proxy_enabled;
         document.getElementById('l7-enabled').checked = c.l7_scan_enabled;
-        document.getElementById('ebpf-debug-enabled').checked = c.ebpf_debug_enabled;
         document.getElementById('udp-flood-enabled').checked = c.udp_flood_enabled;
         document.getElementById('icmp-flood-enabled').checked = c.icmp_flood_enabled;
-
-        // WAF rules
-        const wafBody = document.getElementById('waf-body');
-        wafBody.innerHTML = '';
-        const rules = c.waf_rules || [];
-        if (rules.length === 0) {
-          wafBody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">未配置</td></tr>';
-        } else {
-          rules.forEach(r => {
-            const m = r.match || {};
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${r.name}</td><td>${r.enabled ? '是' : '否'}</td><td>${r.action}</td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td><td>${m.body_prefix || '-'}</td>`;
-            wafBody.appendChild(tr);
-          });
-        }
-
-        // GeoIP
-        const g = c.geoip || {};
-        document.getElementById('geoip-config').innerHTML = `
-          <div>启用: ${g.enabled ? '是' : '否'}, 默认动作: ${g.default_action || 'pass'}</div>
-          <div>封禁国家: ${(g.block_countries || []).join(', ') || '-'}</div>
-          <div>封禁 ASN: ${(g.block_asns || []).join(', ') || '-'}</div>
-          <div>国家 CSV: ${g.country_blocks_csv || '-'}</div>
-          <div>ASN CSV: ${g.asn_blocks_csv || '-'}</div>
-        `;
-
-        // Threat intel feeds
-        const tiBody = document.getElementById('ti-body');
-        tiBody.innerHTML = '';
-        const feeds = c.threat_intel_feeds || [];
-        if (feeds.length === 0) {
-          tiBody.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">未配置</td></tr>';
-        } else {
-          feeds.forEach(f => {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${f.name}</td><td>${f.url}</td><td>${f.interval_s}</td><td>${f.confidence}</td><td>${f.action}</td>`;
-            tiBody.appendChild(tr);
-          });
-        }
-
-        // Static whitelist / blacklist
-        const wl = document.getElementById('whitelist-list');
-        wl.innerHTML = '';
-        (c.whitelist_entries || []).forEach(x => wl.innerHTML += `<li>${x}</li>`);
-        if (wl.innerHTML === '') wl.innerHTML = '<li style="color:var(--muted)">无</li>';
-
-        const bl = document.getElementById('blacklist-list');
-        bl.innerHTML = '';
-        (c.blacklist_entries || []).forEach(x => bl.innerHTML += `<li>${x}</li>`);
-        if (bl.innerHTML === '') bl.innerHTML = '<li style="color:var(--muted)">无</li>';
       } catch (e) { console.error(e); }
     }
-
-    function setMsg(text, ok) {
-      const el = document.getElementById('control-msg');
-      el.textContent = text;
-      el.className = 'msg ' + (ok ? 'ok' : 'err');
-      setTimeout(() => el.textContent = '', 4000);
-    }
-
-    async function api(method, path, body) {
-      const opts = { method, headers: authHeaders() };
-      if (body) opts.body = JSON.stringify(body);
-      const r = await fetch(path, opts);
-      const txt = await r.text();
-      setMsg(txt, r.ok);
-      if (r.ok) { refreshStats(); refreshConfig(); refreshAudit(); }
-    }
-
-    function blockIp() { api('POST', '/api/blacklist', { ip: document.getElementById('block-ip').value, duration_s: parseInt(document.getElementById('block-duration').value) }); }
-    function unblockIp() { api('DELETE', '/api/blacklist', { ip: document.getElementById('block-ip').value }); }
-    function allowCidr() { api('POST', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value }); }
-    function disallowCidr() { api('DELETE', '/api/whitelist', { cidr: document.getElementById('allow-cidr').value }); }
-    function reloadConfig() { api('POST', '/api/config/reload'); }
-
     async function updateRateLimit() {
-      await api('PATCH', '/api/config', {
-        rate_limit_enabled: document.getElementById('rl-enabled').checked,
-        rate_limit: {
-          enabled: document.getElementById('rl-enabled').checked,
-          threshold: parseInt(document.getElementById('rl-threshold').value),
-          tick_ms: parseInt(document.getElementById('rl-tick').value),
-          decay_num: 7,
-          decay_den: 8,
-          block_duration_s: 300
-        }
-      });
+      try {
+        await api('PATCH', '/api/config', {
+          rate_limit_enabled: document.getElementById('rl-enabled').checked,
+          rate_limit: {
+            enabled: document.getElementById('rl-enabled').checked,
+            threshold: parseInt(document.getElementById('rl-threshold').value),
+            tick_ms: parseInt(document.getElementById('rl-tick').value),
+            decay_num: 7, decay_den: 8, block_duration_s: 300
+          }
+        });
+        toast('速率限制已更新', 'success');
+      } catch (e) { toast(e.message, 'error'); }
     }
-
     async function updateSwitches() {
-      await api('PATCH', '/api/config', {
-        syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
-        l7_scan_enabled: document.getElementById('l7-enabled').checked,
-        ebpf_debug_enabled: document.getElementById('ebpf-debug-enabled').checked,
-        udp_flood_enabled: document.getElementById('udp-flood-enabled').checked,
-        icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked
-      });
+      try {
+        await api('PATCH', '/api/config', {
+          syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
+          l7_scan_enabled: document.getElementById('l7-enabled').checked,
+          udp_flood_enabled: document.getElementById('udp-flood-enabled').checked,
+          icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked
+        });
+        toast('开关已更新', 'success');
+      } catch (e) { toast(e.message, 'error'); }
     }
 
+    // Audit
     async function refreshAudit() {
       try {
-        const r = await fetch('/api/audit', { headers: authHeaders() });
-        const d = await r.json();
-        const tbody = document.getElementById('audit-body');
-        tbody.innerHTML = '';
-        if (!d.entries || d.entries.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" style="color:var(--muted)">暂无数据</td></tr>';
-          return;
-        }
-        d.entries.slice().reverse().forEach(e => {
-          const tr = document.createElement('tr');
-          const detail = JSON.stringify(e.detail);
-          tr.innerHTML = `<td>${e.timestamp}</td><td>${e.actor}</td><td>${e.action}</td><td title="${detail.replace(/"/g,'&quot;')}">${detail.length > 60 ? detail.slice(0,60)+'...' : detail}</td>`;
-          tbody.appendChild(tr);
-        });
+        const d = await apiJson('GET', '/api/audit?limit=200');
+        auditEntries = d.entries || [];
+        renderAudit();
       } catch (e) { console.error(e); }
     }
+    function renderAudit() {
+      const filter = document.getElementById('audit-filter').value.toLowerCase();
+      const tbody = document.getElementById('audit-body');
+      tbody.innerHTML = '';
+      const entries = auditEntries.filter(e => {
+        const text = (e.timestamp + e.actor + e.action + JSON.stringify(e.detail)).toLowerCase();
+        return text.includes(filter);
+      });
+      if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无数据</td></tr>';
+        return;
+      }
+      entries.slice().reverse().forEach(e => {
+        const tr = document.createElement('tr');
+        const detail = JSON.stringify(e.detail);
+        tr.innerHTML = `<td>${e.timestamp}</td><td>${e.actor}</td><td><span class="tag tag-info">${e.action}</span></td><td title="${detail.replace(/"/g,'&quot;')}">${detail.length > 70 ? detail.slice(0,70)+'...' : detail}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+    function filterAudit() { renderAudit(); }
 
-    loadToken();
-    refreshStats();
-    refreshConfig();
-    refreshAudit();
-    setInterval(refreshStats, 1000);
+    // IP drawer
+    function openIpDrawer(ip) {
+      document.getElementById('drawer-title').textContent = ip;
+      const attacker = (currentStats.top_attackers || []).find(a => a.ip === ip);
+      document.getElementById('drawer-body').innerHTML = `
+        <div class="metric-list">
+          <div class="metric-item"><div class="label">丢弃包数</div><div class="value">${attacker ? attacker.count.toLocaleString() : '-'}</div></div>
+          <div class="metric-item"><div class="label">当前状态</div><div class="value">${attacker ? '攻击中' : '未知'}</div></div>
+        </div>
+        <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+          <button class="btn btn-danger" onclick="blockIpValue('${ip}'); closeDrawer(); toast('已填入封禁表单，请前往安全运营页面确认','success')">加入黑名单</button>
+          <button class="btn" onclick="allowCidrValue('${ip}/32'); closeDrawer(); toast('已填入放行表单，请前往安全运营页面确认','success')">加入白名单</button>
+        </div>
+      `;
+      document.getElementById('drawer-backdrop').classList.add('active');
+      document.getElementById('ip-drawer').classList.add('active');
+    }
+    function closeDrawer() {
+      document.getElementById('drawer-backdrop').classList.remove('active');
+      document.getElementById('ip-drawer').classList.remove('active');
+    }
+    function allowCidrValue(cidr) { document.getElementById('allow-cidr').value = cidr; }
+
+    // Settings
+    async function testAuth() {
+      try {
+        await api('GET', '/api/config');
+        toast('认证成功', 'success');
+      } catch (e) { toast('认证失败: ' + e.message, 'error'); }
+    }
+    async function reloadConfig() {
+      try {
+        await api('POST', '/api/config/reload');
+        toast('配置已重载', 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Toast
+    function toast(msg, type = 'info') {
+      const el = document.createElement('div');
+      el.className = 'toast ' + type;
+      el.textContent = msg;
+      document.getElementById('toast-container').appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    }
+
+    // Init
+    document.addEventListener('DOMContentLoaded', () => {
+      initTheme();
+      loadToken();
+      renderOverviewCards();
+      navigate();
+      document.getElementById('theme-btn').addEventListener('click', toggleTheme);
+      document.getElementById('menu-btn').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
+      window.addEventListener('hashchange', navigate);
+      document.getElementById('series-range').addEventListener('change', refreshTrafficChart);
+
+      refreshStats();
+      setInterval(refreshStats, 2000);
+      setInterval(refreshTrafficChart, 10000);
+    });
   </script>
 </body>
 </html>

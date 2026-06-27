@@ -70,7 +70,7 @@ fn default_alert_cooldown_s() -> u64 {
     60
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortAclItem {
     pub protocol: String,
     pub dport: String,
@@ -261,7 +261,7 @@ fn default_syn_conn_timeout_s() -> u32 {
     60
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct L7ScanConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
@@ -269,7 +269,7 @@ pub struct L7ScanConfig {
     pub patterns: Vec<L7PatternConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct L7PatternConfig {
     pub pattern: String,
     #[serde(default)]

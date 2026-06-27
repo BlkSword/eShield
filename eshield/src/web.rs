@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Request, State},
+    extract::{Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::auth::{self, AuthState};
@@ -47,6 +48,7 @@ pub async fn run(
     let protected = Router::new()
         .route("/", get(index_handler))
         .route("/api/stats", get(stats_handler))
+        .route("/api/metrics/series", get(metrics_series_handler))
         .route(
             "/api/config",
             get(config_handler).patch(patch_config_handler),
@@ -83,7 +85,11 @@ async fn auth_middleware(
 
 #[derive(Serialize)]
 struct StatsResponse {
+    total_packets: u64,
+    total_passed: u64,
     total_dropped: u64,
+    current_pps: u64,
+    current_dps: u64,
     blacklist_blocked: u64,
     rate_limited: u64,
     syn_flood_blocked: u64,
@@ -312,6 +318,29 @@ fn default_audit_limit() -> usize {
     100
 }
 
+#[derive(Deserialize)]
+struct SeriesQuery {
+    #[serde(default = "default_series_duration")]
+    duration_s: u64,
+}
+
+fn default_series_duration() -> u64 {
+    3600
+}
+
+async fn metrics_series_handler(
+    State(state): State<Arc<WebState>>,
+    Query(q): Query<SeriesQuery>,
+) -> Json<serde_json::Value> {
+    let series = state
+        .stats
+        .timeseries
+        .read()
+        .await
+        .snapshot(q.duration_s);
+    Json(serde_json::json!({ "series": series }))
+}
+
 async fn audit_handler(
     State(state): State<Arc<WebState>>,
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
@@ -345,33 +374,21 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
     top_attackers.truncate(20);
 
     StatsResponse {
-        total_dropped: stats
-            .total_dropped
-            .load(std::sync::atomic::Ordering::Relaxed),
-        blacklist_blocked: stats
-            .blacklist_blocked
-            .load(std::sync::atomic::Ordering::Relaxed),
-        rate_limited: stats
-            .rate_limited
-            .load(std::sync::atomic::Ordering::Relaxed),
-        syn_flood_blocked: stats
-            .syn_flood_blocked
-            .load(std::sync::atomic::Ordering::Relaxed),
-        l7_blocked: stats.l7_blocked.load(std::sync::atomic::Ordering::Relaxed),
-        adaptive_blocked: stats
-            .adaptive_blocked
-            .load(std::sync::atomic::Ordering::Relaxed),
-        udp_flood_blocked: stats
-            .udp_flood_blocked
-            .load(std::sync::atomic::Ordering::Relaxed),
-        icmp_flood_blocked: stats
-            .icmp_flood_blocked
-            .load(std::sync::atomic::Ordering::Relaxed),
-        waf_blocked: stats.waf_blocked.load(std::sync::atomic::Ordering::Relaxed),
-        geoip_blocked: stats.geoip_blocked.load(std::sync::atomic::Ordering::Relaxed),
-        challenge_issued: stats
-            .challenge_issued
-            .load(std::sync::atomic::Ordering::Relaxed),
+        total_packets: stats.total_packets.load(Ordering::Relaxed),
+        total_passed: stats.total_passed.load(Ordering::Relaxed),
+        total_dropped: stats.total_dropped.load(Ordering::Relaxed),
+        current_pps: stats.current_pps.load(Ordering::Relaxed),
+        current_dps: stats.current_dps.load(Ordering::Relaxed),
+        blacklist_blocked: stats.blacklist_blocked.load(Ordering::Relaxed),
+        rate_limited: stats.rate_limited.load(Ordering::Relaxed),
+        syn_flood_blocked: stats.syn_flood_blocked.load(Ordering::Relaxed),
+        l7_blocked: stats.l7_blocked.load(Ordering::Relaxed),
+        adaptive_blocked: stats.adaptive_blocked.load(Ordering::Relaxed),
+        udp_flood_blocked: stats.udp_flood_blocked.load(Ordering::Relaxed),
+        icmp_flood_blocked: stats.icmp_flood_blocked.load(Ordering::Relaxed),
+        waf_blocked: stats.waf_blocked.load(Ordering::Relaxed),
+        geoip_blocked: stats.geoip_blocked.load(Ordering::Relaxed),
+        challenge_issued: stats.challenge_issued.load(Ordering::Relaxed),
         top_attackers,
     }
 }

@@ -14,7 +14,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
 use crate::audit::{AuditAction, Auditor};
-use crate::config::{Config, GeoIpConfig, ThreatFeed, WafRuleItem};
+use crate::config::{Config, GeoIpConfig, L7ScanConfig, PortAclItem, ThreatFeed, WafRuleItem};
 use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
 use crate::store::RuleStore;
 
@@ -45,6 +45,8 @@ pub struct RuntimeConfigSnapshot {
     pub geoip_enabled: bool,
     pub rate_limit: RateLimitParams,
     pub waf_rules: Vec<WafRuleItem>,
+    pub port_acl: Vec<PortAclItem>,
+    pub l7_scan: L7ScanConfig,
     pub geoip: GeoIpConfig,
     pub threat_intel_feeds: Vec<ThreatFeed>,
     pub whitelist_entries: Vec<String>,
@@ -521,6 +523,8 @@ impl RuntimeConfigSnapshot {
                 block_duration_s: config.rate_limit.block_duration_s,
             },
             waf_rules: config.waf.rules.clone(),
+            port_acl: config.port_acl.clone(),
+            l7_scan: config.l7_scan.clone(),
             geoip: config.geoip.clone(),
             threat_intel_feeds: config.threat_intel.feeds.clone(),
             whitelist_entries: config.whitelist.clone(),

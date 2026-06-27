@@ -3,13 +3,14 @@ use eshield_common::{rules, IpKey};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
-#[derive(Debug, Default)]
+use crate::timeseries::TimeSeriesWindow;
+
+#[derive(Debug)]
 pub struct Stats {
-    #[allow(dead_code)]
     pub total_packets: AtomicU64,
     pub total_dropped: AtomicU64,
-    #[allow(dead_code)]
     pub total_passed: AtomicU64,
     pub blacklist_blocked: AtomicU64,
     pub rate_limited: AtomicU64,
@@ -21,7 +22,34 @@ pub struct Stats {
     pub waf_blocked: AtomicU64,
     pub geoip_blocked: AtomicU64,
     pub challenge_issued: AtomicU64,
+    pub current_pps: AtomicU64,
+    pub current_dps: AtomicU64,
     pub top_attackers: DashMap<IpKey, AtomicU64>,
+    pub timeseries: Arc<RwLock<TimeSeriesWindow>>,
+}
+
+impl Default for Stats {
+    fn default() -> Self {
+        Self {
+            total_packets: AtomicU64::new(0),
+            total_dropped: AtomicU64::new(0),
+            total_passed: AtomicU64::new(0),
+            blacklist_blocked: AtomicU64::new(0),
+            rate_limited: AtomicU64::new(0),
+            syn_flood_blocked: AtomicU64::new(0),
+            l7_blocked: AtomicU64::new(0),
+            adaptive_blocked: AtomicU64::new(0),
+            udp_flood_blocked: AtomicU64::new(0),
+            icmp_flood_blocked: AtomicU64::new(0),
+            waf_blocked: AtomicU64::new(0),
+            geoip_blocked: AtomicU64::new(0),
+            challenge_issued: AtomicU64::new(0),
+            current_pps: AtomicU64::new(0),
+            current_dps: AtomicU64::new(0),
+            top_attackers: DashMap::new(),
+            timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(360, 10))),
+        }
+    }
 }
 
 impl Stats {

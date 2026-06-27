@@ -1,9 +1,10 @@
 # eShield 路线图（Roadmap）
 
-> 当前版本：**v0.2.0-dev** — 已完成 v0.1.2 生产级单节点方案（IPv6、ACL、认证审计、持久化、Web Dashboard v2、可观测性、运维交付）。
-> 正在推进 **v0.2.0 — 高级 L7 与有状态代理**。
+> 当前版本：**v0.2.0**（已发布）
 >
-> 目标：从“单节点主机防护工具”演进为**功能完整、可运营、可集中管理的生产级 CC / DDoS 防御组件**。
+> 已完成：从“单节点主机防护工具”演进为具备 **有状态代理、L7 WAF、Challenge、GeoIP/ASN、威胁情报联动** 的生产级 CC / DDoS 防御组件。
+>
+> 当前焦点：**v0.3.0 — 产品化打磨与运维交付**
 
 ---
 
@@ -12,7 +13,7 @@
 ### v0.1 — 基础数据面
 
 - [x] eBPF/XDP 包解析与 DROP/PASS 决策
-- [x] CIDR 白名单（LPM Trie）
+- [x] CIDR 白名单（LPM Trie，IPv4/IPv6）
 - [x] 动态黑名单（LRU HashMap，到期自动解封）
 - [x] Per-IP 指数衰减速率限制
 - [x] SYN Cookie 代理 / SYN Flood 检测
@@ -30,105 +31,72 @@
 - [x] SIGHUP / `systemctl reload` 热加载
 - [x] 配置校验与 dry-run：`eshield check --config`
 - [x] eBPF 内核调试日志（`AYA_LOGS`）与运行时开关
-- [x] `control.rs` / `state.rs` 单元测试
 - [x] 本地 fmt/clippy 与远程 Linux 集成测试全部通过
+
+### v0.2.0 — 高级 L7 与有状态代理（已发布）
+
+- [x] 有状态 SYN Proxy / SYN Cookie，支持 TCP MSS 选项协商
+- [x] HTTP WAF 规则引擎（method / path_prefix / host / user_agent / body_prefix 多维度匹配）
+- [x] WAF 动作：drop / log / challenge
+- [x] JS/302 Challenge 模式，验证通过后自动加入临时白名单
+- [x] GeoIP/ASN CIDR 过滤（自定义 CSV + MaxMind MMDB）
+- [x] 威胁情报联动（文本/CSV/JSON feed，支持 AbuseIPDB / CINS / 自定义 URL）
+- [x] Dashboard 扩展：WAF、GeoIP、威胁情报、Challenge 配置展示
+- [x] 规则持久化迁移到 redb，启动时跳过历史 `BLACKLIST` 避免覆盖配置文件
+- [x] 扩展集成测试：Test 4.5（WAF）、Test 4.6（Challenge）、Test 8（GeoIP）、Test 9（威胁情报）
 
 ---
 
-## 下一阶段：v0.1.2 — 生产级单节点完整方案
+## 下一阶段：v0.3.0 — 产品化打磨与运维交付
 
-**目标**：让 eShield 在单节点场景下**功能完整、控制台完全可控、可长期稳定运行**，达到可直接交付运维团队使用的水平。
+**目标**：让 eShield 在单节点场景下**控制台更完整、交付更标准、可长期稳定运行**，达到可直接交给运维团队的水平。
 
-### 1. 网络协议与场景补全
+### 1. 控制台体验增强
 
 | 功能 | 说明 | 优先级 |
 |---|---|---|
-| **IPv6 全链路支持** | 解析 IPv6 头部；白名单/黑名单/速率限制/SYN Flood/L7 扫描均支持 128-bit key；CLI 与配置支持 IPv6 CIDR。 | P0 |
-| **UDP Flood 防护** | 对 UDP 源 IP 做 Per-CPU / Per-IP 速率限制，超过阈值 DROP。 | P1 |
-| **ICMP Flood 防护** | 对 ICMP Echo Request 做源 IP 速率限制，可选全局抑制。 | P1 |
-| **双栈自动识别** | 同一条规则可同时作用于 IPv4 与 IPv6，配置写法保持一致。 | P1 |
-| **端口级 ACL** | 支持按源/目的端口放行或封禁（如仅开放 80/443，其余 DROP）。 | P1 |
-| **协议级规则** | 按 TCP/UDP/ICMP 等协议单独配置策略。 | P2 |
+| **实时图表** | Dashboard 展示 PPS/DPS/各规则命中数曲线（1h / 6h / 24h） | P0 |
+| **TOP 攻击源趋势** | 动态排行 + 历史趋势 | P0 |
+| **IP 情报卡片** | 点击攻击源 IP 展示命中次数、最近事件、GeoIP/ASN、当前状态 | P1 |
+| **审计与事件流** | 实时滚动显示 DROP / PASS / 控制操作日志，支持按 IP/规则/时间过滤 | P1 |
+| **移动端适配** | 响应式布局，支持紧急封禁 | P2 |
 
-### 2. 规则引擎（Rule Engine）
+### 2. 规则引擎升级
 
 让策略从“单一维度”升级为“组合规则”。
 
-- [ ] **规则对象化**
-  - 每条规则包含：名称、优先级、匹配条件、动作（PASS / DROP / LOG / CHALLENGE）、生效时间窗口。
+- [ ] **统一 Rule 对象**
+  - 字段：名称、优先级、匹配条件、动作（PASS / DROP / LOG / CHALLENGE）、生效时间窗口
 - [ ] **多维匹配条件**
   - 源 IP / CIDR
   - 目的端口 / 端口段
   - 协议（TCP/UDP/ICMP）
-  - 国家 / ASN（依赖 GeoIP）
-  - L7 指纹（前缀/包含/正则子集）
-- [ ] **规则组（Group）**
-  - 命名 IP/CIDR 组，如 `internal_office`、`cdn_nodes`，在规则中引用。
+  - 国家 / ASN
+  - L7 指纹（前缀 / 包含 / 正则子集）
+- [ ] **规则组（RuleGroup）**
+  - 命名 IP/CIDR 组，如 `internal_office`、`cdn_nodes`，在规则中引用
 - [ ] **默认策略与兜底动作**
-  - 明确配置 `default_action = "pass" | "drop"`。
+  - 明确配置 `default_action = "pass" | "drop"`
 - [ ] **规则冲突解析**
-  - 白名单始终最高优；同优先级按“最具体匹配”胜出。
+  - 白名单始终最高优；同优先级按“最具体匹配”胜出
 
-### 3. 控制面安全与审计
+### 3. 可观测性与告警
 
-- [ ] **API 认证机制**
-  - API Token（默认）
-  - 可选 JWT / mTLS
-  - Dashboard 登录页
-- [ ] **操作审计日志**
-  - 持久化到 SQLite / 本地文件
-  - 记录：时间、用户/Token、动作、变更前后值、来源 IP
-  - Web Dashboard 审计日志查询页
-- [ ] **动态规则持久化**
-  - API/Web/CLI 产生的黑名单、白名单、规则变更自动落盘
-  - 启动时从 SQLite 恢复，与配置文件合并
-  - 支持配置回滚到上一版本
-- [ ] **配置版本与 diff**
-  - `PATCH /api/config` 返回变更摘要
-  - 支持 `dry-run=true` 预览效果
-
-### 4. Web 控制台 v2（完全可控）
-
-把 Dashboard 从“查看 + 简单开关”升级为“完整的策略管理中心”。
-
-- [ ] **实时图表**
-  - 总 PPS / DPS / 各规则命中数曲线（最近 1h / 6h / 24h）
-  - TOP 攻击源动态排行
-- [ ] **规则编辑器**
-  - 表格化增删改查规则
-  - 拖拽调整优先级
-  - 实时验证规则合法性
-- [ ] **IP 情报卡片**
-  - 点击攻击源 IP 展示：命中次数、最近事件、所属国家/ASN、当前状态
-- [ ] **审计与事件流**
-  - 实时滚动显示 DROP / PASS / 控制操作日志
-  - 支持按 IP、规则、时间过滤
-- [ ] **批量导入/导出**
-  - 黑名单 CSV / JSON 导入
-  - 配置与规则一键导出备份
-- [ ] **移动端适配**
-  - 响应式布局，支持手机查看与紧急封禁
-
-### 5. 可观测性与告警
-
-- [ ] **结构化日志**
-  - JSON 格式可选，对接 ELK / Loki
-  - 统一日志字段：`event_type`, `src_ip`, `dst_port`, `rule`, `action`, `reason`
 - [ ] **增强指标**
   - 按接口、协议、目的端口细分
   - 包处理耗时直方图（`eshield_packet_process_duration_seconds_bucket`）
   - eBPF Map 使用率（`eshield_map_entries` / `eshield_map_capacity`）
-- [ ] **健康检查端点**
-  - `/healthz`：进程存活
-  - `/ready`：eBPF 程序已挂载、接口正常
 - [ ] **告警 Webhook**
   - 当 DROP 速率、TOP 攻击源、错误数超过阈值时触发
   - 支持 Slack / 钉钉 / 企业微信 / 自定义 HTTP
+- [ ] **结构化日志增强**
+  - 统一字段：`event_type`, `src_ip`, `dst_port`, `rule`, `action`, `reason`
+  - 更方便对接 ELK / Loki
 
-### 6. 运维与交付
+### 4. 运维与交付
 
 - [ ] **权限最小化**
-  - 加载 eBPF 后 drop root，仅保留 `CAP_BPF`、`CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_PERFMON`、`CAP_IPC_LOCK`
+  - 加载 eBPF 后 drop root，仅保留必要 capabilities
   - 提供 systemd `AmbientCapabilities` 示例
 - [ ] **优雅退出**
   - SIGTERM 时安全卸载 XDP 程序，清理 eBPF Map
@@ -144,7 +112,7 @@
 - [ ] **升级路径**
   - 保留配置文件与动态规则库，滚动升级不丢策略
 
-### 7. 测试与质量
+### 5. 测试与质量
 
 - [ ] **单元测试覆盖**
   - 目标核心模块覆盖率达 70%+
@@ -160,29 +128,12 @@
 - [ ] **Verifier 压力测试**
   - 在 5.10 / 5.15 / 6.1 / 6.8 内核矩阵上验证 eBPF 加载
 
----
+### 6. 工程清理
 
-## 再下一阶段：v0.2.0 — 高级 L7 与有状态代理
-
-目标：让 SYN Cookie 代理真正保护后端 TCP 服务，并引入 WAF 级 L7 能力。
-
-- [ ] **有状态 SYN Proxy / TCP Splicing**
-  - ACK Cookie 验证通过后，向本地协议栈注入原始 SYN
-  - 维护极简连接状态表，完成三次握手转发
-  - 正常 TCP 业务可长期开启 SYN Proxy
-- [ ] **HTTP WAF 规则引擎**
-  - 支持方法、URI、Header、User-Agent、Body 前缀等多维度
-  - 匹配方式：等于、前缀、后缀、包含、正则子集
-  - 动作：DROP / PASS / LOG / CHALLENGE
-- [ ] **挑战模式（Challenge）**
-  - 对可疑 IP 返回 HTTP 302 / JS 挑战
-  - 验证通过后自动加入临时白名单
-- [ ] **GeoIP / ASN 过滤**
-  - 集成 MaxMind GeoIP2 或 IP2Location
-  - 按国家/ASN 批量放行或封禁
-- [ ] **威胁情报联动**
-  - 定时从公开/私有黑名单源同步恶意 IP
-  - 支持 AbuseIPDB、CINS、自定义 URL
+- [ ] 清理当前编译 warning（未使用导入、字段、常量）
+- [ ] 新增 `CHANGELOG.md`
+- [ ] 完善 `docs/deployment.md` 与 `docs/ops.md`
+- [ ] GitHub Release 发布脚本
 
 ---
 
@@ -211,12 +162,12 @@
 
 如果希望最快交付一个“完整可用”的单节点产品，建议按以下顺序：
 
-1. **IPv6 全链路支持**（现代网络基础能力，越早做改动越小）
-2. **API 认证 + 审计日志 + 规则持久化**（控制面可安全使用）
-3. **Web Dashboard v2**（完全可控的控制台）
-4. **端口级 ACL + UDP/ICMP 防护**（补齐数据面能力）
-5. **权限最小化 + DEB/RPM/容器镜像**（可交付运维）
-6. **规则引擎 + GeoIP + 告警**（接近商业 WAF 体验）
+1. **工程清理**（warning、CHANGELOG、文档）
+2. **Dashboard 实时图表 + TOP 攻击源趋势**（控制台体验质变）
+3. **统一规则引擎 + RuleGroup**（策略管理质变）
+4. **打包交付**（DEB/RPM/容器/systemd）
+5. **告警 Webhook + 增强指标**（可运营）
+6. **分布式控制器**（v1.0）
 
 ---
 
@@ -228,4 +179,5 @@
 - 新增配置项需要同时更新：
   - `packaging/config.example.toml`
   - `README.md`
+  - `docs/architecture.md`
   - `docs/deployment.md`（如需要）
