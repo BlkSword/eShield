@@ -28,6 +28,14 @@ pub struct Config {
     pub adaptive: AdaptiveConfig,
     #[serde(default)]
     pub port_acl: Vec<PortAclItem>,
+    #[serde(default)]
+    pub geoip: GeoIpConfig,
+    #[serde(default)]
+    pub threat_intel: ThreatIntelConfig,
+    #[serde(default)]
+    pub waf: WafConfig,
+    #[serde(default)]
+    pub challenge: ChallengeConfig,
     #[serde(default = "default_web_port")]
     pub web_port: u16,
     #[serde(default)]
@@ -69,6 +77,118 @@ pub struct PortAclItem {
     pub action: String,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GeoIpConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    pub db_path: Option<String>,
+    #[serde(default)]
+    pub block_countries: Vec<String>,
+    #[serde(default)]
+    pub allow_countries: Vec<String>,
+    #[serde(default)]
+    pub block_asns: Vec<u32>,
+    #[serde(default)]
+    pub allow_asns: Vec<u32>,
+    #[serde(default = "default_geoip_action")]
+    pub default_action: String,
+}
+
+fn default_geoip_action() -> String {
+    "pass".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ThreatIntelConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub feeds: Vec<ThreatFeed>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThreatFeed {
+    pub name: String,
+    pub url: String,
+    #[serde(default = "default_feed_interval_s")]
+    pub interval_s: u64,
+    #[serde(default = "default_feed_confidence")]
+    pub confidence: u8,
+    pub category: Option<String>,
+    #[serde(default = "default_feed_action")]
+    pub action: String,
+}
+
+fn default_feed_interval_s() -> u64 {
+    3600
+}
+
+fn default_feed_confidence() -> u8 {
+    80
+}
+
+fn default_feed_action() -> String {
+    "drop".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WafConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub rules: Vec<WafRuleItem>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WafRuleItem {
+    pub name: String,
+    #[serde(default)]
+    pub priority: u8,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub r#match: WafMatch,
+    #[serde(default = "default_waf_action")]
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct WafMatch {
+    pub method: Option<String>,
+    pub path_prefix: Option<String>,
+    pub host: Option<String>,
+    pub user_agent: Option<String>,
+    pub body_prefix: Option<String>,
+}
+
+fn default_waf_action() -> String {
+    "drop".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ChallengeConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_challenge_mode")]
+    pub mode: String,
+    #[serde(default = "default_challenge_cookie")]
+    pub cookie_name: String,
+    #[serde(default = "default_challenge_ttl_s")]
+    pub ttl_s: u64,
+    pub template_html: Option<String>,
+}
+
+fn default_challenge_mode() -> String {
+    "js".to_string()
+}
+
+fn default_challenge_cookie() -> String {
+    "eshield_challenge".to_string()
+}
+
+fn default_challenge_ttl_s() -> u64 {
+    3600
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct AdaptiveConfig {
     #[serde(default = "default_true")]
@@ -84,7 +204,7 @@ pub struct AdaptiveConfig {
 impl Default for AdaptiveConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             threshold: 10,
             window_s: 5,
             block_duration_s: 300,
@@ -102,10 +222,38 @@ fn default_adaptive_block_duration_s() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SynProxyConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
+    #[serde(default)]
+    pub backend_ports: Vec<u16>,
+    #[serde(default = "default_syn_max_conns")]
+    pub max_conns: u32,
+    #[serde(default = "default_syn_conn_timeout_s")]
+    pub conn_timeout_s: u32,
+    #[serde(default = "default_false")]
+    pub challenge_on_syn: bool,
+}
+
+impl Default for SynProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            backend_ports: Vec::new(),
+            max_conns: 1024 * 1024,
+            conn_timeout_s: 60,
+            challenge_on_syn: false,
+        }
+    }
+}
+
+fn default_syn_max_conns() -> u32 {
+    1024 * 1024
+}
+
+fn default_syn_conn_timeout_s() -> u32 {
+    60
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -249,6 +397,11 @@ impl Config {
             anyhow::bail!("web_port cannot be 0");
         }
 
+        validate_geoip(self)?;
+        validate_threat_intel(self)?;
+        validate_waf(self)?;
+        validate_challenge(self)?;
+
         Ok(())
     }
 
@@ -304,6 +457,115 @@ fn validate_port_acl(config: &Config) -> anyhow::Result<()> {
 
 fn interface_exists(iface: &str) -> bool {
     std::path::Path::new("/sys/class/net").join(iface).exists()
+}
+
+fn validate_geoip(config: &Config) -> anyhow::Result<()> {
+    if !config.geoip.enabled {
+        return Ok(());
+    }
+    if !matches!(config.geoip.default_action.as_str(), "pass" | "drop") {
+        anyhow::bail!(
+            "geoip.default_action must be 'pass' or 'drop', got '{}'",
+            config.geoip.default_action
+        );
+    }
+    for code in &config.geoip.block_countries {
+        if code.len() != 2 {
+            anyhow::bail!("geoip block country code must be ISO-3166-1 alpha-2: {}", code);
+        }
+    }
+    for code in &config.geoip.allow_countries {
+        if code.len() != 2 {
+            anyhow::bail!("geoip allow country code must be ISO-3166-1 alpha-2: {}", code);
+        }
+    }
+    Ok(())
+}
+
+fn validate_threat_intel(config: &Config) -> anyhow::Result<()> {
+    if !config.threat_intel.enabled {
+        return Ok(());
+    }
+    for (i, feed) in config.threat_intel.feeds.iter().enumerate() {
+        if feed.name.is_empty() {
+            anyhow::bail!("threat_intel.feeds[{}]: name cannot be empty", i);
+        }
+        if feed.url.is_empty() {
+            anyhow::bail!("threat_intel.feeds[{}]: url cannot be empty", i);
+        }
+        if feed.interval_s == 0 {
+            anyhow::bail!("threat_intel.feeds[{}]: interval_s must be > 0", i);
+        }
+        if feed.confidence > 100 {
+            anyhow::bail!("threat_intel.feeds[{}]: confidence must be 0-100", i);
+        }
+        if !matches!(feed.action.as_str(), "drop" | "allow") {
+            anyhow::bail!(
+                "threat_intel.feeds[{}]: action must be 'drop' or 'allow', got '{}'",
+                i,
+                feed.action
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_waf(config: &Config) -> anyhow::Result<()> {
+    if !config.waf.enabled {
+        return Ok(());
+    }
+    for (i, rule) in config.waf.rules.iter().enumerate() {
+        if rule.name.is_empty() {
+            anyhow::bail!("waf.rules[{}]: name cannot be empty", i);
+        }
+        if !matches!(rule.action.as_str(), "drop" | "log" | "challenge") {
+            anyhow::bail!(
+                "waf.rules[{}]: action must be drop/log/challenge, got '{}'",
+                i,
+                rule.action
+            );
+        }
+        if let Some(method) = &rule.r#match.method {
+            if !matches!(method.to_uppercase().as_str(), "GET" | "POST" | "PUT" | "DELETE" | "HEAD" | "OPTIONS" | "PATCH" | "ANY") {
+                anyhow::bail!("waf.rules[{}]: invalid method '{}'", i, method);
+            }
+        }
+        let check_len = |field: &Option<String>, label: &str| -> anyhow::Result<()> {
+            if let Some(v) = field {
+                let bytes = v.as_bytes();
+                if bytes.len() > eshield_common::WAF_FIELD_LEN {
+                    anyhow::bail!(
+                        "waf.rules[{}]: {} exceeds {} bytes",
+                        i,
+                        label,
+                        eshield_common::WAF_FIELD_LEN
+                    );
+                }
+            }
+            Ok(())
+        };
+        check_len(&rule.r#match.path_prefix, "path_prefix")?;
+        check_len(&rule.r#match.host, "host")?;
+        check_len(&rule.r#match.user_agent, "user_agent")?;
+        check_len(&rule.r#match.body_prefix, "body_prefix")?;
+    }
+    Ok(())
+}
+
+fn validate_challenge(config: &Config) -> anyhow::Result<()> {
+    if !config.challenge.enabled {
+        return Ok(());
+    }
+    if !matches!(config.challenge.mode.as_str(), "js" | "302") {
+        anyhow::bail!(
+            "challenge.mode must be 'js' or '302', got '{}'",
+            config.challenge.mode
+        );
+    }
+    if config.challenge.ttl_s == 0 {
+        anyhow::bail!("challenge.ttl_s must be > 0");
+    }
+    Ok(())
 }
 
 impl PortAclItem {

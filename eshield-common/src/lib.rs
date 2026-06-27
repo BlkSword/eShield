@@ -90,6 +90,117 @@ pub mod rules {
     pub const PORT_ACL: u16 = 7;
     pub const UDP_FLOOD: u16 = 8;
     pub const ICMP_FLOOD: u16 = 9;
+    pub const WAF: u16 = 10;
+    pub const GEOIP: u16 = 11;
+    pub const CHALLENGE: u16 = 12;
+}
+
+/// WAF 规则在 eBPF Map 中的最大数量（保持较小以便 eBPF verifier 快速收敛）
+pub const WAF_RULES_MAX: usize = 8;
+/// WAF 单条匹配字段最大长度（签名长度，eBPF 快速路径只比较前 8 字节）
+pub const WAF_FIELD_LEN: usize = 8;
+
+/// WAF 动作
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WafAction {
+    Drop = 1,
+    Log = 2,
+    Challenge = 3,
+}
+
+impl WafAction {
+    #[inline]
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(WafAction::Drop),
+            2 => Some(WafAction::Log),
+            3 => Some(WafAction::Challenge),
+            _ => None,
+        }
+    }
+}
+
+/// WAF 规则条目（内嵌到 WAF_RULES Map）。
+/// eBPF 快速路径使用 8 字节签名 + 掩码做按位比较，避免 verifier 状态爆炸。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WafRule {
+    pub enabled: u8,
+    pub priority: u8,
+    pub action: u8,
+    pub method: u8,
+    pub match_flags: u8,
+    pub padding: [u8; 3],
+    pub path_sig: [u8; WAF_FIELD_LEN],
+    pub path_mask: [u8; WAF_FIELD_LEN],
+    pub host_sig: [u8; WAF_FIELD_LEN],
+    pub host_mask: [u8; WAF_FIELD_LEN],
+    pub user_agent_sig: [u8; WAF_FIELD_LEN],
+    pub user_agent_mask: [u8; WAF_FIELD_LEN],
+    pub body_sig: [u8; WAF_FIELD_LEN],
+    pub body_mask: [u8; WAF_FIELD_LEN],
+}
+
+/// WAF 匹配标志位
+pub mod waf_match {
+    pub const METHOD: u8 = 1 << 0;
+    pub const PATH_PREFIX: u8 = 1 << 1;
+    pub const HOST: u8 = 1 << 2;
+    pub const USER_AGENT: u8 = 1 << 3;
+    pub const BODY_PREFIX: u8 = 1 << 4;
+}
+
+/// HTTP 方法枚举（eBPF 侧使用）
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpMethod {
+    Any = 0,
+    Get = 1,
+    Post = 2,
+    Put = 3,
+    Delete = 4,
+    Head = 5,
+    Options = 6,
+    Patch = 7,
+}
+
+impl HttpMethod {
+    #[inline]
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(HttpMethod::Any),
+            1 => Some(HttpMethod::Get),
+            2 => Some(HttpMethod::Post),
+            3 => Some(HttpMethod::Put),
+            4 => Some(HttpMethod::Delete),
+            5 => Some(HttpMethod::Head),
+            6 => Some(HttpMethod::Options),
+            7 => Some(HttpMethod::Patch),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        if bytes.starts_with(b"GET") {
+            HttpMethod::Get
+        } else if bytes.starts_with(b"POST") {
+            HttpMethod::Post
+        } else if bytes.starts_with(b"PUT") {
+            HttpMethod::Put
+        } else if bytes.starts_with(b"DELETE") {
+            HttpMethod::Delete
+        } else if bytes.starts_with(b"HEAD") {
+            HttpMethod::Head
+        } else if bytes.starts_with(b"OPTIONS") {
+            HttpMethod::Options
+        } else if bytes.starts_with(b"PATCH") {
+            HttpMethod::Patch
+        } else {
+            HttpMethod::Any
+        }
+    }
 }
 
 /// 黑名单条目
@@ -137,6 +248,9 @@ pub struct GlobalStats {
     pub l7_blocked: u64,
     pub udp_flood_blocked: u64,
     pub icmp_flood_blocked: u64,
+    pub waf_blocked: u64,
+    pub geoip_blocked: u64,
+    pub challenge_issued: u64,
     pub _pad: [u8; 8],
 }
 
@@ -152,7 +266,10 @@ pub struct RuntimeConfig {
     pub ebpf_debug: u8,
     pub udp_flood_enabled: u8,
     pub icmp_flood_enabled: u8,
-    pub padding: [u8; 2],
+    pub waf_enabled: u8,
+    pub challenge_enabled: u8,
+    pub geoip_enabled: u8,
+    pub padding: [u8; 7],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）
@@ -215,7 +332,7 @@ impl Default for RateLimitConfig {
 mod userspace_impls {
     use super::{
         BlockEntry, CookieSecret, DropEvent, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-        RateCounter, RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
+        RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -231,4 +348,5 @@ mod userspace_impls {
     unsafe impl Pod for GlobalStats {}
     unsafe impl Pod for RuntimeConfig {}
     unsafe impl Pod for RateLimitConfig {}
+    unsafe impl Pod for WafRule {}
 }

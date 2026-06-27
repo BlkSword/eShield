@@ -15,12 +15,14 @@ export CARGO_HOME="${CARGO_HOME:-/home/ubuntu/.cargo}"
 
 cd "$(dirname "$0")/.."
 
-echo "=== Building eShield ==="
-"$CARGO" +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
-"$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
+if [ -z "$SKIP_BUILD" ]; then
+    echo "=== Building eShield ==="
+    "$CARGO" +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
+    "$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
+fi
 
 # 确保没有旧进程占用测试二进制
-pkill -f '/tmp/eshield' 2>/dev/null || true
+pkill -9 -x eshield 2>/dev/null || true
 sleep 0.5
 rm -f /tmp/eshield /tmp/eshield.ebpf
 cp "target/x86_64-unknown-linux-musl/release/eshield" /tmp/eshield
@@ -34,6 +36,8 @@ trap cleanup EXIT
 
 ip netns add eshield-server
 ip netns add eshield-client
+ip link del veth-server 2>/dev/null || true
+ip link del veth-client 2>/dev/null || true
 ip link add veth-server type veth peer name veth-client
 ip link set veth-server netns eshield-server
 ip link set veth-client netns eshield-client
@@ -207,6 +211,64 @@ else
     echo "FAIL: L7 scan behavior unexpected"
     echo "recv1: '$(cat /tmp/l7_server_recv)'"
     echo "recv2: '$(cat /tmp/l7_server_recv2)'"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+
+
+echo "=== Test 4.5: HTTP WAF should drop matching URI ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[waf]
+enabled = true
+rules = [
+    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } }
+]
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 3
+
+rm -f /tmp/waf_recv1 /tmp/waf_recv2
+ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/waf_recv1 &
+NC_PID=$!
+sleep 0.5
+printf 'GET /ok HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n' | ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8080 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/waf_recv2 &
+NC_PID2=$!
+sleep 0.5
+printf 'GET /admin HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n' | ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8080 || true
+sleep 0.5
+kill $NC_PID2 2>/dev/null || true
+
+expected1=$(printf 'GET /ok HTTP/1.1\r\nHost: example.com\r\nUser-Agent: test\r\n\r\n')
+if [ "$(cat /tmp/waf_recv1)" = "$expected1" ] && [ "$(cat /tmp/waf_recv2)" = "" ]; then
+    echo "PASS: WAF dropped matching URI and passed non-matching"
+else
+    echo "FAIL: WAF behavior unexpected"
+    echo "recv1: '$(cat /tmp/waf_recv1)'"
+    echo "recv2: '$(cat /tmp/waf_recv2)'"
     kill $ESHIELD_PID 2>/dev/null || true
     exit 1
 fi

@@ -4,7 +4,7 @@ use aya_ebpf::{
 };
 use eshield_common::{
     BlockEntry, CookieSecret, GlobalStats, IpKey, L7Pattern, PortAclEntry, RateCounter,
-    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
+    RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -54,3 +54,16 @@ pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(16, 0);
 /// 端口/协议 ACL 规则表
 #[map]
 pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);
+
+/// WAF 规则表
+#[map]
+pub static WAF_RULES: Array<WafRule> = Array::with_max_entries(8, 0);
+
+/// Challenge 临时放行名单（LRU Hash）：value 为过期时间戳（ns）
+#[map]
+pub static CHALLENGE_ALLOWLIST: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);
+
+/// SYN Proxy 连接表（LRU Hash）：已通过 Cookie 验证的连接元组
+/// value 为过期时间戳（ns）
+#[map]
+pub static SYN_PROXY_CONN: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);

@@ -98,7 +98,7 @@ curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install
 指定版本：
 
 ```bash
-VERSION=0.1.2 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.1.2 bash
+VERSION=0.2.0 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.2.0 bash
 ```
 
 ### 从源码构建并安装

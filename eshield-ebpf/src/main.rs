@@ -2,6 +2,7 @@
 #![no_main]
 
 mod blacklist;
+mod challenge;
 mod icmp_flood;
 mod l7_scan;
 mod maps;
@@ -11,6 +12,7 @@ mod rate_limit;
 mod syn_cookie;
 mod syn_flood;
 mod udp_flood;
+mod waf;
 
 use aya_ebpf::maps::lpm_trie::Key as LpmKey;
 use aya_ebpf::{
@@ -79,6 +81,33 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         Some(c) => *c,
         None => return Ok(xdp_action::XDP_PASS),
     };
+
+    // 计算 TCP payload 偏移与长度（供 L7 / WAF 使用）。
+    // 使用 ctx.data_end() 与 ctx.data() 的差值计算实际 payload 长度，
+    // 避免依赖 IP total_len 的字节序转换，同时 verifier 可以证明有界。
+    let data_start = ctx.data();
+    let data_end = ctx.data_end();
+    let mut payload_offset = 0usize;
+    let mut payload_len = 0usize;
+    if protocol == parser::IPPROTO_TCP {
+        if let Some(tcp) = unsafe { ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) } {
+            let tcp_hdr_len = unsafe { (*tcp).doff() as usize } * 4;
+            payload_offset = ETH_HDR_LEN + ip_hdr_len + tcp_hdr_len;
+            if data_start + payload_offset < data_end {
+                payload_len = data_end - (data_start + payload_offset);
+            }
+        }
+    }
+
+    // 6. Challenge 临时白名单：已通过挑战的 IP 直接放行
+    if runtime.challenge_enabled != 0 && challenge::is_allowed(&src_key, now_ns) {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                (*stats).total_passed += 1;
+            }
+        }
+        return Ok(xdp_action::XDP_PASS);
+    }
 
     if runtime.ebpf_debug != 0 {
         if src_key.family == (eshield_common::IpFamily::Ipv4 as u8) {
@@ -189,7 +218,20 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_DROP);
     }
 
-    // 10. 速率限制检查（触发则加入黑名单并 DROP）
+    // 10. HTTP WAF 规则引擎（TCP 首包解析）
+    if protocol == parser::IPPROTO_TCP
+        && runtime.waf_enabled != 0
+        && payload_len > 0
+    {
+        if let Some(action) = waf::check(ctx, &src_key, payload_offset) {
+            if action == eshield_common::WafAction::Drop as u8 {
+                return Ok(xdp_action::XDP_DROP);
+            }
+            // log / challenge 动作不拦截，继续后续检查
+        }
+    }
+
+    // 11. 速率限制检查（触发则加入黑名单并 DROP）
     if rate_limit::check_rate_limit(&src_key, now_ns) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {

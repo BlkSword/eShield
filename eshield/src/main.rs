@@ -216,9 +216,8 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let stats = state.stats.clone();
         let control = control.clone();
         let auditor = auditor.clone();
-        let alert = alert.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run(stats, control, auditor, alert, auth, web_bind).await {
+            if let Err(e) = web::run(stats, control, auditor, auth, web_bind).await {
                 warn!("web server exited: {}", e);
             }
         })

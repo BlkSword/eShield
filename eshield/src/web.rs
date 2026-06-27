@@ -1,10 +1,10 @@
 use axum::{
-    extract::State,
+    extract::{Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
-    Json, Request, Router,
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -39,7 +39,8 @@ pub async fn run(
 
     let public = Router::new()
         .route("/healthz", get(health::healthz_handler))
-        .route("/ready", get(health::ready_handler));
+        .route("/ready", get(health::ready_handler))
+        .with_state(state.clone());
 
     let protected = Router::new()
         .route("/", get(index_handler))
@@ -59,11 +60,10 @@ pub async fn run(
         )
         .route("/api/audit", get(audit_handler))
         .route("/metrics", get(metrics_handler))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware)));
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .with_state(state.clone());
 
-    let app = public
-        .merge(protected)
-        .with_state(state);
+    let app = public.merge(protected);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("web dashboard listening on http://{}", bind);
@@ -89,6 +89,9 @@ struct StatsResponse {
     adaptive_blocked: u64,
     udp_flood_blocked: u64,
     icmp_flood_blocked: u64,
+    waf_blocked: u64,
+    geoip_blocked: u64,
+    challenge_issued: u64,
     top_attackers: Vec<Attacker>,
 }
 
@@ -265,6 +268,11 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         icmp_flood_blocked: stats
             .icmp_flood_blocked
             .load(std::sync::atomic::Ordering::Relaxed),
+        waf_blocked: stats.waf_blocked.load(std::sync::atomic::Ordering::Relaxed),
+        geoip_blocked: stats.geoip_blocked.load(std::sync::atomic::Ordering::Relaxed),
+        challenge_issued: stats
+            .challenge_issued
+            .load(std::sync::atomic::Ordering::Relaxed),
         top_attackers,
     }
 }
@@ -295,7 +303,16 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
          eshield_udp_flood_blocked_total {}\n\n\
          # HELP eshield_icmp_flood_blocked_total ICMP flood blocked packets\n\
          # TYPE eshield_icmp_flood_blocked_total counter\n\
-         eshield_icmp_flood_blocked_total {}\n",
+         eshield_icmp_flood_blocked_total {}\n\n\
+         # HELP eshield_waf_blocked_total WAF blocked packets\n\
+         # TYPE eshield_waf_blocked_total counter\n\
+         eshield_waf_blocked_total {}\n\n\
+         # HELP eshield_geoip_blocked_total GeoIP blocked packets\n\
+         # TYPE eshield_geoip_blocked_total counter\n\
+         eshield_geoip_blocked_total {}\n\n\
+         # HELP eshield_challenge_issued_total Challenge issued\n\
+         # TYPE eshield_challenge_issued_total counter\n\
+         eshield_challenge_issued_total {}\n",
         stats.total_dropped,
         stats.blacklist_blocked,
         stats.rate_limited,
@@ -304,6 +321,9 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         stats.adaptive_blocked,
         stats.udp_flood_blocked,
         stats.icmp_flood_blocked,
+        stats.waf_blocked,
+        stats.geoip_blocked,
+        stats.challenge_issued,
     );
 
     for attacker in &stats.top_attackers {

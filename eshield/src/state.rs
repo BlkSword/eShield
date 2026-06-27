@@ -18,6 +18,9 @@ pub struct Stats {
     pub adaptive_blocked: AtomicU64,
     pub udp_flood_blocked: AtomicU64,
     pub icmp_flood_blocked: AtomicU64,
+    pub waf_blocked: AtomicU64,
+    pub geoip_blocked: AtomicU64,
+    pub challenge_issued: AtomicU64,
     pub top_attackers: DashMap<IpKey, AtomicU64>,
 }
 
@@ -45,6 +48,9 @@ impl Stats {
                 r if r == rules::PORT_ACL => &self.total_dropped,
                 r if r == rules::UDP_FLOOD => &self.udp_flood_blocked,
                 r if r == rules::ICMP_FLOOD => &self.icmp_flood_blocked,
+                r if r == rules::WAF => &self.waf_blocked,
+                r if r == rules::GEOIP => &self.geoip_blocked,
+                r if r == rules::CHALLENGE => &self.challenge_issued,
                 _ => &self.total_dropped,
             };
             counter.fetch_add(count, Ordering::Relaxed);

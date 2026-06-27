@@ -5,7 +5,7 @@ use aya::{
 };
 use eshield_common::{
     rules, BlockEntry, IpFamily, IpKey, L7Pattern, PortAclEntry, RateLimitConfig, RuntimeConfig,
-    WhitelistKeyV4, WhitelistKeyV6,
+    WafRule, WhitelistKeyV4, WhitelistKeyV6,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -38,6 +38,9 @@ pub struct RuntimeConfigSnapshot {
     pub ebpf_debug_enabled: bool,
     pub udp_flood_enabled: bool,
     pub icmp_flood_enabled: bool,
+    pub waf_enabled: bool,
+    pub challenge_enabled: bool,
+    pub geoip_enabled: bool,
     pub rate_limit: RateLimitParams,
 }
 
@@ -51,7 +54,7 @@ pub struct RateLimitParams {
     pub block_duration_s: u64,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct RuntimeConfigPatch {
     pub rate_limit_enabled: Option<bool>,
     pub syn_proxy_enabled: Option<bool>,
@@ -59,6 +62,9 @@ pub struct RuntimeConfigPatch {
     pub ebpf_debug_enabled: Option<bool>,
     pub udp_flood_enabled: Option<bool>,
     pub icmp_flood_enabled: Option<bool>,
+    pub waf_enabled: Option<bool>,
+    pub challenge_enabled: Option<bool>,
+    pub geoip_enabled: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
 }
 
@@ -87,6 +93,7 @@ impl ControlState {
             init_rate_limit_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, config)?;
             init_port_acl_map(&mut guard, config)?;
+            init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
             apply_blacklist_map(&mut guard, config, &mut blacklist).await?;
@@ -107,6 +114,7 @@ impl ControlState {
         init_rate_limit_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config)?;
         init_port_acl_map(&mut guard, &config)?;
+        init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
 
@@ -321,10 +329,19 @@ impl ControlState {
         if let Some(enabled) = patch.icmp_flood_enabled {
             snapshot.icmp_flood_enabled = enabled;
         }
+        if let Some(enabled) = patch.waf_enabled {
+            snapshot.waf_enabled = enabled;
+        }
+        if let Some(enabled) = patch.challenge_enabled {
+            snapshot.challenge_enabled = enabled;
+        }
+        if let Some(enabled) = patch.geoip_enabled {
+            snapshot.geoip_enabled = enabled;
+        }
 
         let mut guard = self.ebpf.lock().await;
 
-        if let Some(rl) = patch.rate_limit {
+        if let Some(ref rl) = patch.rate_limit {
             snapshot.rate_limit = rl.clone();
             snapshot.rate_limit_enabled = rl.enabled;
             let mut rate_cfg: Array<_, RateLimitConfig> = guard
@@ -358,7 +375,10 @@ impl ControlState {
                     ebpf_debug: u8::from(snapshot.ebpf_debug_enabled),
                     udp_flood_enabled: u8::from(snapshot.udp_flood_enabled),
                     icmp_flood_enabled: u8::from(snapshot.icmp_flood_enabled),
-                    padding: [0; 2],
+                    waf_enabled: u8::from(snapshot.waf_enabled),
+                    challenge_enabled: u8::from(snapshot.challenge_enabled),
+                    geoip_enabled: u8::from(snapshot.geoip_enabled),
+                    padding: [0; 7],
                 },
                 0,
             )?;
@@ -421,6 +441,9 @@ impl RuntimeConfigSnapshot {
             ebpf_debug_enabled: config.ebpf_log_enabled,
             udp_flood_enabled: config.udp_flood_enabled,
             icmp_flood_enabled: config.icmp_flood_enabled,
+            waf_enabled: config.waf.enabled,
+            challenge_enabled: config.challenge.enabled,
+            geoip_enabled: config.geoip.enabled,
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
                 threshold: config.rate_limit.threshold,
@@ -447,7 +470,10 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
             ebpf_debug: u8::from(config.ebpf_log_enabled),
             udp_flood_enabled: u8::from(config.udp_flood_enabled),
             icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
-            padding: [0; 2],
+            waf_enabled: u8::from(config.waf.enabled),
+            challenge_enabled: u8::from(config.challenge.enabled),
+            geoip_enabled: u8::from(config.geoip.enabled),
+            padding: [0; 7],
         },
         0,
     )?;
@@ -542,6 +568,105 @@ fn init_port_acl_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn init_waf_rules_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
+    let mut waf_rules: Array<_, WafRule> = ebpf
+        .map_mut("WAF_RULES")
+        .context("WAF_RULES map not found")?
+        .try_into()?;
+
+    for i in 0..eshield_common::WAF_RULES_MAX as u32 {
+        let _ = waf_rules.set(i, WafRule::default(), 0);
+    }
+
+    for (i, item) in config.waf.rules.iter().enumerate().take(eshield_common::WAF_RULES_MAX) {
+        let rule = compile_waf_rule(item).with_context(|| format!("invalid waf rule {}", i))?;
+        waf_rules.set(i as u32, rule, 0)?;
+    }
+
+    Ok(())
+}
+
+fn compile_waf_rule(item: &crate::config::WafRuleItem) -> anyhow::Result<WafRule> {
+    use eshield_common::{waf_match, HttpMethod, WafAction};
+
+    let action = match item.action.to_lowercase().as_str() {
+        "drop" => WafAction::Drop as u8,
+        "log" => WafAction::Log as u8,
+        "challenge" => WafAction::Challenge as u8,
+        other => anyhow::bail!("invalid waf action: {}", other),
+    };
+
+    let method = if let Some(m) = &item.r#match.method {
+        match m.to_uppercase().as_str() {
+            "GET" => HttpMethod::Get as u8,
+            "POST" => HttpMethod::Post as u8,
+            "PUT" => HttpMethod::Put as u8,
+            "DELETE" => HttpMethod::Delete as u8,
+            "HEAD" => HttpMethod::Head as u8,
+            "OPTIONS" => HttpMethod::Options as u8,
+            "PATCH" => HttpMethod::Patch as u8,
+            "ANY" => HttpMethod::Any as u8,
+            other => anyhow::bail!("invalid waf method: {}", other),
+        }
+    } else {
+        HttpMethod::Any as u8
+    };
+
+    let mut match_flags = 0u8;
+
+    fn sig_mask(src: &Option<String>) -> ([u8; eshield_common::WAF_FIELD_LEN], [u8; eshield_common::WAF_FIELD_LEN]) {
+        let mut sig = [0u8; eshield_common::WAF_FIELD_LEN];
+        let mut mask = [0u8; eshield_common::WAF_FIELD_LEN];
+        if let Some(s) = src {
+            let bytes = s.as_bytes();
+            let len = bytes.len().min(eshield_common::WAF_FIELD_LEN);
+            sig[..len].copy_from_slice(&bytes[..len]);
+            for i in 0..len {
+                mask[i] = 0xff;
+            }
+        }
+        (sig, mask)
+    }
+
+    let (path_sig, path_mask) = sig_mask(&item.r#match.path_prefix);
+    let (host_sig, host_mask) = sig_mask(&item.r#match.host);
+    let (user_agent_sig, user_agent_mask) = sig_mask(&item.r#match.user_agent);
+    let (body_sig, body_mask) = sig_mask(&item.r#match.body_prefix);
+
+    if item.r#match.path_prefix.is_some() {
+        match_flags |= waf_match::PATH_PREFIX;
+    }
+    if item.r#match.host.is_some() {
+        match_flags |= waf_match::HOST;
+    }
+    if item.r#match.user_agent.is_some() {
+        match_flags |= waf_match::USER_AGENT;
+    }
+    if item.r#match.body_prefix.is_some() {
+        match_flags |= waf_match::BODY_PREFIX;
+    }
+    if item.r#match.method.is_some() {
+        match_flags |= waf_match::METHOD;
+    }
+
+    Ok(WafRule {
+        enabled: u8::from(item.enabled),
+        priority: item.priority,
+        action,
+        method,
+        match_flags,
+        padding: [0; 3],
+        path_sig,
+        path_mask,
+        host_sig,
+        host_mask,
+        user_agent_sig,
+        user_agent_mask,
+        body_sig,
+        body_mask,
+    })
 }
 
 async fn apply_whitelist_map(

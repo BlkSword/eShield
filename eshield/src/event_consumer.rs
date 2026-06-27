@@ -55,8 +55,14 @@ pub async fn run(
         *by_source.entry(src_key).or_insert(0) += 1;
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
 
-        if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
-            debug!("adaptive engine error: {}", e);
+        // WAF/Challenge/GeoIP 事件由各自模块独立处理，不进入通用自适应阈值引擎
+        if event.rule_id != eshield_common::rules::WAF
+            && event.rule_id != eshield_common::rules::CHALLENGE
+            && event.rule_id != eshield_common::rules::GEOIP
+        {
+            if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
+                debug!("adaptive engine error: {}", e);
+            }
         }
 
         debug!(
