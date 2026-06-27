@@ -102,7 +102,7 @@ impl ControlState {
             init_config_map(&mut guard, config)?;
             init_rate_limit_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, config)?;
-            init_port_acl_map(&mut guard, config)?;
+            init_port_acl_map(&mut guard, &config.port_acl)?;
             init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
@@ -126,7 +126,7 @@ impl ControlState {
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config)?;
-        init_port_acl_map(&mut guard, &config)?;
+        init_port_acl_map(&mut guard, &config.port_acl)?;
         init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
@@ -460,6 +460,29 @@ impl ControlState {
         Ok(())
     }
 
+    /// 完全替换当前端口 ACL，更新 eBPF Map、运行时快照与持久化存储。
+    pub async fn set_port_acl(&self, items: Vec<PortAclItem>) -> anyhow::Result<()> {
+        {
+            let mut guard = self.ebpf.lock().await;
+            init_port_acl_map(&mut guard, &items)?;
+        }
+
+        self.runtime.write().await.port_acl = items.clone();
+
+        if let Some(store) = &self.store {
+            store.save_port_acl_items(&items).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "port_acl": items }),
+        )
+        .await;
+        info!("port ACL updated: count={}", items.len());
+        Ok(())
+    }
+
     /// 完全替换当前 WAF 规则集，更新 eBPF Map、运行时快照与持久化存储。
     pub async fn set_waf_rules(&self, rules: Vec<WafRuleItem>) -> anyhow::Result<()> {
         let mut compiled = Vec::with_capacity(rules.len().min(eshield_common::WAF_RULES_MAX));
@@ -528,6 +551,12 @@ impl ControlState {
         if let Ok(rules) = store.load_waf_rules().await {
             if !rules.is_empty() {
                 self.set_waf_rules(rules).await?;
+            }
+        }
+
+        if let Ok(items) = store.load_port_acl_items().await {
+            if !items.is_empty() {
+                self.set_port_acl(items).await?;
             }
         }
 
@@ -668,7 +697,7 @@ fn init_l7_patterns_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn init_port_acl_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
+fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<()> {
     let mut port_acl: Array<_, PortAclEntry> = ebpf
         .map_mut("PORT_ACL")
         .context("PORT_ACL map not found")?
@@ -679,7 +708,7 @@ fn init_port_acl_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         let _ = port_acl.set(i, PortAclEntry::default(), 0);
     }
 
-    for (i, item) in config.port_acl.iter().enumerate() {
+    for (i, item) in items.iter().enumerate() {
         if i >= 128 {
             anyhow::bail!("too many port_acl entries (max 128)");
         }

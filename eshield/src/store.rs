@@ -233,6 +233,44 @@ impl RuleStore {
         .context("store task panicked")?
     }
 
+    pub async fn save_port_acl_items(
+        &self,
+        items: &[crate::config::PortAclItem],
+    ) -> anyhow::Result<()> {
+        let db = self.db.clone();
+        let value = serde_json::to_vec(items)?;
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(PORT_ACL)?;
+                table.insert(&0u32, value.as_slice())?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn load_port_acl_items(&self) -> anyhow::Result<Vec<crate::config::PortAclItem>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(PORT_ACL) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let value = table.get(&0u32)?;
+            match value {
+                Some(v) => Ok(serde_json::from_slice(v.value())?),
+                None => Ok(Vec::new()),
+            }
+        })
+        .await
+        .context("store task panicked")?
+    }
+
     pub async fn save_waf_rules(&self, rules: &[crate::config::WafRuleItem]) -> anyhow::Result<()> {
         let db = self.db.clone();
         let value = serde_json::to_vec(rules)?;

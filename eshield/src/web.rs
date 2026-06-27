@@ -65,6 +65,7 @@ pub async fn run(
         .route("/api/audit", get(audit_handler))
         .route("/api/waf/rules", get(list_waf_rules_handler).post(set_waf_rules_handler))
         .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
+        .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
         .route("/metrics", get(metrics_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
@@ -148,6 +149,11 @@ struct SetWafRulesReq {
 #[derive(Deserialize)]
 struct ReorderWafRulesReq {
     names: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct SetPortAclReq {
+    items: Vec<crate::config::PortAclItem>,
 }
 
 /// Challenge 签名密钥，用于防止 nonce 伪造（硬编码，生产环境应使用配置或随机启动密钥）。
@@ -356,6 +362,26 @@ async fn metrics_series_handler(
 async fn list_waf_rules_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
     let rt = state.control.runtime.read().await;
     Json(serde_json::json!({ "rules": rt.waf_rules }))
+}
+
+async fn list_port_acl_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let rt = state.control.runtime.read().await;
+    Json(serde_json::json!({ "items": rt.port_acl }))
+}
+
+async fn set_port_acl_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<SetPortAclReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    if req.items.len() > 128 {
+        return Err((StatusCode::BAD_REQUEST, "too many port_acl entries (max 128)".to_string()));
+    }
+    state
+        .control
+        .set_port_acl(req.items)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("端口 ACL 已更新")
 }
 
 async fn set_waf_rules_handler(
