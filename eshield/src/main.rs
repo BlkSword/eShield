@@ -5,6 +5,7 @@ mod auth;
 mod config;
 mod control;
 mod event_consumer;
+mod geoip;
 mod health;
 mod ip;
 mod logging;

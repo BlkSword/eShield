@@ -34,10 +34,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ip netns add eshield-server
-ip netns add eshield-client
+ip netns del eshield-client 2>/dev/null || true
+ip netns del eshield-server 2>/dev/null || true
 ip link del veth-server 2>/dev/null || true
 ip link del veth-client 2>/dev/null || true
+
+ip netns add eshield-server
+ip netns add eshield-client
 ip link add veth-server type veth peer name veth-client
 ip link set veth-server netns eshield-server
 ip link set veth-client netns eshield-client
@@ -409,5 +412,49 @@ wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
 
 rm -f "$mktemp_cfg" /tmp/l7_server_recv /tmp/l7_server_recv2
+
+
+echo "=== Test 8: GeoIP/ASN CIDR block should drop matching source network ==="
+cat > /tmp/geoip_country.csv <<'EOF'
+network,country_iso
+10.0.0.0/24,XX
+EOF
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[geoip]
+enabled = true
+country_blocks_csv = "/tmp/geoip_country.csv"
+block_countries = ["XX"]
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 3
+
+if ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
+    echo "FAIL: GeoIP CIDR block did not drop traffic"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+else
+    echo "PASS: GeoIP CIDR block dropped traffic"
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+rm -f /tmp/geoip_country.csv
 
 echo "=== All Phase 1+2 integration tests passed ==="

@@ -3,8 +3,8 @@ use aya_ebpf::{
     maps::{Array, LpmTrie, LruHashMap, PerCpuArray, RingBuf},
 };
 use eshield_common::{
-    BlockEntry, CookieSecret, GlobalStats, IpKey, L7Pattern, PortAclEntry, RateCounter,
-    RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
+    BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
+    RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -14,6 +14,14 @@ pub static WHITELIST_V4: LpmTrie<WhitelistKeyV4, u8> = LpmTrie::with_max_entries
 /// IPv6 白名单 CIDR 匹配（LPM Trie）
 #[map]
 pub static WHITELIST_V6: LpmTrie<WhitelistKeyV6, u8> = LpmTrie::with_max_entries(1024, 0);
+
+/// GeoIP/ASN IPv4 封禁 CIDR 匹配（LPM Trie）
+#[map]
+pub static GEOIP_BLOCKED_V4: LpmTrie<GeoIpKeyV4, u8> = LpmTrie::with_max_entries(4096, 0);
+
+/// GeoIP/ASN IPv6 封禁 CIDR 匹配（LPM Trie）
+#[map]
+pub static GEOIP_BLOCKED_V6: LpmTrie<GeoIpKeyV6, u8> = LpmTrie::with_max_entries(4096, 0);
 
 /// 动态黑名单（LRU Hash）：支持 IPv4 / IPv6
 #[map]

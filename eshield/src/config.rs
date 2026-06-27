@@ -81,7 +81,12 @@ pub struct PortAclItem {
 pub struct GeoIpConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
+    /// MaxMind/MMDB 数据库路径（预留，当前优先使用 CSV）
     pub db_path: Option<String>,
+    /// 自定义国家/地区 CSV：`network,country_iso`（支持 IPv4/IPv6 CIDR）
+    pub country_blocks_csv: Option<String>,
+    /// 自定义 ASN CSV：`network,asn,asn_org`（支持 IPv4/IPv6 CIDR）
+    pub asn_blocks_csv: Option<String>,
     #[serde(default)]
     pub block_countries: Vec<String>,
     #[serde(default)]

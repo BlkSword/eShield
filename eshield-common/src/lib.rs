@@ -236,6 +236,20 @@ pub struct WhitelistKeyV6 {
     pub addr: [u8; 16],
 }
 
+/// GeoIP/ASN 封禁 LPM Trie Key（IPv4）
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GeoIpKeyV4 {
+    pub addr: u32,
+}
+
+/// GeoIP/ASN 封禁 LPM Trie Key（IPv6）
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct GeoIpKeyV6 {
+    pub addr: [u8; 16],
+}
+
 /// 缓存行对齐的全局统计结构
 #[repr(C, align(128))]
 #[derive(Clone, Copy, Debug)]
@@ -331,8 +345,9 @@ impl Default for RateLimitConfig {
 #[cfg(feature = "userspace")]
 mod userspace_impls {
     use super::{
-        BlockEntry, CookieSecret, DropEvent, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-        RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
+        BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
+        PortAclEntry, RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4,
+        WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -344,6 +359,8 @@ mod userspace_impls {
     unsafe impl Pod for PortAclEntry {}
     unsafe impl Pod for WhitelistKeyV4 {}
     unsafe impl Pod for WhitelistKeyV6 {}
+    unsafe impl Pod for GeoIpKeyV4 {}
+    unsafe impl Pod for GeoIpKeyV6 {}
     unsafe impl Pod for IpKey {}
     unsafe impl Pod for GlobalStats {}
     unsafe impl Pod for RuntimeConfig {}

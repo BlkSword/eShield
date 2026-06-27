@@ -22,6 +22,8 @@ target
 
 # Local helpers / secrets
 .remote_pass
-.sync_remote.py
 .env
 ROADMAP.md
+
+# Sync logs
+sync*.log

@@ -4,8 +4,8 @@ use aya::{
     Ebpf,
 };
 use eshield_common::{
-    rules, BlockEntry, IpFamily, IpKey, L7Pattern, PortAclEntry, RateLimitConfig, RuntimeConfig,
-    WafRule, WhitelistKeyV4, WhitelistKeyV6,
+    rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
+    RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -25,6 +25,7 @@ pub struct ControlState {
     pub runtime: RwLock<RuntimeConfigSnapshot>,
     pub whitelist: Mutex<Vec<(IpKey, u32)>>,
     pub blacklist: Mutex<Vec<IpKey>>,
+    pub geoip_blocks: Mutex<Vec<(IpKey, u32)>>,
     pub auditor: Option<Auditor>,
     pub store: Option<RuleStore>,
 }
@@ -82,6 +83,7 @@ impl ControlState {
             runtime: RwLock::new(RuntimeConfigSnapshot::from_config(config)),
             whitelist: Mutex::new(Vec::new()),
             blacklist: Mutex::new(Vec::new()),
+            geoip_blocks: Mutex::new(Vec::new()),
             auditor,
             store,
         };
@@ -96,8 +98,10 @@ impl ControlState {
             init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
+            let mut geoip_blocks = state.geoip_blocks.lock().await;
             apply_blacklist_map(&mut guard, config, &mut blacklist).await?;
             apply_whitelist_map(&mut guard, config, &mut whitelist).await?;
+            apply_geoip_map(&mut guard, config, &mut geoip_blocks).await?;
         }
 
         Ok(state)
@@ -109,6 +113,7 @@ impl ControlState {
         let mut guard = self.ebpf.lock().await;
         let mut whitelist = self.whitelist.lock().await;
         let mut blacklist = self.blacklist.lock().await;
+        let mut geoip_blocks = self.geoip_blocks.lock().await;
 
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
@@ -117,6 +122,7 @@ impl ControlState {
         init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
+        apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
 
         *self.runtime.write().await = RuntimeConfigSnapshot::from_config(&config);
         drop(guard);
@@ -245,7 +251,7 @@ impl ControlState {
                     .context("WHITELIST_V4 map not found")?
                     .try_into()?;
                 whitelist.insert(
-                    &LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4() }),
+                    &LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4().to_be() }),
                     1,
                     0,
                 )?;
@@ -277,7 +283,7 @@ impl ControlState {
                     .map_mut("WHITELIST_V4")
                     .context("WHITELIST_V4 map not found")?
                     .try_into()?;
-                whitelist.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4() }))?;
+                whitelist.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4().to_be() }))?;
             }
             Some(IpFamily::Ipv6) => {
                 let mut whitelist: LpmTrie<_, WhitelistKeyV6, u8> = guard
@@ -715,10 +721,10 @@ async fn apply_whitelist_map(
             .context("WHITELIST_V4 map not found")?
             .try_into()?;
         for (addr, prefix) in remove_v4 {
-            whitelist_v4.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr }))?;
+            whitelist_v4.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: addr.to_be() }))?;
         }
         for (addr, prefix) in add_v4 {
-            whitelist_v4.insert(&LpmKey::new(prefix, WhitelistKeyV4 { addr }), 1, 0)?;
+            whitelist_v4.insert(&LpmKey::new(prefix, WhitelistKeyV4 { addr: addr.to_be() }), 1, 0)?;
         }
     }
 
@@ -731,7 +737,7 @@ async fn apply_whitelist_map(
             whitelist_v6.remove(&LpmKey::new(prefix, WhitelistKeyV6 { addr }))?;
         }
         for (addr, prefix) in add_v6 {
-            whitelist_v6.insert(&LpmKey::new(prefix, WhitelistKeyV6 { addr }), 1, 0)?;
+            whitelist_v6.insert(&LpmKey::new(prefix, WhitelistKeyV6 { addr: addr }), 1, 0)?;
         }
     }
 
@@ -785,6 +791,91 @@ async fn apply_blacklist_map(
 
     current.clear();
     current.extend(new);
+    Ok(())
+}
+
+async fn apply_geoip_map(
+    ebpf: &mut Ebpf,
+    config: &Config,
+    current: &mut Vec<(IpKey, u32)>,
+) -> anyhow::Result<()> {
+    // 先分类旧条目，避免同时借用两个 map。
+    let mut old_v4 = Vec::new();
+    let mut old_v6 = Vec::new();
+    for (key, prefix) in current.drain(..) {
+        match key.family() {
+            Some(IpFamily::Ipv4) => old_v4.push((key.ipv4(), prefix)),
+            Some(IpFamily::Ipv6) => old_v6.push((key.addr, prefix)),
+            _ => {}
+        }
+    }
+
+    // 清空旧规则
+    {
+        let mut geoip_v4: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V4")
+            .context("GEOIP_BLOCKED_V4 map not found")?
+            .try_into()?;
+        for (addr, prefix) in old_v4 {
+            geoip_v4.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
+        }
+    }
+    {
+        let mut geoip_v6: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V6")
+            .context("GEOIP_BLOCKED_V6 map not found")?
+            .try_into()?;
+        for (addr, prefix) in old_v6 {
+            geoip_v6.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
+        }
+    }
+
+    if !config.geoip.enabled {
+        return Ok(());
+    }
+
+    let blocks = crate::geoip::load_geoip_blocks(&config.geoip)?;
+    if blocks.is_empty() {
+        return Ok(());
+    }
+
+    // 分类新条目
+    let mut new_v4 = Vec::new();
+    let mut new_v6 = Vec::new();
+    for block in blocks {
+        match block.key.family() {
+            Some(IpFamily::Ipv4) => new_v4.push((block.key.ipv4(), block.prefix)),
+            Some(IpFamily::Ipv6) => new_v6.push((block.key.addr, block.prefix)),
+            _ => continue,
+        }
+        info!(
+            "added GeoIP block: {}/{} {}",
+            format_ip_key(&block.key),
+            block.prefix,
+            block.reason
+        );
+        current.push((block.key, block.prefix));
+    }
+
+    {
+        let mut geoip_v4: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V4")
+            .context("GEOIP_BLOCKED_V4 map not found")?
+            .try_into()?;
+        for (addr, prefix) in new_v4 {
+            geoip_v4.insert(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }), 1, 0)?;
+        }
+    }
+    {
+        let mut geoip_v6: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V6")
+            .context("GEOIP_BLOCKED_V6 map not found")?
+            .try_into()?;
+        for (addr, prefix) in new_v6 {
+            geoip_v6.insert(&LpmKey::new(prefix, GeoIpKeyV6 { addr }), 1, 0)?;
+        }
+    }
+
     Ok(())
 }
 

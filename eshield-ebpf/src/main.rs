@@ -19,8 +19,8 @@ use aya_ebpf::{
     bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, macros::xdp, programs::XdpContext,
 };
 use aya_log_ebpf::debug;
-use eshield_common::{IpKey, WhitelistKeyV4, WhitelistKeyV6};
-use maps::{CONFIG, GLOBAL_STATS, WHITELIST_V4, WHITELIST_V6};
+use eshield_common::{GeoIpKeyV4, GeoIpKeyV6, IpKey, WhitelistKeyV4, WhitelistKeyV6};
+use maps::{CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, WHITELIST_V4, WHITELIST_V6};
 use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, UdpHdr, ETH_HDR_LEN};
 
 #[xdp]
@@ -129,7 +129,29 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
 
-    // 6. SYN Cookie 代理（仅 IPv4 TCP） / SYN Flood 检测
+    // 6. GeoIP/ASN 封禁（LPM Trie CIDR 匹配）
+    let geoip_blocked = is_geoip_blocked(&src_key);
+    if runtime.ebpf_debug != 0 {
+        debug!(
+            ctx,
+            "geoip check enabled={} blocked={}",
+            runtime.geoip_enabled as u32,
+            geoip_blocked as u32
+        );
+    }
+    if runtime.geoip_enabled != 0 && geoip_blocked {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                let stats = &mut *stats;
+                stats.total_dropped += 1;
+                stats.geoip_blocked += 1;
+            }
+        }
+        emit_geoip_event(ctx, &src_key, protocol);
+        return Ok(xdp_action::XDP_DROP);
+    }
+
+    // 7. SYN Cookie 代理（仅 IPv4 TCP） / SYN Flood 检测
     if protocol == parser::IPPROTO_TCP {
         if src_key.family == (eshield_common::IpFamily::Ipv4 as u8)
             && runtime.syn_proxy_enabled != 0
@@ -311,7 +333,8 @@ fn read_dport(ctx: &XdpContext, transport_offset: usize, protocol: u8) -> Result
 fn is_whitelisted(src: &IpKey) -> bool {
     match src.family() {
         Some(eshield_common::IpFamily::Ipv4) => {
-            let key = LpmKey::new(32, WhitelistKeyV4 { addr: src.ipv4() });
+            // LPM Trie data 必须按网络字节序存储/匹配。
+            let key = LpmKey::new(32, WhitelistKeyV4 { addr: src.ipv4().to_be() });
             WHITELIST_V4.get(&key).is_some()
         }
         Some(eshield_common::IpFamily::Ipv6) => {
@@ -319,6 +342,35 @@ fn is_whitelisted(src: &IpKey) -> bool {
             WHITELIST_V6.get(&key).is_some()
         }
         None => false,
+    }
+}
+
+fn is_geoip_blocked(src: &IpKey) -> bool {
+    match src.family() {
+        Some(eshield_common::IpFamily::Ipv4) => {
+            // LPM Trie data 必须按网络字节序存储/匹配。
+            let key = LpmKey::new(32, GeoIpKeyV4 { addr: src.ipv4().to_be() });
+            GEOIP_BLOCKED_V4.get(&key).is_some()
+        }
+        Some(eshield_common::IpFamily::Ipv6) => {
+            let key = LpmKey::new(128, GeoIpKeyV6 { addr: src.addr });
+            GEOIP_BLOCKED_V6.get(&key).is_some()
+        }
+        None => false,
+    }
+}
+
+fn emit_geoip_event(ctx: &XdpContext, src: &IpKey, protocol: u8) {
+    if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
+        let event = unsafe { entry.as_mut_ptr() as *mut eshield_common::DropEvent };
+        unsafe {
+            (*event).timestamp_ns = bpf_ktime_get_ns();
+            (*event).src_ip = src.addr;
+            (*event).family = src.family;
+            (*event).protocol = protocol;
+            (*event).rule_id = eshield_common::rules::GEOIP;
+        }
+        entry.submit(0);
     }
 }
 
