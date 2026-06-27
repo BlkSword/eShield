@@ -47,10 +47,10 @@
 | **威胁情报联动** | 定时同步 AbuseIPDB、CINS 或自定义 URL 的 feed，自动拦截已知恶意 IP。 |
 | **L7 轻量指纹扫描** | 检查 TCP 载荷前 64 字节，匹配特征即 DROP（如恶意 UA、扫描指纹）。 |
 | **自适应阈值引擎** | 重复触发规则的 IP 自动提升为更长时间的封禁。 |
-| **实时控制** | REST API + 中文 Web 表单 + CLI，可实时封禁/解封 IP、更新速率限制与开关。 |
+| **实时控制** | REST API + 中文 Web Dashboard + CLI，可实时封禁/解封 IP、编辑 WAF/端口 ACL/L7 指纹规则、更新速率限制与开关。 |
 | **配置热加载** | 通过 `SIGHUP` 或 `systemctl reload` 重新加载配置文件，无需重启服务。 |
 | **认证/审计/持久化** | 可选 Bearer Token；审计日志；动态规则持久化到 redb。 |
-| **可观测性** | 中文 Web Dashboard、Prometheus `/metrics`、健康检查、告警 Webhook、JSON/文本日志、中文 TUI 仪表盘。 |
+| **可观测性** | 中文 Web Dashboard（侧边栏导航、暗黑/亮色主题、实时流量趋势图、IP 情报抽屉）、Prometheus `/metrics`、健康检查、告警 Webhook、JSON/文本日志、中文 TUI 仪表盘。 |
 | **单二进制静态链接** | 基于 musl 静态编译，发布时仅需一个 `eshield` 可执行文件。 |
 
 ---
