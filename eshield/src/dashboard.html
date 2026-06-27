@@ -343,8 +343,8 @@
             <div class="section-body"><table><thead><tr><th>协议</th><th>目的端口</th><th>动作</th><th>操作</th></tr></thead><tbody id="port-acl-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table></div>
           </div>
           <div class="section">
-            <div class="section-header"><h3 class="section-title">L7 指纹</h3></div>
-            <div class="section-body"><table><thead><tr><th>#</th><th>模式</th><th>掩码</th></tr></thead><tbody id="l7-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody></table></div>
+            <div class="section-header"><h3 class="section-title">L7 指纹</h3><button class="btn btn-sm" onclick="openL7Modal()">+ 添加</button></div>
+            <div class="section-body"><table><thead><tr><th>#</th><th>模式</th><th>掩码</th><th>操作</th></tr></thead><tbody id="l7-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table></div>
           </div>
           <div class="section">
             <div class="section-header"><h3 class="section-title">GeoIP 配置</h3></div>
@@ -501,6 +501,23 @@
       <div style="margin-top:1.5rem;display:flex;gap:.75rem">
         <button class="btn" onclick="savePortAcl()">保存</button>
         <button class="btn btn-secondary" onclick="closePortAclModal()">取消</button>
+      </div>
+    </div>
+  </aside>
+
+  <div class="drawer-backdrop" id="l7-backdrop" onclick="closeL7Modal()"></div>
+  <aside class="drawer" id="l7-modal">
+    <div class="drawer-header">
+      <h3 id="l7-modal-title">L7 指纹</h3>
+      <button class="icon-btn" onclick="closeL7Modal()">✕</button>
+    </div>
+    <div class="drawer-body">
+      <input type="hidden" id="l7-edit-idx" value="-1">
+      <div class="form-group"><label>模式字符串</label><input type="text" id="l7-pattern" placeholder="例如 sqlmap"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>掩码（可选，与模式等长）</label><input type="text" id="l7-mask" placeholder="例如 ffff00"></div>
+      <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+        <button class="btn" onclick="saveL7Pattern()">保存</button>
+        <button class="btn btn-secondary" onclick="closeL7Modal()">取消</button>
       </div>
     </div>
   </aside>
@@ -829,6 +846,51 @@
       } catch (e) { toast(e.message, 'error'); }
     }
 
+    function openL7Modal(idx = -1) {
+      document.getElementById('l7-modal-title').textContent = idx === -1 ? '添加 L7 指纹' : '编辑 L7 指纹';
+      document.getElementById('l7-edit-idx').value = idx;
+      const patterns = (currentConfig.l7_scan && currentConfig.l7_scan.patterns) || [];
+      if (idx >= 0 && idx < patterns.length) {
+        document.getElementById('l7-pattern').value = patterns[idx].pattern;
+        document.getElementById('l7-mask').value = patterns[idx].mask || '';
+      } else {
+        document.getElementById('l7-pattern').value = '';
+        document.getElementById('l7-mask').value = '';
+      }
+      document.getElementById('l7-backdrop').classList.add('active');
+      document.getElementById('l7-modal').classList.add('active');
+    }
+    function closeL7Modal() {
+      document.getElementById('l7-backdrop').classList.remove('active');
+      document.getElementById('l7-modal').classList.remove('active');
+    }
+    async function saveL7Pattern() {
+      const idx = parseInt(document.getElementById('l7-edit-idx').value);
+      let patterns = ((currentConfig.l7_scan && currentConfig.l7_scan.patterns) || []).slice();
+      const p = {
+        pattern: document.getElementById('l7-pattern').value,
+        mask: document.getElementById('l7-mask').value || undefined
+      };
+      if (idx >= 0 && idx < patterns.length) patterns[idx] = p;
+      else patterns.push(p);
+      try {
+        await api('POST', '/api/l7-patterns', { patterns });
+        toast('L7 指纹已保存', 'success');
+        closeL7Modal();
+        refreshRules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function deleteL7Pattern(idx) {
+      if (!confirm('确定删除这个 L7 指纹？')) return;
+      let patterns = ((currentConfig.l7_scan && currentConfig.l7_scan.patterns) || []).slice();
+      patterns.splice(idx, 1);
+      try {
+        await api('POST', '/api/l7-patterns', { patterns });
+        toast('已删除', 'success');
+        refreshRules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
     async function refreshRules() {
       try {
         const c = await apiJson('GET', '/api/config');
@@ -858,10 +920,10 @@
         const l7Body = document.getElementById('l7-body');
         l7Body.innerHTML = '';
         const patterns = (c.l7_scan && c.l7_scan.patterns) || [];
-        if (patterns.length === 0) l7Body.innerHTML = '<tr><td colspan="3" class="empty">未配置</td></tr>';
+        if (patterns.length === 0) l7Body.innerHTML = '<tr><td colspan="4" class="empty">未配置</td></tr>';
         patterns.forEach((p, i) => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${i}</td><td>${p.pattern}</td><td>${p.mask || '-'}</td>`;
+          tr.innerHTML = `<td>${i}</td><td>${p.pattern}</td><td>${p.mask || '-'}</td><td><button class="btn btn-sm btn-secondary" onclick="openL7Modal(${i})">编辑</button> <button class="btn btn-sm btn-danger" onclick="deleteL7Pattern(${i})">删除</button></td>`;
           l7Body.appendChild(tr);
         });
 

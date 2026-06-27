@@ -101,7 +101,7 @@ impl ControlState {
             let mut guard = state.ebpf.lock().await;
             init_config_map(&mut guard, config)?;
             init_rate_limit_map(&mut guard, config)?;
-            init_l7_patterns_map(&mut guard, config)?;
+            init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
             init_port_acl_map(&mut guard, &config.port_acl)?;
             init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
@@ -125,7 +125,7 @@ impl ControlState {
 
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
-        init_l7_patterns_map(&mut guard, &config)?;
+        init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
         init_port_acl_map(&mut guard, &config.port_acl)?;
         init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
@@ -460,6 +460,32 @@ impl ControlState {
         Ok(())
     }
 
+    /// 完全替换当前 L7 指纹模式，更新 eBPF Map、运行时快照与持久化存储。
+    pub async fn set_l7_patterns(
+        &self,
+        patterns: Vec<crate::config::L7PatternConfig>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut guard = self.ebpf.lock().await;
+            init_l7_patterns_map(&mut guard, &patterns)?;
+        }
+
+        self.runtime.write().await.l7_scan.patterns = patterns.clone();
+
+        if let Some(store) = &self.store {
+            store.save_l7_patterns(&patterns).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "l7_patterns": patterns }),
+        )
+        .await;
+        info!("L7 patterns updated: count={}", patterns.len());
+        Ok(())
+    }
+
     /// 完全替换当前端口 ACL，更新 eBPF Map、运行时快照与持久化存储。
     pub async fn set_port_acl(&self, items: Vec<PortAclItem>) -> anyhow::Result<()> {
         {
@@ -560,6 +586,12 @@ impl ControlState {
             }
         }
 
+        if let Ok(patterns) = store.load_l7_patterns().await {
+            if !patterns.is_empty() {
+                self.set_l7_patterns(patterns).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -650,7 +682,7 @@ fn init_rate_limit_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_l7_patterns_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
+fn init_l7_patterns_map(ebpf: &mut Ebpf, pattern_cfgs: &[crate::config::L7PatternConfig]) -> anyhow::Result<()> {
     let mut patterns: Array<_, L7Pattern> = ebpf
         .map_mut("L7_PATTERNS")
         .context("L7_PATTERNS map not found")?
@@ -661,7 +693,7 @@ fn init_l7_patterns_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> 
         let _ = patterns.set(i, eshield_common::L7Pattern::default(), 0);
     }
 
-    for (i, pat_cfg) in config.l7_scan.patterns.iter().enumerate().take(16) {
+    for (i, pat_cfg) in pattern_cfgs.iter().enumerate().take(16) {
         let pattern_bytes = pat_cfg.pattern.as_bytes();
         if pattern_bytes.len() > 8 {
             anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
