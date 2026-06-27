@@ -11,6 +11,7 @@ mod ip;
 mod logging;
 mod state;
 mod store;
+mod threat_intel;
 mod tui;
 mod web;
 
@@ -248,6 +249,15 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动威胁情报同步任务
+    let threat_intel_handle = {
+        let control = control.clone();
+        let ti_config = config.threat_intel.clone();
+        tokio::spawn(async move {
+            threat_intel::ThreatIntelSync::new(control).run(ti_config).await;
+        })
+    };
+
     // 启动事件消费任务：周期性获取 Ebpf 锁消费事件，避免阻塞热加载
     let event_handle = {
         let stats = state.stats.clone();
@@ -296,9 +306,11 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     event_handle.abort();
     rotator_handle.abort();
     alert_handle.abort();
+    threat_intel_handle.abort();
     let _ = event_handle.await;
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
+    let _ = threat_intel_handle.await;
 
     Ok(())
 }

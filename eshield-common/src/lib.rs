@@ -93,6 +93,7 @@ pub mod rules {
     pub const WAF: u16 = 10;
     pub const GEOIP: u16 = 11;
     pub const CHALLENGE: u16 = 12;
+    pub const THREAT_INTEL: u16 = 13;
 }
 
 /// WAF 规则在 eBPF Map 中的最大数量（保持较小以便 eBPF verifier 快速收敛）

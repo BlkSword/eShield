@@ -457,4 +457,60 @@ wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
 rm -f /tmp/geoip_country.csv
 
-echo "=== All Phase 1+2 integration tests passed ==="
+echo "=== Test 9: Threat intel feed should block listed IP ==="
+mkdir -p /tmp/ti-feed
+cat > /tmp/ti-feed/feed.txt <<'EOF'
+# test threat feed
+10.0.0.2
+EOF
+
+# 在 server netns 中启动一个简单 HTTP server 提供 feed
+ip netns exec eshield-server python3 -m http.server 8081 --directory /tmp/ti-feed >/dev/null 2>&1 &
+HTTP_PID=$!
+sleep 1
+
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[threat_intel]
+enabled = true
+
+[[threat_intel.feeds]]
+name = "test-feed"
+url = "http://10.0.0.1:8081/feed.txt"
+interval_s = 5
+action = "drop"
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 8
+
+if ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
+    echo "FAIL: threat intel feed did not drop traffic"
+    kill $ESHIELD_PID 2>/dev/null || true
+    kill $HTTP_PID 2>/dev/null || true
+    exit 1
+else
+    echo "PASS: threat intel feed dropped traffic"
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+kill $HTTP_PID 2>/dev/null || true
+wait $HTTP_PID 2>/dev/null || true
+rm -rf /tmp/ti-feed
+
+echo "=== All Phase 1+2+3 integration tests passed ==="

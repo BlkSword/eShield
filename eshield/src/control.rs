@@ -142,7 +142,7 @@ impl ControlState {
     /// 实时封禁某个 IP（API 控制）。支持 IPv4/IPv6。
     pub async fn block_ip(&self, ip_str: &str, duration_s: u64) -> anyhow::Result<()> {
         let key = parse_ip_or_cidr(ip_str)?;
-        self.block_ip_raw(key, duration_s).await?;
+        self.block_ip_raw(key, duration_s, rules::API_BLOCK as u8).await?;
 
         if let Some(store) = &self.store {
             let now_ns = now_ns();
@@ -167,7 +167,34 @@ impl ControlState {
         Ok(())
     }
 
-    async fn block_ip_raw(&self, key: IpKey, duration_s: u64) -> anyhow::Result<()> {
+    /// 通过威胁情报 feed 封禁某个 IP。
+    pub async fn block_ip_threat_intel(&self, key: IpKey, duration_s: u64) -> anyhow::Result<()> {
+        self.block_ip_raw(key, duration_s, rules::THREAT_INTEL as u8).await?;
+
+        if let Some(store) = &self.store {
+            let now_ns = now_ns();
+            let blocked_until_ns = if duration_s == 0 {
+                0
+            } else {
+                let block_ns = duration_s.saturating_mul(1_000_000_000);
+                now_ns.saturating_add(block_ns)
+            };
+            store
+                .save_blacklist(key, blocked_until_ns, rules::THREAT_INTEL as u8, now_ns)
+                .await?;
+        }
+
+        self.audit(
+            "threat_intel",
+            AuditAction::BlockIp,
+            serde_json::json!({ "ip": format_ip_key(&key), "duration_s": duration_s }),
+        )
+        .await;
+        info!("threat intel block: {} duration={}s", format_ip_key(&key), duration_s);
+        Ok(())
+    }
+
+    async fn block_ip_raw(&self, key: IpKey, duration_s: u64, reason: u8) -> anyhow::Result<()> {
         let mut guard = self.ebpf.lock().await;
         let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
             .map_mut("BLACKLIST")
@@ -186,7 +213,7 @@ impl ControlState {
             key,
             BlockEntry {
                 blocked_until_ns,
-                block_reason: rules::API_BLOCK as u8,
+                block_reason: reason,
                 hit_count: 0,
                 first_seen_ns: now_ns(),
             },
@@ -241,7 +268,7 @@ impl ControlState {
         Ok(())
     }
 
-    async fn allow_cidr_raw(&self, key: IpKey, prefix: u32) -> anyhow::Result<()> {
+    pub(crate) async fn allow_cidr_raw(&self, key: IpKey, prefix: u32) -> anyhow::Result<()> {
         let mut guard = self.ebpf.lock().await;
 
         match key.family() {
@@ -406,7 +433,7 @@ impl ControlState {
         let Some(store) = &self.store else { return Ok(()) };
 
         let now_ns = now_ns();
-        for (key, blocked_until_ns, _reason, _first_seen_ns) in store.load_blacklist().await? {
+        for (key, blocked_until_ns, reason, _first_seen_ns) in store.load_blacklist().await? {
             // 已过期则跳过
             if blocked_until_ns != 0 && blocked_until_ns <= now_ns {
                 continue;
@@ -416,7 +443,7 @@ impl ControlState {
             } else {
                 blocked_until_ns.saturating_sub(now_ns) / 1_000_000_000
             };
-            self.block_ip_raw(key, duration_s).await?;
+            self.block_ip_raw(key, duration_s, reason).await?;
         }
 
         for (key, prefix) in store.load_whitelist().await? {
