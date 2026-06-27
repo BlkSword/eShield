@@ -63,6 +63,8 @@ pub async fn run(
             post(allow_cidr_handler).delete(disallow_cidr_handler),
         )
         .route("/api/audit", get(audit_handler))
+        .route("/api/waf/rules", get(list_waf_rules_handler).post(set_waf_rules_handler))
+        .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
         .route("/metrics", get(metrics_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
@@ -136,6 +138,16 @@ struct ChallengePassReq {
     ip: String,
     nonce: String,
     answer: u64,
+}
+
+#[derive(Deserialize)]
+struct SetWafRulesReq {
+    rules: Vec<crate::config::WafRuleItem>,
+}
+
+#[derive(Deserialize)]
+struct ReorderWafRulesReq {
+    names: Vec<String>,
 }
 
 /// Challenge 签名密钥，用于防止 nonce 伪造（硬编码，生产环境应使用配置或随机启动密钥）。
@@ -339,6 +351,51 @@ async fn metrics_series_handler(
         .await
         .snapshot(q.duration_s);
     Json(serde_json::json!({ "series": series }))
+}
+
+async fn list_waf_rules_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let rt = state.control.runtime.read().await;
+    Json(serde_json::json!({ "rules": rt.waf_rules }))
+}
+
+async fn set_waf_rules_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<SetWafRulesReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    if req.rules.len() > eshield_common::WAF_RULES_MAX {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("too many WAF rules (max {})", eshield_common::WAF_RULES_MAX),
+        ));
+    }
+    state
+        .control
+        .set_waf_rules(req.rules)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("WAF 规则已更新")
+}
+
+async fn reorder_waf_rules_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<ReorderWafRulesReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    let mut rules = state.control.runtime.read().await.waf_rules.clone();
+    let mut new_order: Vec<crate::config::WafRuleItem> = Vec::with_capacity(req.names.len());
+    for name in &req.names {
+        if let Some(pos) = rules.iter().position(|r| &r.name == name) {
+            new_order.push(rules.remove(pos));
+        } else {
+            return Err((StatusCode::BAD_REQUEST, format!("rule not found: {}", name)));
+        }
+    }
+    new_order.extend(rules);
+    state
+        .control
+        .set_waf_rules(new_order)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("WAF 规则顺序已更新")
 }
 
 async fn audit_handler(

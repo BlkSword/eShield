@@ -9,6 +9,8 @@ use std::sync::Arc;
 const BLACKLIST: TableDefinition<&[u8], &[u8]> = TableDefinition::new("blacklist");
 const WHITELIST: TableDefinition<&[u8], &[u8]> = TableDefinition::new("whitelist");
 const PORT_ACL: TableDefinition<u32, &[u8]> = TableDefinition::new("port_acl");
+const WAF_RULES: TableDefinition<u32, &[u8]> = TableDefinition::new("waf_rules");
+const L7_PATTERNS: TableDefinition<u32, &[u8]> = TableDefinition::new("l7_patterns");
 
 #[derive(Clone)]
 pub struct RuleStore {
@@ -205,7 +207,11 @@ impl RuleStore {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             let tx = db.begin_read()?;
-            let table = tx.open_table(PORT_ACL)?;
+            let table = match tx.open_table(PORT_ACL) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
             let mut out = Vec::new();
             for item in table.iter()? {
                 let (k, v) = item?;
@@ -222,6 +228,79 @@ impl RuleStore {
                 ));
             }
             Ok(out)
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn save_waf_rules(&self, rules: &[crate::config::WafRuleItem]) -> anyhow::Result<()> {
+        let db = self.db.clone();
+        let value = serde_json::to_vec(rules)?;
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(WAF_RULES)?;
+                table.insert(&0u32, value.as_slice())?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn load_waf_rules(&self) -> anyhow::Result<Vec<crate::config::WafRuleItem>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(WAF_RULES) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let value = table.get(&0u32)?;
+            match value {
+                Some(v) => Ok(serde_json::from_slice(v.value())?),
+                None => Ok(Vec::new()),
+            }
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn save_l7_patterns(
+        &self,
+        patterns: &[crate::config::L7PatternConfig],
+    ) -> anyhow::Result<()> {
+        let db = self.db.clone();
+        let value = serde_json::to_vec(patterns)?;
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(L7_PATTERNS)?;
+                table.insert(&0u32, value.as_slice())?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn load_l7_patterns(&self) -> anyhow::Result<Vec<crate::config::L7PatternConfig>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(L7_PATTERNS) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let value = table.get(&0u32)?;
+            match value {
+                Some(v) => Ok(serde_json::from_slice(v.value())?),
+                None => Ok(Vec::new()),
+            }
         })
         .await
         .context("store task panicked")?

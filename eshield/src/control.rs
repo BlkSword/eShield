@@ -460,6 +460,45 @@ impl ControlState {
         Ok(())
     }
 
+    /// 完全替换当前 WAF 规则集，更新 eBPF Map、运行时快照与持久化存储。
+    pub async fn set_waf_rules(&self, rules: Vec<WafRuleItem>) -> anyhow::Result<()> {
+        let mut compiled = Vec::with_capacity(rules.len().min(eshield_common::WAF_RULES_MAX));
+        for (i, item) in rules.iter().enumerate().take(eshield_common::WAF_RULES_MAX) {
+            compiled.push(
+                compile_waf_rule(item).with_context(|| format!("invalid waf rule {}", i))?,
+            );
+        }
+
+        {
+            let mut guard = self.ebpf.lock().await;
+            let mut waf_rules: Array<_, WafRule> = guard
+                .map_mut("WAF_RULES")
+                .context("WAF_RULES map not found")?
+                .try_into()?;
+            for i in 0..eshield_common::WAF_RULES_MAX as u32 {
+                let _ = waf_rules.set(i, WafRule::default(), 0);
+            }
+            for (i, rule) in compiled.iter().enumerate() {
+                waf_rules.set(i as u32, *rule, 0)?;
+            }
+        }
+
+        self.runtime.write().await.waf_rules = rules.clone();
+
+        if let Some(store) = &self.store {
+            store.save_waf_rules(&rules).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "waf_rules": rules }),
+        )
+        .await;
+        info!("WAF rules updated: count={}", compiled.len());
+        Ok(())
+    }
+
     /// 从持久化存储加载动态规则并应用（不记录审计，避免启动/重载时产生大量日志）。
     pub async fn load_persisted_rules(&self) -> anyhow::Result<()> {
         let Some(store) = &self.store else { return Ok(()) };
@@ -484,6 +523,12 @@ impl ControlState {
 
         for (key, prefix) in store.load_whitelist().await? {
             self.allow_cidr_raw(key, prefix).await?;
+        }
+
+        if let Ok(rules) = store.load_waf_rules().await {
+            if !rules.is_empty() {
+                self.set_waf_rules(rules).await?;
+            }
         }
 
         Ok(())
@@ -665,7 +710,7 @@ fn init_waf_rules_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn compile_waf_rule(item: &crate::config::WafRuleItem) -> anyhow::Result<WafRule> {
+pub(crate) fn compile_waf_rule(item: &crate::config::WafRuleItem) -> anyhow::Result<WafRule> {
     use eshield_common::{waf_match, HttpMethod, WafAction};
 
     let action = match item.action.to_lowercase().as_str() {

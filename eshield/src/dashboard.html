@@ -335,8 +335,8 @@
         <div class="page" id="page-rules">
           <h2 class="page-title">规则中心</h2>
           <div class="section">
-            <div class="section-header"><h3 class="section-title">WAF 规则</h3></div>
-            <div class="section-body"><table><thead><tr><th>优先级</th><th>名称</th><th>状态</th><th>动作</th><th>方法</th><th>路径前缀</th><th>Host</th><th>UA</th></tr></thead><tbody id="waf-body"><tr><td colspan="8" class="empty">加载中...</td></tr></tbody></table></div>
+            <div class="section-header"><h3 class="section-title">WAF 规则</h3><button class="btn btn-sm" onclick="openWafModal()">+ 添加规则</button></div>
+            <div class="section-body"><table><thead><tr><th>优先级</th><th>名称</th><th>状态</th><th>动作</th><th>方法</th><th>路径前缀</th><th>Host</th><th>UA</th><th>操作</th></tr></thead><tbody id="waf-body"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody></table></div>
           </div>
           <div class="section">
             <div class="section-header"><h3 class="section-title">端口 / 协议 ACL</h3></div>
@@ -456,6 +456,32 @@
   </div>
 
   <div class="toast-container" id="toast-container"></div>
+
+  <div class="drawer-backdrop" id="modal-backdrop" onclick="closeWafModal()"></div>
+  <aside class="drawer" id="waf-modal">
+    <div class="drawer-header">
+      <h3 id="waf-modal-title">WAF 规则</h3>
+      <button class="icon-btn" onclick="closeWafModal()">✕</button>
+    </div>
+    <div class="drawer-body">
+      <input type="hidden" id="waf-edit-idx" value="-1">
+      <div class="form-group"><label>名称</label><input type="text" id="waf-name" placeholder="例如 block-admin"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>优先级（数字越小越优先）</label><input type="number" id="waf-priority" value="0" min="0" max="255"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>动作</label>
+        <select id="waf-action"><option value="drop">drop</option><option value="log">log</option><option value="challenge">challenge</option></select>
+      </div>
+      <div class="form-group" style="margin-top:.75rem"><label>Method</label><input type="text" id="waf-method" placeholder="GET / POST / ANY，留空匹配所有"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>路径前缀</label><input type="text" id="waf-path" placeholder="例如 /admin"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>Host</label><input type="text" id="waf-host" placeholder="例如 api.example.com"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>User-Agent</label><input type="text" id="waf-ua" placeholder="例如 bot"></div>
+      <div class="form-group" style="margin-top:.75rem"><label>Body 前缀</label><input type="text" id="waf-body" placeholder="例如 <?php"></div>
+      <label class="switch" style="margin-top:1rem"><input type="checkbox" id="waf-enabled" checked> 启用</label>
+      <div style="margin-top:1.5rem;display:flex;gap:.75rem">
+        <button class="btn" onclick="saveWafRule()">保存</button>
+        <button class="btn btn-secondary" onclick="closeWafModal()">取消</button>
+      </div>
+    </div>
+  </aside>
 
   <div class="drawer-backdrop" id="drawer-backdrop" onclick="closeDrawer()"></div>
   <aside class="drawer" id="ip-drawer">
@@ -649,6 +675,90 @@
     }
 
     // Rules page
+    function openWafModal(idx = -1) {
+      document.getElementById('waf-modal-title').textContent = idx === -1 ? '添加 WAF 规则' : '编辑 WAF 规则';
+      document.getElementById('waf-edit-idx').value = idx;
+      const rules = currentConfig.waf_rules || [];
+      if (idx >= 0 && idx < rules.length) {
+        const r = rules[idx];
+        const m = r.match || {};
+        document.getElementById('waf-name').value = r.name;
+        document.getElementById('waf-priority').value = r.priority;
+        document.getElementById('waf-action').value = r.action;
+        document.getElementById('waf-method').value = m.method || '';
+        document.getElementById('waf-path').value = m.path_prefix || '';
+        document.getElementById('waf-host').value = m.host || '';
+        document.getElementById('waf-ua').value = m.user_agent || '';
+        document.getElementById('waf-body').value = m.body_prefix || '';
+        document.getElementById('waf-enabled').checked = r.enabled;
+      } else {
+        document.getElementById('waf-name').value = '';
+        document.getElementById('waf-priority').value = '0';
+        document.getElementById('waf-action').value = 'drop';
+        document.getElementById('waf-method').value = '';
+        document.getElementById('waf-path').value = '';
+        document.getElementById('waf-host').value = '';
+        document.getElementById('waf-ua').value = '';
+        document.getElementById('waf-body').value = '';
+        document.getElementById('waf-enabled').checked = true;
+      }
+      document.getElementById('modal-backdrop').classList.add('active');
+      document.getElementById('waf-modal').classList.add('active');
+    }
+    function closeWafModal() {
+      document.getElementById('modal-backdrop').classList.remove('active');
+      document.getElementById('waf-modal').classList.remove('active');
+    }
+    async function saveWafRule() {
+      const idx = parseInt(document.getElementById('waf-edit-idx').value);
+      let rules = (currentConfig.waf_rules || []).slice();
+      const rule = {
+        name: document.getElementById('waf-name').value,
+        priority: parseInt(document.getElementById('waf-priority').value) || 0,
+        enabled: document.getElementById('waf-enabled').checked,
+        match: {
+          method: document.getElementById('waf-method').value || undefined,
+          path_prefix: document.getElementById('waf-path').value || undefined,
+          host: document.getElementById('waf-host').value || undefined,
+          user_agent: document.getElementById('waf-ua').value || undefined,
+          body_prefix: document.getElementById('waf-body').value || undefined
+        },
+        action: document.getElementById('waf-action').value
+      };
+      if (idx >= 0 && idx < rules.length) {
+        rules[idx] = rule;
+      } else {
+        rules.push(rule);
+      }
+      try {
+        await api('POST', '/api/waf/rules', { rules });
+        toast('规则已保存', 'success');
+        closeWafModal();
+        refreshRules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function deleteWafRule(idx) {
+      if (!confirm('确定删除这条 WAF 规则？')) return;
+      let rules = (currentConfig.waf_rules || []).slice();
+      rules.splice(idx, 1);
+      try {
+        await api('POST', '/api/waf/rules', { rules });
+        toast('规则已删除', 'success');
+        refreshRules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function moveWafRule(idx, direction) {
+      let rules = (currentConfig.waf_rules || []).slice();
+      const newIdx = idx + direction;
+      if (newIdx < 0 || newIdx >= rules.length) return;
+      [rules[idx], rules[newIdx]] = [rules[newIdx], rules[idx]];
+      try {
+        await api('POST', '/api/waf/rules', { rules });
+        toast('顺序已更新', 'success');
+        refreshRules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
     async function refreshRules() {
       try {
         const c = await apiJson('GET', '/api/config');
@@ -657,11 +767,11 @@
         const wafBody = document.getElementById('waf-body');
         wafBody.innerHTML = '';
         const rules = c.waf_rules || [];
-        if (rules.length === 0) wafBody.innerHTML = '<tr><td colspan="8" class="empty">未配置</td></tr>';
-        rules.forEach(r => {
+        if (rules.length === 0) wafBody.innerHTML = '<tr><td colspan="9" class="empty">未配置</td></tr>';
+        rules.forEach((r, i) => {
           const m = r.match || {};
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${r.priority}</td><td>${r.name}</td><td>${r.enabled ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-secondary">禁用</span>'}</td><td><span class="tag ${r.action === 'drop' ? 'tag-danger' : r.action === 'challenge' ? 'tag-warning' : 'tag-info'}">${r.action}</span></td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td>`;
+          tr.innerHTML = `<td>${r.priority}</td><td>${r.name}</td><td>${r.enabled ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-secondary">禁用</span>'}</td><td><span class="tag ${r.action === 'drop' ? 'tag-danger' : r.action === 'challenge' ? 'tag-warning' : 'tag-info'}">${r.action}</span></td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td><td><button class="btn btn-sm btn-secondary" onclick="openWafModal(${i})">编辑</button> <button class="btn btn-sm btn-secondary" onclick="moveWafRule(${i}, -1)">↑</button> <button class="btn btn-sm btn-secondary" onclick="moveWafRule(${i}, 1)">↓</button> <button class="btn btn-sm btn-danger" onclick="deleteWafRule(${i})">删除</button></td>`;
           wafBody.appendChild(tr);
         });
 
