@@ -7,7 +7,7 @@ use crate::parser;
 /// WAF 只检查 TCP payload 前 32 字节，使用 8 字节签名 + 掩码匹配方法与 URI 前缀。
 const MAX_PAYLOAD: usize = 32;
 
-pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: usize) -> Option<u8> {
+pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: usize, dport: u16) -> Option<u8> {
     let start = ctx.data();
     let end = ctx.data_end();
     if start + payload_offset + MAX_PAYLOAD > end {
@@ -47,7 +47,7 @@ pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: 
                     stats.waf_blocked += 1;
                 }
             }
-            emit_event(src, rules::WAF);
+            emit_event(src, rules::WAF, dport);
             return Some(rule.action);
         }
 
@@ -57,10 +57,10 @@ pub fn check(ctx: &aya_ebpf::programs::XdpContext, src: &IpKey, payload_offset: 
                     (*stats).challenge_issued += 1;
                 }
             }
-            emit_event(src, rules::CHALLENGE);
+            emit_event(src, rules::CHALLENGE, dport);
             return Some(rule.action);
         } else {
-            emit_event(src, rules::WAF);
+            emit_event(src, rules::WAF, dport);
         }
     }
 
@@ -100,7 +100,7 @@ fn sig_eq(payload: &[u8; MAX_PAYLOAD], offset: usize, sig: &[u8; WAF_FIELD_LEN],
     (chunk & mask_val) == (sig_val & mask_val)
 }
 
-fn emit_event(src: &IpKey, rule_id: u16) {
+fn emit_event(src: &IpKey, rule_id: u16, dst_port: u16) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
         let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;
         unsafe {
@@ -109,6 +109,7 @@ fn emit_event(src: &IpKey, rule_id: u16) {
             (*event).family = src.family;
             (*event).protocol = parser::IPPROTO_TCP;
             (*event).rule_id = rule_id;
+            (*event).dst_port = dst_port;
         }
         entry.submit(0);
     }

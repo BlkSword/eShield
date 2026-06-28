@@ -39,6 +39,10 @@ pub async fn run(
     // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争
     let mut by_source: HashMap<IpKey, u64> = HashMap::new();
     let mut by_reason: HashMap<u16, u64> = HashMap::new();
+    let mut by_protocol: HashMap<u8, u64> = HashMap::new();
+    let mut by_port: HashMap<u16, u64> = HashMap::new();
+
+    let process_start = std::time::Instant::now();
 
     for event in &events {
         let src_key = match IpFamily::from_u8(event.family) {
@@ -54,6 +58,8 @@ pub async fn run(
 
         *by_source.entry(src_key).or_insert(0) += 1;
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
+        *by_protocol.entry(event.protocol).or_insert(0) += 1;
+        *by_port.entry(event.dst_port).or_insert(0) += 1;
 
         // WAF/Challenge/GeoIP 事件由各自模块独立处理，不进入通用自适应阈值引擎
         if event.rule_id != eshield_common::rules::WAF
@@ -66,14 +72,21 @@ pub async fn run(
         }
 
         debug!(
-            "drop event: src={}, proto={}, rule={}",
-            format_ip_key(&src_key),
-            event.protocol,
-            event.rule_id
+            event_type = "drop",
+            src_ip = format_ip_key(&src_key),
+            dst_port = event.dst_port,
+            protocol = event.protocol,
+            rule = event.rule_id,
+            action = "drop",
+            reason = event.rule_id,
+            "drop event"
         );
     }
 
-    stats.add_dropped_batch(&by_reason, &by_source);
+    stats.add_dropped_batch(&by_reason, &by_source, &by_protocol, &by_port);
+
+    let elapsed_us = process_start.elapsed().as_micros() as u64;
+    stats.record_process_time_us(elapsed_us);
 
     if events.is_empty() {
         // 无事件时让出 CPU，避免空转；使用 interval 保持一致的节奏

@@ -50,6 +50,8 @@ pub struct Config {
     pub store_path: String,
     #[serde(default)]
     pub alert_webhook_url: Option<String>,
+    #[serde(default = "default_alert_webhook_type")]
+    pub alert_webhook_type: String,
     #[serde(default = "default_alert_threshold_dps")]
     pub alert_threshold_dps: u64,
     #[serde(default = "default_alert_cooldown_s")]
@@ -62,6 +64,10 @@ fn default_web_port() -> u16 {
 
 fn default_store_path() -> String {
     "/var/lib/eshield/rules.redb".to_string()
+}
+
+fn default_alert_webhook_type() -> String {
+    "generic".to_string()
 }
 
 fn default_alert_threshold_dps() -> u64 {

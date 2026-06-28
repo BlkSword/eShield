@@ -75,7 +75,8 @@ pub struct DropEvent {
     pub family: u8,
     pub protocol: u8,
     pub rule_id: u16,
-    pub padding: [u8; 4],
+    pub dst_port: u16,
+    pub padding: [u8; 2],
 }
 
 /// 命中规则 ID 枚举

@@ -30,6 +30,8 @@ store_path = "/var/lib/eshield/rules.redb"
 
 # 告警 Webhook 配置（可选）
 # alert_webhook_url = "https://hooks.example.com/eshield"
+# 告警通道类型：generic / slack / dingtalk / wecom
+alert_webhook_type = "generic"
 alert_threshold_dps = 1000
 alert_cooldown_s = 60
 

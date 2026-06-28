@@ -2,14 +2,17 @@ use axum::{
     extract::{ConnectInfo, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
-    response::{Html, IntoResponse, Response},
+    response::{sse::Event, Html, IntoResponse, Response, Sse},
     routing::{get, post},
     Json, Router,
 };
+use futures::{Stream, StreamExt};
+use std::convert::Infallible;
 use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::{self, AuthState};
 use crate::audit::Auditor;
@@ -17,6 +20,28 @@ use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::health;
 use crate::ip::format_ip_key;
 use crate::state::Stats;
+
+fn map_data(map: &aya::maps::Map) -> Option<&aya::maps::MapData> {
+    use aya::maps::Map;
+    match map {
+        Map::Array(m) => Some(m),
+        Map::HashMap(m) => Some(m),
+        Map::LpmTrie(m) => Some(m),
+        Map::PerfEventArray(m) => Some(m),
+        Map::ProgramArray(m) => Some(m),
+        Map::SockHash(m) => Some(m),
+        Map::SockMap(m) => Some(m),
+        Map::StackTraceMap(m) => Some(m),
+        Map::BloomFilter(m) => Some(m),
+        Map::LruHashMap(m) => Some(m),
+        Map::PerCpuArray(m) => Some(m),
+        Map::PerCpuHashMap(m) => Some(m),
+        Map::Queue(m) => Some(m),
+        Map::RingBuf(m) => Some(m),
+        Map::Stack(m) => Some(m),
+        _ => None,
+    }
+}
 
 pub struct WebState {
     pub stats: Arc<Stats>,
@@ -64,6 +89,8 @@ pub async fn run(
             post(allow_cidr_handler).delete(disallow_cidr_handler),
         )
         .route("/api/audit", get(audit_handler))
+        .route("/api/audit/stream", get(audit_stream_handler))
+        .route("/api/metrics/attacker-series", get(attacker_series_handler))
         .route("/api/waf/rules", get(list_waf_rules_handler).post(set_waf_rules_handler))
         .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
         .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
@@ -296,6 +323,14 @@ async fn disallow_cidr_handler(
 struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     limit: usize,
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
 }
 
 fn default_audit_limit() -> usize {
@@ -304,6 +339,13 @@ fn default_audit_limit() -> usize {
 
 #[derive(Deserialize)]
 struct SeriesQuery {
+    #[serde(default = "default_series_duration")]
+    duration_s: u64,
+}
+
+#[derive(Deserialize)]
+struct AttackerSeriesQuery {
+    ip: String,
     #[serde(default = "default_series_duration")]
     duration_s: u64,
 }
@@ -440,10 +482,92 @@ async fn audit_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let entries = state
         .auditor
-        .list(q.limit)
+        .list(10_000)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(serde_json::json!({ "entries": entries })))
+
+    let ip_filter = q.ip.as_deref().map(|s| s.to_lowercase());
+    let action_filter = q.action.as_deref().map(|s| s.to_lowercase());
+
+    let filtered: Vec<_> = entries
+        .into_iter()
+        .filter(|e| {
+            if let Some(ip) = &ip_filter {
+                let hay = format!(
+                    "{} {} {}",
+                    e.source_ip.as_deref().unwrap_or(""),
+                    e.actor,
+                    serde_json::to_string(&e.detail).unwrap_or_default()
+                )
+                .to_lowercase();
+                if !hay.contains(ip) {
+                    return false;
+                }
+            }
+            if let Some(action) = &action_filter {
+                let a = serde_json::to_value(&e.action)
+                    .ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_lowercase()))
+                    .unwrap_or_default();
+                if a != *action {
+                    return false;
+                }
+            }
+            if let Some(from) = q.from.as_deref() {
+                if e.timestamp.as_str() < from {
+                    return false;
+                }
+            }
+            if let Some(to) = q.to.as_deref() {
+                if e.timestamp.as_str() > to {
+                    return false;
+                }
+            }
+            true
+        })
+        .rev()
+        .take(q.limit)
+        .collect();
+
+    Ok(Json(serde_json::json!({ "entries": filtered })))
+}
+
+async fn audit_stream_handler(
+    State(state): State<Arc<WebState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.auditor.subscribe();
+    let stream = BroadcastStream::new(rx).map(|result| {
+        match result {
+            Ok(entry) => {
+                let data = serde_json::to_string(&entry).unwrap_or_default();
+                Ok(Event::default().event("audit").data(data))
+            }
+            Err(_) => Ok(Event::default().event("ping").data("")),
+        }
+    });
+    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+async fn attacker_series_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<AttackerSeriesQuery>,
+) -> Json<serde_json::Value> {
+    let series = state
+        .stats
+        .timeseries
+        .read()
+        .await
+        .snapshot(q.duration_s);
+    let points: Vec<serde_json::Value> = series
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "timestamp": p.timestamp,
+                "count": p.top_attackers.get(&q.ip).copied().unwrap_or(0),
+            })
+        })
+        .collect();
+    Json(serde_json::json!({ "ip": q.ip, "series": points }))
 }
 
 const DASHBOARD_HTML: &str = include_str!("dashboard.html");
@@ -488,60 +612,161 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
 
 async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
     let stats = stats_snapshot(&state.stats).await;
+    let interface = state.control.runtime.read().await.interface.clone();
+
+    let tcp = state.stats.tcp_dropped.load(Ordering::Relaxed);
+    let udp = state.stats.udp_dropped.load(Ordering::Relaxed);
+    let icmp = state.stats.icmp_dropped.load(Ordering::Relaxed);
+    let other = state.stats.other_dropped.load(Ordering::Relaxed);
+
     let mut body = format!(
         "# HELP eshield_dropped_total Total dropped packets\n\
          # TYPE eshield_dropped_total counter\n\
-         eshield_dropped_total {}\n\n\
+         eshield_dropped_total{{interface=\"{}\"}} {}\n\n\
+         # HELP eshield_passed_total Total passed packets\n\
+         # TYPE eshield_passed_total counter\n\
+         eshield_passed_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_blacklist_blocked_total Blacklist blocked packets\n\
          # TYPE eshield_blacklist_blocked_total counter\n\
-         eshield_blacklist_blocked_total {}\n\n\
+         eshield_blacklist_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_rate_limited_total Rate limited packets\n\
          # TYPE eshield_rate_limited_total counter\n\
-         eshield_rate_limited_total {}\n\n\
+         eshield_rate_limited_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_syn_flood_blocked_total SYN flood blocked packets\n\
          # TYPE eshield_syn_flood_blocked_total counter\n\
-         eshield_syn_flood_blocked_total {}\n\n\
+         eshield_syn_flood_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_l7_blocked_total L7 scan blocked packets\n\
          # TYPE eshield_l7_blocked_total counter\n\
-         eshield_l7_blocked_total {}\n\n\
+         eshield_l7_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_adaptive_blocked_total Adaptive threshold blocked packets\n\
          # TYPE eshield_adaptive_blocked_total counter\n\
-         eshield_adaptive_blocked_total {}\n\n\
+         eshield_adaptive_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_udp_flood_blocked_total UDP flood blocked packets\n\
          # TYPE eshield_udp_flood_blocked_total counter\n\
-         eshield_udp_flood_blocked_total {}\n\n\
+         eshield_udp_flood_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_icmp_flood_blocked_total ICMP flood blocked packets\n\
          # TYPE eshield_icmp_flood_blocked_total counter\n\
-         eshield_icmp_flood_blocked_total {}\n\n\
+         eshield_icmp_flood_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_waf_blocked_total WAF blocked packets\n\
          # TYPE eshield_waf_blocked_total counter\n\
-         eshield_waf_blocked_total {}\n\n\
+         eshield_waf_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_geoip_blocked_total GeoIP blocked packets\n\
          # TYPE eshield_geoip_blocked_total counter\n\
-         eshield_geoip_blocked_total {}\n\n\
+         eshield_geoip_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_challenge_issued_total Challenge issued\n\
          # TYPE eshield_challenge_issued_total counter\n\
-         eshield_challenge_issued_total {}\n",
-        stats.total_dropped,
-        stats.blacklist_blocked,
-        stats.rate_limited,
-        stats.syn_flood_blocked,
-        stats.l7_blocked,
-        stats.adaptive_blocked,
-        stats.udp_flood_blocked,
-        stats.icmp_flood_blocked,
-        stats.waf_blocked,
-        stats.geoip_blocked,
-        stats.challenge_issued,
+         eshield_challenge_issued_total{{interface=\"{}\"}} {}\n\n\
+         # HELP eshield_dropped_by_protocol_total Dropped packets by IP protocol\n\
+         # TYPE eshield_dropped_by_protocol_total counter\n\
+         eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"tcp\"}} {}\n\
+         eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"udp\"}} {}\n\
+         eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"icmp\"}} {}\n\
+         eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"other\"}} {}\n",
+        interface, stats.total_dropped,
+        interface, stats.total_passed,
+        interface, stats.blacklist_blocked,
+        interface, stats.rate_limited,
+        interface, stats.syn_flood_blocked,
+        interface, stats.l7_blocked,
+        interface, stats.adaptive_blocked,
+        interface, stats.udp_flood_blocked,
+        interface, stats.icmp_flood_blocked,
+        interface, stats.waf_blocked,
+        interface, stats.geoip_blocked,
+        interface, stats.challenge_issued,
+        interface, tcp, interface, udp, interface, icmp, interface, other,
     );
 
     for attacker in &stats.top_attackers {
         body.push_str(&format!(
             "\n# HELP eshield_source_dropped_total Dropped packets per source IP\n\
              # TYPE eshield_source_dropped_total counter\n\
-             eshield_source_dropped_total{{ip=\"{}\"}} {}\n",
-            attacker.ip, attacker.count
+             eshield_source_dropped_total{{interface=\"{}\",ip=\"{}\"}} {}\n",
+            interface, attacker.ip, attacker.count
         ));
+    }
+
+    let mut ports: Vec<(u16, u64)> = state
+        .stats
+        .port_dropped
+        .iter()
+        .map(|e| (*e.key(), e.value().load(Ordering::Relaxed)))
+        .collect();
+    ports.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+    ports.truncate(10);
+    if !ports.is_empty() {
+        body.push_str("\n# HELP eshield_dropped_by_port_total Dropped packets by destination port\n# TYPE eshield_dropped_by_port_total counter\n");
+        for (port, count) in ports {
+            body.push_str(&format!(
+                "eshield_dropped_by_port_total{{interface=\"{}\",port=\"{}\"}} {}\n",
+                interface, port, count
+            ));
+        }
+    }
+
+    // Event consumer processing duration histogram (microseconds)
+    let buckets = ["1000", "5000", "10000", "50000", "100000", "+Inf"];
+    body.push_str("\n# HELP eshield_event_consumer_duration_us Event consumer batch processing duration histogram\n# TYPE eshield_event_consumer_duration_us histogram\n");
+    let mut cumulative = 0u64;
+    for (i, le) in buckets.iter().enumerate() {
+        let v = state.stats.process_hist[i].load(Ordering::Relaxed);
+        cumulative += v;
+        body.push_str(&format!(
+            "eshield_event_consumer_duration_us_bucket{{interface=\"{}\",le=\"{}\"}} {}\n",
+            interface, le, cumulative
+        ));
+    }
+    body.push_str(&format!(
+        "eshield_event_consumer_duration_us_sum{{interface=\"{}\"}} {}\neshield_event_consumer_duration_us_count{{interface=\"{}\"}} {}\n",
+        interface, 0, interface, cumulative
+    ));
+
+    // eBPF map usage metrics
+    {
+        let mut guard = state.control.ebpf.lock().await;
+        body.push_str("\n# HELP eshield_map_max_entries eBPF map max entries\n# TYPE eshield_map_max_entries gauge\n");
+        for (name, map) in guard.maps() {
+            if let Some(data) = map_data(map) {
+                if let Ok(info) = data.info() {
+                    let map_type_str = info
+                        .map_type()
+                        .map(|t| format!("{:?}", t))
+                        .unwrap_or_default();
+                    body.push_str(&format!(
+                        "eshield_map_max_entries{{interface=\"{}\",name=\"{}\",map_type=\"{}\"}} {}\n",
+                        interface,
+                        name,
+                        map_type_str,
+                        info.max_entries()
+                    ));
+                }
+            }
+        }
+
+        body.push_str("\n# HELP eshield_map_entries eBPF map current entries\n# TYPE eshield_map_entries gauge\n");
+        use aya::maps::HashMap as LruHashMap;
+        use eshield_common::{BlockEntry, IpKey, RateCounter};
+
+        if let Some(map) = guard.map_mut("BLACKLIST") {
+            let m: Result<LruHashMap<_, IpKey, BlockEntry>, _> = map.try_into();
+            if let Ok(m) = m {
+                body.push_str(&format!(
+                    "eshield_map_entries{{interface=\"{}\",name=\"BLACKLIST\"}} {}\n",
+                    interface,
+                    m.iter().count()
+                ));
+            }
+        }
+        if let Some(map) = guard.map_mut("RATE_MAP") {
+            let m: Result<LruHashMap<_, IpKey, RateCounter>, _> = map.try_into();
+            if let Ok(m) = m {
+                body.push_str(&format!(
+                    "eshield_map_entries{{interface=\"{}\",name=\"RATE_MAP\"}} {}\n",
+                    interface,
+                    m.iter().count()
+                ));
+            }
+        }
     }
 
     ([("content-type", "text/plain; charset=utf-8")], body).into_response()

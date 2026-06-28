@@ -148,7 +148,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.geoip_blocked += 1;
             }
         }
-        emit_geoip_event(ctx, &src_key, protocol);
+        emit_geoip_event(ctx, &src_key, protocol, dport);
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
@@ -230,7 +230,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     }
 
     // 9. L7 轻量指纹扫描（TCP 载荷前 64 字节）
-    if l7_scan::scan(ctx, &src_key, ip_hdr_len, protocol) {
+    if l7_scan::scan(ctx, &src_key, ip_hdr_len, protocol, dport) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
@@ -246,7 +246,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         && runtime.waf_enabled != 0
         && payload_len > 0
     {
-        if let Some(action) = waf::check(ctx, &src_key, payload_offset) {
+        if let Some(action) = waf::check(ctx, &src_key, payload_offset, dport) {
             if action == eshield_common::WafAction::Drop as u8 {
                 return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
             }
@@ -267,7 +267,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.rate_limited += 1;
             }
         }
-        rate_limit::emit_rate_limit_event(ctx, &src_key, protocol);
+        rate_limit::emit_rate_limit_event(ctx, &src_key, protocol, dport);
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
@@ -283,7 +283,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.total_dropped += 1;
             }
         }
-        blacklist::emit_blacklist_event(ctx, &src_key, protocol);
+        blacklist::emit_blacklist_event(ctx, &src_key, protocol, dport);
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
@@ -381,7 +381,7 @@ fn is_geoip_blocked(src: &IpKey) -> bool {
     }
 }
 
-fn emit_geoip_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
+fn emit_geoip_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
         let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;
         unsafe {
@@ -390,6 +390,7 @@ fn emit_geoip_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
             (*event).family = src.family;
             (*event).protocol = protocol;
             (*event).rule_id = eshield_common::rules::GEOIP;
+            (*event).dst_port = dst_port;
         }
         entry.submit(0);
     }

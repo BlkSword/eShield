@@ -37,7 +37,7 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) 
 
         // action: 1 = allow, 2 = drop
         if entry.action == 2 {
-            emit_port_acl_event(_ctx, src, protocol);
+            emit_port_acl_event(_ctx, src, protocol, dport);
             return true;
         }
         // 显式 allow 不再继续检查
@@ -47,7 +47,7 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) 
     false
 }
 
-fn emit_port_acl_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
+fn emit_port_acl_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
@@ -56,7 +56,8 @@ fn emit_port_acl_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
                 family: src.family,
                 protocol,
                 rule_id: rules::PORT_ACL,
-                padding: [0; 4],
+                dst_port,
+                padding: [0; 2],
             };
             entry.write(event);
             entry.submit(0);

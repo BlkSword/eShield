@@ -24,6 +24,12 @@ pub struct Stats {
     pub challenge_issued: AtomicU64,
     pub current_pps: AtomicU64,
     pub current_dps: AtomicU64,
+    pub tcp_dropped: AtomicU64,
+    pub udp_dropped: AtomicU64,
+    pub icmp_dropped: AtomicU64,
+    pub other_dropped: AtomicU64,
+    pub port_dropped: DashMap<u16, AtomicU64>,
+    pub process_hist: [AtomicU64; 6],
     pub top_attackers: DashMap<IpKey, AtomicU64>,
     pub timeseries: Arc<RwLock<TimeSeriesWindow>>,
 }
@@ -46,6 +52,19 @@ impl Default for Stats {
             challenge_issued: AtomicU64::new(0),
             current_pps: AtomicU64::new(0),
             current_dps: AtomicU64::new(0),
+            tcp_dropped: AtomicU64::new(0),
+            udp_dropped: AtomicU64::new(0),
+            icmp_dropped: AtomicU64::new(0),
+            other_dropped: AtomicU64::new(0),
+            port_dropped: DashMap::new(),
+            process_hist: [
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+                AtomicU64::new(0),
+            ],
             top_attackers: DashMap::new(),
             timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(360, 10))),
         }
@@ -58,6 +77,8 @@ impl Stats {
         &self,
         by_reason: &HashMap<u16, u64>,
         by_source: &HashMap<IpKey, u64>,
+        by_protocol: &HashMap<u8, u64>,
+        by_port: &HashMap<u16, u64>,
     ) {
         if by_source.is_empty() {
             return;
@@ -90,6 +111,39 @@ impl Stats {
                 .or_insert_with(|| AtomicU64::new(0))
                 .fetch_add(count, Ordering::Relaxed);
         }
+
+        for (&protocol, &count) in by_protocol {
+            let counter = match protocol {
+                6 => &self.tcp_dropped,
+                17 => &self.udp_dropped,
+                1 | 58 => &self.icmp_dropped,
+                _ => &self.other_dropped,
+            };
+            counter.fetch_add(count, Ordering::Relaxed);
+        }
+
+        for (&port, &count) in by_port {
+            if port == 0 {
+                continue;
+            }
+            self.port_dropped
+                .entry(port)
+                .or_insert_with(|| AtomicU64::new(0))
+                .fetch_add(count, Ordering::Relaxed);
+        }
+    }
+
+    /// 记录事件消费处理耗时（微秒）到直方图桶。
+    pub fn record_process_time_us(&self, us: u64) {
+        let idx = match us {
+            0..=1000 => 0,
+            1001..=5000 => 1,
+            5001..=10000 => 2,
+            10001..=50000 => 3,
+            50001..=100000 => 4,
+            _ => 5,
+        };
+        self.process_hist[idx].fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -121,7 +175,7 @@ mod tests {
         let mut by_source = HashMap::new();
         by_source.insert(IpKey::from_ipv4([192, 0, 2, 1]), 5);
 
-        stats.add_dropped_batch(&by_reason, &by_source);
+        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
 
         assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 5);
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
@@ -139,7 +193,7 @@ mod tests {
     #[test]
     fn test_add_dropped_batch_empty_is_noop() {
         let stats = Stats::default();
-        stats.add_dropped_batch(&HashMap::new(), &HashMap::new());
+        stats.add_dropped_batch(&HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new());
         assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 0);
         assert!(stats.top_attackers.is_empty());
     }
@@ -152,7 +206,7 @@ mod tests {
         let mut by_source = HashMap::new();
         by_source.insert(IpKey::from_ipv4([10, 0, 0, 1]), 7);
 
-        stats.add_dropped_batch(&by_reason, &by_source);
+        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
 
         assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 7);
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
@@ -168,7 +222,7 @@ mod tests {
         let mut by_source = HashMap::new();
         by_source.insert(IpKey::from_ipv6([0; 16]), 7);
 
-        stats.add_dropped_batch(&by_reason, &by_source);
+        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
 
         assert_eq!(stats.udp_flood_blocked.load(Ordering::Relaxed), 4);
         assert_eq!(stats.icmp_flood_blocked.load(Ordering::Relaxed), 3);

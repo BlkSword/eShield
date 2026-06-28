@@ -19,7 +19,7 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
     false
 }
 
-pub fn emit_blacklist_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
+pub fn emit_blacklist_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
@@ -28,7 +28,8 @@ pub fn emit_blacklist_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
                 family: src.family,
                 protocol,
                 rule_id: rules::BLACKLIST,
-                padding: [0; 4],
+                dst_port,
+                padding: [0; 2],
             };
             entry.write(event);
             entry.submit(0);

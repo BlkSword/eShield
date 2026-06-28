@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::ip::format_ip_key;
 use crate::state::Stats;
 
 /// A single sampled metrics point.
@@ -24,6 +26,8 @@ pub struct MetricPoint {
     pub dps: u64,
     /// Derived: passed packets per second since the previous point.
     pub pps: u64,
+    /// Snapshot of top attackers at this point: ip -> count.
+    pub top_attackers: std::collections::HashMap<String, u64>,
 }
 
 /// Fixed-size in-memory ring buffer for time-series metrics.
@@ -94,6 +98,15 @@ impl TimeSeriesWindow {
             total_passed.saturating_sub(self.last_total_passed) / elapsed
         };
 
+        let top_attackers: HashMap<String, u64> = stats
+            .top_attackers
+            .iter()
+            .map(|entry| {
+                let ip = format_ip_key(entry.key());
+                (ip, entry.value().load(Ordering::Relaxed))
+            })
+            .collect();
+
         let point = MetricPoint {
             timestamp: now,
             total_packets,
@@ -111,6 +124,7 @@ impl TimeSeriesWindow {
             challenge_issued: stats.challenge_issued.load(Ordering::Relaxed),
             dps,
             pps,
+            top_attackers,
         };
 
         if self.slots.len() == self.capacity {

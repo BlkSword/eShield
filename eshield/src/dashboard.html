@@ -341,6 +341,26 @@
     .form-inline { display: inline-flex; align-items: center; gap: 8px; }
     .form-inline input, .form-inline select { min-width: auto; }
 
+    /* Mobile quick block bar */
+    .mobile-quick-bar {
+      display: none;
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      padding: 10px 16px;
+      gap: 10px;
+      align-items: center;
+      z-index: 120;
+      box-shadow: var(--shadow-lg);
+    }
+    .mobile-quick-bar .quick-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+    .mobile-quick-bar input { flex: 1; min-width: 0; }
+    @media (max-width: 768px) {
+      .mobile-quick-bar { display: flex; }
+      .content { padding-bottom: 72px; }
+    }
+
     @media (max-width: 768px) {
       .sidebar { width: 260px; }
       .main { margin-left: 0; }
@@ -584,10 +604,27 @@
 
         <!-- Audit -->
         <div class="page" id="page-audit">
-          <div class="section-header-row"><h2 class="section-title">审计日志</h2><button class="btn btn-secondary btn-sm" onclick="refreshAudit()">刷新</button></div>
+          <div class="section-header-row"><h2 class="section-title">审计日志</h2><div style="display:flex;gap:8px;align-items:center"><span class="tag tag-success" id="sse-status">实时流已连接</span><button class="btn btn-secondary btn-sm" onclick="refreshAudit()">刷新</button></div></div>
           <div class="card">
             <div class="card-body">
-              <div class="filters"><input type="text" id="audit-filter" placeholder="搜索 IP / 动作 / 操作者" oninput="filterAudit()"></div>
+              <div class="filters">
+                <input type="text" id="audit-filter" placeholder="搜索关键字" oninput="filterAudit()">
+                <input type="text" id="audit-ip" placeholder="IP / CIDR" oninput="filterAudit()">
+                <select id="audit-action" onchange="filterAudit()">
+                  <option value="">全部动作</option>
+                  <option value="block_ip">封禁 IP</option>
+                  <option value="unblock_ip">解封 IP</option>
+                  <option value="allow_cidr">放行 CIDR</option>
+                  <option value="disallow_cidr">移除 CIDR</option>
+                  <option value="reload_config">重载配置</option>
+                  <option value="patch_config">修改配置</option>
+                  <option value="challenge_pass">验证通过</option>
+                  <option value="start">启动</option>
+                  <option value="stop">停止</option>
+                </select>
+                <input type="datetime-local" id="audit-from" onchange="filterAudit()">
+                <input type="datetime-local" id="audit-to" onchange="filterAudit()">
+              </div>
               <table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead><tbody id="audit-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table>
             </div>
           </div>
@@ -626,6 +663,13 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <div class="mobile-quick-bar" id="mobile-quick-bar">
+    <div class="quick-title">紧急封禁</div>
+    <input type="text" id="quick-block-ip" placeholder="IP 地址">
+    <button class="btn btn-danger btn-sm" onclick="quickBlock()">封禁</button>
+    <button class="btn btn-secondary btn-sm" onclick="quickUnblock()">解封</button>
   </div>
 
   <div class="toast-container" id="toast-container"></div>
@@ -1132,16 +1176,44 @@
     }
 
     async function refreshAudit() {
-      try { const d = await apiJson('GET', '/api/audit?limit=200'); auditEntries = d.entries || []; renderAudit(); }
+      try {
+        const params = new URLSearchParams();
+        params.set('limit', '200');
+        const ip = document.getElementById('audit-ip').value.trim();
+        const action = document.getElementById('audit-action').value;
+        const from = document.getElementById('audit-from').value;
+        const to = document.getElementById('audit-to').value;
+        if (ip) params.set('ip', ip);
+        if (action) params.set('action', action);
+        if (from) params.set('from', new Date(from).toISOString());
+        if (to) params.set('to', new Date(to).toISOString());
+        const d = await apiJson('GET', '/api/audit?' + params.toString());
+        auditEntries = d.entries || [];
+        renderAudit();
+      }
       catch (e) { console.error(e); }
     }
     function renderAudit() {
       const filter = document.getElementById('audit-filter').value.toLowerCase();
+      const ipFilter = document.getElementById('audit-ip').value.toLowerCase();
+      const actionFilter = document.getElementById('audit-action').value;
+      const fromVal = document.getElementById('audit-from').value;
+      const toVal = document.getElementById('audit-to').value;
+      const fromTs = fromVal ? new Date(fromVal).toISOString() : '';
+      const toTs = toVal ? new Date(toVal).toISOString() : '';
       const tbody = document.getElementById('audit-body');
       tbody.innerHTML = '';
-      const entries = auditEntries.filter(e => (e.timestamp + e.actor + e.action + JSON.stringify(e.detail)).toLowerCase().includes(filter));
+      const entries = auditEntries.filter(e => {
+        const hay = (e.timestamp + ' ' + e.actor + ' ' + e.action + ' ' + JSON.stringify(e.detail) + ' ' + (e.source_ip || '')).toLowerCase();
+        if (filter && !hay.includes(filter)) return false;
+        if (ipFilter && !hay.includes(ipFilter)) return false;
+        if (actionFilter && e.action !== actionFilter) return false;
+        if (fromTs && e.timestamp < fromTs) return false;
+        if (toTs && e.timestamp > toTs) return false;
+        return true;
+      });
       if (entries.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无数据</td></tr>'; return; }
-      entries.slice().reverse().forEach(e => {
+      entries.forEach(e => {
         const tr = document.createElement('tr');
         const detail = JSON.stringify(e.detail);
         tr.innerHTML = `<td>${e.timestamp}</td><td>${e.actor}</td><td><span class="tag tag-info">${e.action}</span></td><td title="${detail.replace(/"/g,'&quot;')}">${detail.length > 70 ? detail.slice(0,70)+'...' : detail}</td>`;
@@ -1150,6 +1222,45 @@
     }
     function filterAudit() { renderAudit(); }
 
+    function connectAuditStream() {
+      const status = document.getElementById('sse-status');
+      if (!status) return;
+      if (window.EventSource) {
+        const es = new EventSource('/api/audit/stream');
+        es.addEventListener('audit', ev => {
+          try {
+            const entry = JSON.parse(ev.data);
+            auditEntries.push(entry);
+            if (document.getElementById('page-audit').classList.contains('active')) renderAudit();
+          } catch (e) { console.error(e); }
+        });
+        es.onerror = () => { status.textContent = '实时流断开'; status.className = 'tag tag-muted'; };
+        es.onopen = () => { status.textContent = '实时流已连接'; status.className = 'tag tag-success'; };
+      }
+    }
+
+    let attackerChart = null;
+    async function initAttackerChart(ip) {
+      const el = document.getElementById('attacker-chart');
+      if (!el) return;
+      if (attackerChart) { attackerChart.dispose(); attackerChart = null; }
+      attackerChart = echarts.init(el, document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : null);
+      const textColor = getComputedStyle(document.body).getPropertyValue('--text-secondary').trim();
+      const gridColor = getComputedStyle(document.body).getPropertyValue('--border').trim();
+      attackerChart.setOption({
+        backgroundColor: 'transparent',
+        grid: { left: 40, right: 16, top: 16, bottom: 24 },
+        xAxis: { type: 'time', axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
+        yAxis: { type: 'value', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
+        series: [{ type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: 'var(--danger)' }, areaStyle: { color: 'rgba(239,68,68,0.1)' } }]
+      });
+      try {
+        const data = await apiJson('GET', '/api/metrics/attacker-series?ip=' + encodeURIComponent(ip) + '&duration_s=3600');
+        const points = (data.series || []).map(p => [new Date(p.timestamp * 1000), p.count]);
+        attackerChart.setOption({ series: [{ data: points }] });
+      } catch (e) { console.error(e); }
+    }
+
     function openIpDrawer(ip) {
       document.getElementById('drawer-title').textContent = ip;
       const attacker = (currentStats.top_attackers || []).find(a => a.ip === ip);
@@ -1157,15 +1268,35 @@
         <div class="metric-item"><div class="label">丢弃包数</div><div class="value">${attacker ? attacker.count.toLocaleString() : '-'}</div></div>
         <div class="metric-item"><div class="label">当前状态</div><div class="value">${attacker ? '攻击中' : '未知'}</div></div>
       </div>
-      <div style="margin-top:24px;display:flex;gap:12px">
+      <div id="attacker-chart" style="height:180px;margin-top:16px"></div>
+      <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap">
         <button class="btn btn-danger" onclick="blockIpValue('${ip}'); closeDrawer(); toast('已填入封禁表单，请前往安全运营页面确认','success')">加入黑名单</button>
         <button class="btn" onclick="allowCidrValue('${ip}/32'); closeDrawer(); toast('已填入放行表单，请前往安全运营页面确认','success')">加入白名单</button>
+        <button class="btn btn-secondary" onclick="quickBlockValue('${ip}')">立即快速封禁</button>
       </div>`;
       document.getElementById('drawer-backdrop').classList.add('active');
       document.getElementById('ip-drawer').classList.add('active');
+      setTimeout(() => initAttackerChart(ip), 0);
     }
     function closeDrawer() { document.getElementById('drawer-backdrop').classList.remove('active'); document.getElementById('ip-drawer').classList.remove('active'); }
     function allowCidrValue(cidr) { document.getElementById('allow-cidr').value = cidr; }
+
+    async function quickBlockValue(ip) {
+      document.getElementById('quick-block-ip').value = ip;
+      await quickBlock();
+    }
+    async function quickBlock() {
+      const ip = document.getElementById('quick-block-ip').value;
+      if (!ip) return;
+      try { await api('POST', '/api/blacklist', { ip, duration_s: 300 }); toast('已紧急封禁 ' + ip, 'success'); document.getElementById('quick-block-ip').value = ''; }
+      catch (e) { toast(e.message, 'error'); }
+    }
+    async function quickUnblock() {
+      const ip = document.getElementById('quick-block-ip').value;
+      if (!ip) return;
+      try { await api('DELETE', '/api/blacklist', { ip }); toast('已解封 ' + ip, 'success'); document.getElementById('quick-block-ip').value = ''; }
+      catch (e) { toast(e.message, 'error'); }
+    }
 
     async function testAuth() { try { await api('GET', '/api/config'); toast('认证成功', 'success'); } catch (e) { toast('认证失败: ' + e.message, 'error'); } }
     async function reloadConfig() { try { await api('POST', '/api/config/reload'); toast('配置已重载', 'success'); } catch (e) { toast(e.message, 'error'); } }
@@ -1183,6 +1314,7 @@
       loadToken();
       renderOverviewCards();
       navigate();
+      connectAuditStream();
       document.getElementById('theme-btn').addEventListener('click', toggleTheme);
       document.getElementById('menu-btn').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
       window.addEventListener('hashchange', navigate);

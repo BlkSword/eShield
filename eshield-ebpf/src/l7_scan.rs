@@ -10,7 +10,7 @@ const SIGNATURE_BYTES: usize = 8;
 /// 读取 TCP 载荷前 8 字节进行轻量指纹匹配。
 /// 返回 true 表示命中并应 DROP。
 #[inline(always)]
-pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8) -> bool {
+pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8, dport: u16) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => *c,
         None => return false,
@@ -61,7 +61,7 @@ pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8) -> b
         }
 
         if (chunk & pat.mask) == (pat.signature & pat.mask) {
-            emit_l7_event(ctx, src);
+            emit_l7_event(ctx, src, dport);
             return true;
         }
 
@@ -71,7 +71,7 @@ pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8) -> b
     false
 }
 
-fn emit_l7_event(_ctx: &XdpContext, src: &IpKey) {
+fn emit_l7_event(_ctx: &XdpContext, src: &IpKey, dst_port: u16) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
@@ -80,7 +80,8 @@ fn emit_l7_event(_ctx: &XdpContext, src: &IpKey) {
                 family: src.family,
                 protocol: 6,
                 rule_id: rules::L7_PATTERN,
-                padding: [0; 4],
+                dst_port,
+                padding: [0; 2],
             };
             entry.write(event);
             entry.submit(0);

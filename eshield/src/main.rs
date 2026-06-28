@@ -183,8 +183,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         .context("failed to open rule store")?;
     let alert = AlertManager::new(AlertConfig {
         webhook_url: config.alert_webhook_url.clone(),
+        webhook_type: config.alert_webhook_type.clone(),
         threshold_dps: config.alert_threshold_dps,
         cooldown_s: config.alert_cooldown_s,
+        interface: config.interface.clone(),
     });
     let auth = AuthState::new(config.api_token.clone());
 
@@ -238,7 +240,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                 let total = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
                 let delta = total.saturating_sub(last_total);
                 last_total = total;
-                alert.check(delta, 60).await;
+                alert.check(&stats, delta, 60).await;
             }
         })
     };

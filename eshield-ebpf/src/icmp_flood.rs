@@ -92,7 +92,8 @@ pub fn emit_icmp_flood_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
                 family: src.family,
                 protocol,
                 rule_id: rules::ICMP_FLOOD,
-                padding: [0; 4],
+                dst_port: 0,
+                padding: [0; 2],
             };
             entry.write(event);
             entry.submit(0);

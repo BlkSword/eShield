@@ -52,7 +52,7 @@ pub fn handle_syn_flood(ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u6
 
     if counter > cfg.threshold {
         add_to_blacklist(src, now_ns, cfg.block_duration_s);
-        emit_syn_flood_event(ctx, src);
+        emit_syn_flood_event(ctx, src, 0);
         return true;
     }
 
@@ -81,7 +81,7 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     let _ = BLACKLIST.insert(src, &entry, 0);
 }
 
-pub fn emit_syn_flood_event(_ctx: &XdpContext, src: &IpKey) {
+pub fn emit_syn_flood_event(_ctx: &XdpContext, src: &IpKey, dst_port: u16) {
     unsafe {
         if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
             let event = DropEvent {
@@ -90,7 +90,8 @@ pub fn emit_syn_flood_event(_ctx: &XdpContext, src: &IpKey) {
                 family: src.family,
                 protocol: 6, // TCP
                 rule_id: rules::SYN_FLOOD,
-                padding: [0; 4],
+                dst_port,
+                padding: [0; 2],
             };
             entry.write(event);
             entry.submit(0);

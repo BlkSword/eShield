@@ -1,7 +1,8 @@
 use chrono::Utc;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
+use tracing::info;
 
 /// 审计事件类型
 #[derive(Clone, Debug, Serialize)]
@@ -72,13 +73,20 @@ impl AuditBackend for MemoryAuditBackend {
 #[derive(Clone)]
 pub struct Auditor {
     backend: Arc<dyn AuditBackend>,
+    tx: broadcast::Sender<AuditEntry>,
 }
 
 impl Auditor {
     pub fn new<B: AuditBackend + 'static>(backend: B) -> Self {
+        let (tx, _rx) = broadcast::channel(256);
         Self {
             backend: Arc::new(backend),
+            tx,
         }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<AuditEntry> {
+        self.tx.subscribe()
     }
 
     pub async fn log(
@@ -91,10 +99,22 @@ impl Auditor {
         let entry = AuditEntry {
             timestamp: Utc::now().to_rfc3339(),
             actor: actor.into(),
-            action,
-            detail,
-            source_ip,
+            action: action.clone(),
+            detail: detail.clone(),
+            source_ip: source_ip.clone(),
         };
+
+        info!(
+            event_type = "audit",
+            actor = entry.actor,
+            action = format!("{:?}", entry.action),
+            source_ip = entry.source_ip.as_deref().unwrap_or(""),
+            detail = %entry.detail,
+            "audit event"
+        );
+
+        let _ = self.tx.send(entry.clone());
+
         if let Err(e) = self.backend.append(entry).await {
             tracing::warn!("audit log append failed: {}", e);
         }
