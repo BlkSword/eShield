@@ -1,11 +1,12 @@
 use axum::{
-    extract::{Query, Request, State},
+    extract::{ConnectInfo, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -77,7 +78,7 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("web dashboard listening on http://{}", bind);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
     Ok(())
 }
 
@@ -167,58 +168,15 @@ struct SetL7PatternsReq {
 /// Challenge 签名密钥，用于防止 nonce 伪造（硬编码，生产环境应使用配置或随机启动密钥）。
 const CHALLENGE_SECRET: u64 = 0x5f37_9a21_b4cd_8e01;
 
-async fn challenge_handler() -> Html<String> {
+async fn challenge_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
     let a = rand::random::<u64>() % 10_000;
     let b = rand::random::<u64>() % 10_000;
     let sig = a ^ b ^ CHALLENGE_SECRET;
     let nonce = format!("{}:{}:{}", a, b, sig);
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>eShield Security Challenge</title>
-  <style>
-    body {{ font-family: system-ui, sans-serif; max-width: 480px; margin: 4rem auto; padding: 0 1rem; }}
-    h1 {{ font-size: 1.5rem; }}
-    input, button {{ width: 100%; padding: .6rem; margin: .4rem 0; box-sizing: border-box; }}
-    #result {{ margin-top: 1rem; font-weight: bold; }}
-  </style>
-</head>
-<body>
-  <h1>eShield Security Challenge</h1>
-  <p>您的请求被 WAF Challenge 规则拦截。请完成下方验证以获取临时访问权限。</p>
-  <form id="challenge-form">
-    <input type="hidden" id="nonce" value="{nonce}">
-    <label for="ip">IP 地址</label>
-    <input type="text" id="ip" placeholder="10.0.0.2" required>
-    <input type="hidden" id="answer" value="">
-    <button type="submit">验证</button>
-  </form>
-  <div id="result"></div>
-  <script>
-    const nonceEl = document.getElementById('nonce');
-    const answerEl = document.getElementById('answer');
-    const [a, b] = nonceEl.value.split(':');
-    answerEl.value = (BigInt(a) + BigInt(b)).toString();
-
-    document.getElementById('challenge-form').addEventListener('submit', async function(e) {{
-      e.preventDefault();
-      const ip = document.getElementById('ip').value;
-      const answer = answerEl.value;
-      const res = await fetch('/api/challenge/pass', {{
-        method: 'POST',
-        headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{ip, nonce: nonceEl.value, answer}})
-      }});
-      const text = await res.text();
-      document.getElementById('result').textContent = (res.ok ? '✅ ' : '❌ ') + text;
-    }});
-  </script>
-</body>
-</html>"#
-    ))
+    let html = include_str!("challenge.html")
+        .replace("{nonce}", &nonce)
+        .replace("{ip}", &addr.ip().to_string());
+    Html(html)
 }
 
 async fn challenge_pass_handler(

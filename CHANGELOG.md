@@ -2,7 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.0] - Unreleased
+## [0.3.1] - Unreleased
+
+### Added
+- Modern brand-style JS Challenge page (`challenge.html`) with automatic IP display.
+- `tcp_reset_on_drop` runtime option and eBPF TCP RST reply for dropped TCP traffic.
+- Dashboard settings page now shows runtime status, alert webhook, and Challenge config.
+- Dashboard network protection page upgraded to grouped toggle switches with descriptions.
+- Runtime snapshot extended with interface, web bind, logging, alert, adaptive, and challenge metadata.
+
+### Changed
+- Dashboard switches replaced with a unified modern toggle component.
+- `AdaptiveConfig` now derives `Serialize` for runtime snapshot exposure.
+
+### Fixed
+- Test 1.5 (`tcp_reset_on_drop`) now works in veth netns by attaching a dummy XDP pass-through on the peer interface.
+- TCP RST checksum folding corrected to fold high 16 bits before ones-complement.
+
+## [0.3.0] - 2026-06-27
 
 ### Added
 - In-memory time-series metrics window sampled every 10 seconds.

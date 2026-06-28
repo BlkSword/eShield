@@ -314,6 +314,33 @@
     .tab.active { color: var(--primary); border-bottom-color: var(--primary); }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; animation: fadeIn .2s ease; }
+
+    /* Modern toggle switch */
+    .switch-toggle { display: inline-flex; align-items: center; gap: 12px; cursor: pointer; user-select: none; }
+    .switch-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .switch-slider { position: relative; width: 44px; height: 24px; background: var(--border-strong); border-radius: 999px; transition: var(--transition); flex-shrink: 0; }
+    .switch-slider::before { content: ''; position: absolute; left: 2px; top: 2px; width: 20px; height: 20px; background: #fff; border-radius: 50%; transition: transform .2s ease; box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+    .switch-toggle input:checked + .switch-slider { background: var(--primary); }
+    .switch-toggle input:checked + .switch-slider::before { transform: translateX(20px); }
+    .switch-toggle input:focus + .switch-slider { box-shadow: 0 0 0 3px var(--primary-soft); }
+    .switch-text { font-weight: 600; color: var(--text); }
+    .switch-desc { font-size: 12px; color: var(--text-secondary); margin-top: 2px; line-height: 1.4; }
+
+    /* Settings / Network groups */
+    .setting-group { margin-bottom: 28px; }
+    .setting-group-title { font-size: 12px; font-weight: 700; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .06em; margin: 0 0 14px 4px; }
+    .setting-list { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; }
+    .setting-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 20px; border-bottom: 1px solid var(--border); transition: background .15s ease; }
+    .setting-item:last-child { border-bottom: none; }
+    .setting-item:hover { background: var(--surface-hover); }
+    .setting-info { flex: 1; min-width: 0; }
+    .setting-name { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
+    .setting-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+    .setting-meta { font-size: 12px; color: var(--text-tertiary); font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .setting-action { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .form-inline { display: inline-flex; align-items: center; gap: 8px; }
+    .form-inline input, .form-inline select { min-width: auto; }
+
     @media (max-width: 768px) {
       .sidebar { width: 260px; }
       .main { margin-left: 0; }
@@ -489,29 +516,69 @@
 
         <!-- Network -->
         <div class="page" id="page-network">
-          <div class="section-header-row"><h2 class="section-title">网络防护</h2></div>
-          <div class="card">
-            <div class="card-header"><div class="card-title">功能开关</div></div>
-            <div class="card-body">
-              <div class="form-row">
-                <label class="switch"><input type="checkbox" id="rl-enabled"> 启用速率限制</label>
-                <label class="switch"><input type="checkbox" id="syn-proxy-enabled"> 启用 SYN Cookie 代理</label>
-                <label class="switch"><input type="checkbox" id="l7-enabled"> 启用 L7 指纹扫描</label>
-                <label class="switch"><input type="checkbox" id="udp-flood-enabled"> 启用 UDP Flood 防护</label>
-                <label class="switch"><input type="checkbox" id="icmp-flood-enabled"> 启用 ICMP Flood 防护</label>
-                <button class="btn" onclick="updateSwitches()">更新开关</button>
+          <div class="section-header-row"><h2 class="section-title">网络防护</h2><button class="btn btn-secondary btn-sm" onclick="refreshNetwork()">刷新</button></div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">防护引擎开关</div>
+            <div class="setting-list">
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">速率限制</div><div class="setting-desc">基于 per-IP 指数衰减的速率限制，超过阈值后自动丢弃或封禁。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="rl-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">SYN Cookie 代理</div><div class="setting-desc">拦截 SYN Flood 攻击，通过 Cookie 验证合法连接。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="syn-proxy-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">L7 指纹扫描</div><div class="setting-desc">检测 TCP 载荷前 64 字节中的可疑指纹。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="l7-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">UDP Flood 防护</div><div class="setting-desc">识别并丢弃高速 UDP 泛洪流量。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="udp-flood-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">ICMP Flood 防护</div><div class="setting-desc">识别并丢弃高速 ICMP 泛洪流量。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="icmp-flood-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">TCP RST 拦截提示</div><div class="setting-desc">对 DROP 的 TCP 连接主动回复 RST，让客户端立即感知拦截。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="tcp-reset-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">WAF 规则引擎</div><div class="setting-desc">启用 HTTP 维度 WAF 规则匹配。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="waf-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">GeoIP / ASN 过滤</div><div class="setting-desc">基于国家或 ASN 的地理过滤。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="geoip-enabled"><span class="switch-slider"></span></label>
+              </div>
+              <div class="setting-item">
+                <div class="setting-info"><div class="setting-name">Challenge 验证</div><div class="setting-desc">对可疑访问返回 JS 挑战页，通过后加入临时白名单。</div></div>
+                <label class="switch-toggle"><input type="checkbox" id="challenge-enabled"><span class="switch-slider"></span></label>
+              </div>
+            </div>
+            <div style="margin-top:12px; display:flex; justify-content:flex-end;"><button class="btn" onclick="updateSwitches()">保存开关设置</button></div>
+          </div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">速率限制参数</div>
+            <div class="card">
+              <div class="card-body">
+                <div class="form-row">
+                  <div class="form-group"><label>阈值（包 / tick）</label><input type="number" id="rl-threshold" value="200" min="1"></div>
+                  <div class="form-group"><label>tick（ms）</label><input type="number" id="rl-tick" value="100" min="1"></div>
+                  <div class="form-group"><label>封禁时长（秒）</label><input type="number" id="rl-block" value="300" min="1"></div>
+                  <div class="form-group"><label>衰减 numerator / denominator</label><div class="form-inline"><input type="number" id="rl-decay-num" value="7" min="0" style="width:70px"><span>/</span><input type="number" id="rl-decay-den" value="8" min="1" style="width:70px"></div></div>
+                  <button class="btn" onclick="updateRateLimit()">保存参数</button>
+                </div>
               </div>
             </div>
           </div>
-          <div class="card" style="margin-top:20px">
-            <div class="card-header"><div class="card-title">速率限制参数</div></div>
-            <div class="card-body">
-              <div class="form-row">
-                <div class="form-group"><label>阈值</label><input type="number" id="rl-threshold" value="200" min="1"></div>
-                <div class="form-group"><label>tick_ms</label><input type="number" id="rl-tick" value="100" min="1"></div>
-                <button class="btn" onclick="updateRateLimit()">更新</button>
-              </div>
-            </div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">自适应引擎</div>
+            <div class="card"><div class="card-body" id="adaptive-info"><div class="empty">加载中...</div></div></div>
           </div>
         </div>
 
@@ -528,19 +595,33 @@
 
         <!-- Settings -->
         <div class="page" id="page-settings">
-          <div class="section-header-row"><h2 class="section-title">设置</h2></div>
-          <div class="card">
-            <div class="card-header"><div class="card-title">API 认证</div></div>
-            <div class="card-body">
-              <div class="form-row">
-                <div class="form-group"><label>Bearer Token</label><input type="password" id="api-token" placeholder="输入 Token" onchange="saveToken()"></div>
-                <button class="btn btn-secondary" onclick="testAuth()">测试连接</button>
+          <div class="section-header-row"><h2 class="section-title">设置</h2><button class="btn btn-secondary btn-sm" onclick="refreshSettings()">刷新</button></div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">运行状态</div>
+            <div class="setting-list" id="runtime-info"><div class="setting-item"><div class="empty" style="padding:10px 0">加载中...</div></div></div>
+          </div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">告警通知（只读，修改后需重载配置文件）</div>
+            <div class="setting-list" id="alert-info"><div class="setting-item"><div class="empty" style="padding:10px 0">加载中...</div></div></div>
+          </div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">API 认证</div>
+            <div class="card">
+              <div class="card-body">
+                <div class="form-row">
+                  <div class="form-group" style="flex:1;max-width:420px"><label>Bearer Token</label><input type="password" id="api-token" placeholder="输入 Token" onchange="saveToken()"></div>
+                  <button class="btn btn-secondary" onclick="testAuth()">测试连接</button>
+                </div>
               </div>
             </div>
           </div>
-          <div class="card" style="margin-top:20px">
-            <div class="card-header"><div class="card-title">系统操作</div></div>
-            <div class="card-body"><button class="btn btn-secondary" onclick="reloadConfig()">从配置文件重载</button></div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">系统操作</div>
+            <div class="card"><div class="card-body"><button class="btn btn-secondary" onclick="reloadConfig()">从配置文件重新加载</button></div></div>
           </div>
         </div>
       </div>
@@ -639,6 +720,7 @@
       if (hash === 'security') refreshLists();
       if (hash === 'audit') refreshAudit();
       if (hash === 'network') refreshNetwork();
+      if (hash === 'settings') refreshSettings();
       if (hash === 'overview') { setTimeout(initTrafficChart, 0); refreshStats(); }
     }
 
@@ -971,26 +1053,82 @@
     async function refreshNetwork() {
       try {
         const c = await apiJson('GET', '/api/config');
+        currentConfig = c;
         document.getElementById('rl-enabled').checked = c.rate_limit_enabled;
         document.getElementById('rl-threshold').value = c.rate_limit.threshold;
         document.getElementById('rl-tick').value = c.rate_limit.tick_ms;
+        document.getElementById('rl-block').value = c.rate_limit.block_duration_s;
+        document.getElementById('rl-decay-num').value = c.rate_limit.decay_num;
+        document.getElementById('rl-decay-den').value = c.rate_limit.decay_den;
         document.getElementById('syn-proxy-enabled').checked = c.syn_proxy_enabled;
         document.getElementById('l7-enabled').checked = c.l7_scan_enabled;
         document.getElementById('udp-flood-enabled').checked = c.udp_flood_enabled;
         document.getElementById('icmp-flood-enabled').checked = c.icmp_flood_enabled;
+        document.getElementById('tcp-reset-enabled').checked = c.tcp_reset_on_drop;
+        document.getElementById('waf-enabled').checked = c.waf_enabled;
+        document.getElementById('geoip-enabled').checked = c.geoip_enabled;
+        document.getElementById('challenge-enabled').checked = c.challenge_enabled;
+        const a = c.adaptive || {};
+        document.getElementById('adaptive-info').innerHTML = `<div class="metric-list">
+          <div class="metric-item"><div class="label">状态</div><div class="value">${a.enabled ? '启用' : '禁用'}</div></div>
+          <div class="metric-item"><div class="label">阈值</div><div class="value">${a.threshold || '-'}</div></div>
+          <div class="metric-item"><div class="label">窗口</div><div class="value">${a.window_s || '-'} s</div></div>
+          <div class="metric-item"><div class="label">封禁时长</div><div class="value">${a.block_duration_s || '-'} s</div></div>
+        </div>`;
       } catch (e) { console.error(e); }
     }
     async function updateRateLimit() {
       try {
-        await api('PATCH', '/api/config', { rate_limit_enabled: document.getElementById('rl-enabled').checked, rate_limit: { enabled: document.getElementById('rl-enabled').checked, threshold: parseInt(document.getElementById('rl-threshold').value), tick_ms: parseInt(document.getElementById('rl-tick').value), decay_num: 7, decay_den: 8, block_duration_s: 300 } });
+        await api('PATCH', '/api/config', {
+          rate_limit_enabled: document.getElementById('rl-enabled').checked,
+          rate_limit: {
+            enabled: document.getElementById('rl-enabled').checked,
+            threshold: parseInt(document.getElementById('rl-threshold').value),
+            tick_ms: parseInt(document.getElementById('rl-tick').value),
+            decay_num: parseInt(document.getElementById('rl-decay-num').value),
+            decay_den: parseInt(document.getElementById('rl-decay-den').value),
+            block_duration_s: parseInt(document.getElementById('rl-block').value)
+          }
+        });
         toast('速率限制已更新', 'success');
       } catch (e) { toast(e.message, 'error'); }
     }
     async function updateSwitches() {
       try {
-        await api('PATCH', '/api/config', { syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked, l7_scan_enabled: document.getElementById('l7-enabled').checked, udp_flood_enabled: document.getElementById('udp-flood-enabled').checked, icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked });
+        await api('PATCH', '/api/config', {
+          rate_limit_enabled: document.getElementById('rl-enabled').checked,
+          syn_proxy_enabled: document.getElementById('syn-proxy-enabled').checked,
+          l7_scan_enabled: document.getElementById('l7-enabled').checked,
+          udp_flood_enabled: document.getElementById('udp-flood-enabled').checked,
+          icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked,
+          tcp_reset_on_drop: document.getElementById('tcp-reset-enabled').checked,
+          waf_enabled: document.getElementById('waf-enabled').checked,
+          geoip_enabled: document.getElementById('geoip-enabled').checked,
+          challenge_enabled: document.getElementById('challenge-enabled').checked
+        });
         toast('开关已更新', 'success');
       } catch (e) { toast(e.message, 'error'); }
+    }
+    async function refreshSettings() {
+      try {
+        const c = await apiJson('GET', '/api/config');
+        currentConfig = c;
+        const runtime = document.getElementById('runtime-info');
+        runtime.innerHTML = `
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">监听网卡</div><div class="setting-desc">XDP 挂载的网络接口</div></div><div class="setting-meta">${c.interface || '-'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">Web 控制台</div><div class="setting-desc">Dashboard 监听地址与端口</div></div><div class="setting-meta">${c.web_bind || '0.0.0.0'}:${c.web_port || '-'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">日志级别</div><div class="setting-desc">当前 tracing 日志级别</div></div><div class="setting-meta">${c.log_level || 'info'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">JSON 日志</div><div class="setting-desc">是否以结构化 JSON 输出日志</div></div><div class="setting-meta">${c.log_json ? '是' : '否'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">持久化存储</div><div class="setting-desc">规则与黑名单持久化路径</div></div><div class="setting-meta">${c.store_path || '-'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">Challenge 模式 / 有效期</div><div class="setting-desc">通过挑战后临时放行时长</div></div><div class="setting-meta">${c.challenge_mode || 'js'} / ${c.challenge_ttl_s || '-'}s</div></div>
+        `;
+        const alert = document.getElementById('alert-info');
+        alert.innerHTML = `
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">Webhook URL</div><div class="setting-desc">告警推送地址</div></div><div class="setting-meta">${c.alert_webhook_url || '未配置'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">触发阈值</div><div class="setting-desc">DPS 超过该值触发告警</div></div><div class="setting-meta">${c.alert_threshold_dps != null ? c.alert_threshold_dps : '-'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">冷却时间</div><div class="setting-desc">两次告警之间的最小间隔</div></div><div class="setting-meta">${c.alert_cooldown_s != null ? c.alert_cooldown_s + 's' : '-'}</div></div>
+        `;
+      } catch (e) { console.error(e); }
     }
 
     async function refreshAudit() {

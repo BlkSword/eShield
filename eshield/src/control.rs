@@ -33,6 +33,15 @@ pub struct ControlState {
 /// 运行时可读快照（用于 Web / CLI 展示）。
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RuntimeConfigSnapshot {
+    pub interface: String,
+    pub web_port: u16,
+    pub web_bind: Option<String>,
+    pub log_level: String,
+    pub log_json: bool,
+    pub store_path: String,
+    pub alert_webhook_url: Option<String>,
+    pub alert_threshold_dps: u64,
+    pub alert_cooldown_s: u64,
     pub rate_limit_enabled: bool,
     pub syn_proxy_enabled: bool,
     pub l7_scan_enabled: bool,
@@ -41,9 +50,12 @@ pub struct RuntimeConfigSnapshot {
     pub icmp_flood_enabled: bool,
     pub waf_enabled: bool,
     pub challenge_enabled: bool,
+    pub challenge_mode: String,
     pub challenge_ttl_s: u64,
     pub geoip_enabled: bool,
+    pub tcp_reset_on_drop: bool,
     pub rate_limit: RateLimitParams,
+    pub adaptive: crate::config::AdaptiveConfig,
     pub waf_rules: Vec<WafRuleItem>,
     pub port_acl: Vec<PortAclItem>,
     pub l7_scan: L7ScanConfig,
@@ -74,6 +86,7 @@ pub struct RuntimeConfigPatch {
     pub waf_enabled: Option<bool>,
     pub challenge_enabled: Option<bool>,
     pub geoip_enabled: Option<bool>,
+    pub tcp_reset_on_drop: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
 }
 
@@ -403,6 +416,9 @@ impl ControlState {
         if let Some(enabled) = patch.geoip_enabled {
             snapshot.geoip_enabled = enabled;
         }
+        if let Some(enabled) = patch.tcp_reset_on_drop {
+            snapshot.tcp_reset_on_drop = enabled;
+        }
 
         let mut guard = self.ebpf.lock().await;
 
@@ -443,7 +459,8 @@ impl ControlState {
                     waf_enabled: u8::from(snapshot.waf_enabled),
                     challenge_enabled: u8::from(snapshot.challenge_enabled),
                     geoip_enabled: u8::from(snapshot.geoip_enabled),
-                    padding: [0; 7],
+                    tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
+                    padding: [0; 6],
                 },
                 0,
             )?;
@@ -622,6 +639,15 @@ impl ControlState {
 impl RuntimeConfigSnapshot {
     fn from_config(config: &Config) -> Self {
         Self {
+            interface: config.interface.clone(),
+            web_port: config.web_port,
+            web_bind: config.web_bind.clone(),
+            log_level: config.log_level.clone(),
+            log_json: config.log_json,
+            store_path: config.store_path.clone(),
+            alert_webhook_url: config.alert_webhook_url.clone(),
+            alert_threshold_dps: config.alert_threshold_dps,
+            alert_cooldown_s: config.alert_cooldown_s,
             rate_limit_enabled: config.rate_limit.enabled,
             syn_proxy_enabled: config.syn_proxy.enabled,
             l7_scan_enabled: config.l7_scan.enabled,
@@ -630,8 +656,11 @@ impl RuntimeConfigSnapshot {
             icmp_flood_enabled: config.icmp_flood_enabled,
             waf_enabled: config.waf.enabled,
             challenge_enabled: config.challenge.enabled,
+            challenge_mode: config.challenge.mode.clone(),
             challenge_ttl_s: config.challenge.ttl_s,
             geoip_enabled: config.geoip.enabled,
+            tcp_reset_on_drop: config.tcp_reset_on_drop,
+            adaptive: config.adaptive.clone(),
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
                 threshold: config.rate_limit.threshold,
@@ -656,22 +685,25 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         .map_mut("CONFIG")
         .context("CONFIG map not found")?
         .try_into()?;
-    config_array.set(
-        0,
-        RuntimeConfig {
-            rate_limit_enabled: u8::from(config.rate_limit.enabled),
-            syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
-            l7_scan_enabled: u8::from(config.l7_scan.enabled),
-            ebpf_debug: u8::from(config.ebpf_log_enabled),
-            udp_flood_enabled: u8::from(config.udp_flood_enabled),
-            icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
-            waf_enabled: u8::from(config.waf.enabled),
-            challenge_enabled: u8::from(config.challenge.enabled),
-            geoip_enabled: u8::from(config.geoip.enabled),
-            padding: [0; 7],
-        },
-        0,
-    )?;
+    let runtime = RuntimeConfig {
+        rate_limit_enabled: u8::from(config.rate_limit.enabled),
+        syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
+        l7_scan_enabled: u8::from(config.l7_scan.enabled),
+        ebpf_debug: u8::from(config.ebpf_log_enabled),
+        udp_flood_enabled: u8::from(config.udp_flood_enabled),
+        icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
+        waf_enabled: u8::from(config.waf.enabled),
+        challenge_enabled: u8::from(config.challenge.enabled),
+        geoip_enabled: u8::from(config.geoip.enabled),
+        tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
+        padding: [0; 6],
+    };
+    tracing::info!(
+        "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
+        runtime.tcp_reset_on_drop,
+        runtime.ebpf_debug
+    );
+    config_array.set(0, runtime, 0)?;
     Ok(())
 }
 

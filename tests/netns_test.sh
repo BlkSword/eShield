@@ -54,6 +54,15 @@ ip -n eshield-client link set veth-client up
 ip -n eshield-server link set lo up
 ip -n eshield-client link set lo up
 
+# veth 原生 XDP_TX 要求对端接口也挂载 XDP 程序；挂载一个 dummy pass-through
+# 程序，使 Test 1.5 的 TCP RST 回包能到达客户端。
+if command -v clang >/dev/null 2>&1; then
+    clang -O2 -target bpf -c "tests/dummy_xdp.c" -o /tmp/dummy_xdp.o
+    ip -n eshield-client link set veth-client xdp obj /tmp/dummy_xdp.o sec xdp
+else
+    echo "WARNING: clang not found; Test 1.5 (tcp_reset_on_drop) may fail on veth"
+fi
+
 mktemp_cfg=$(mktemp /tmp/eshield-XXXXXX.toml)
 cat > "$mktemp_cfg" <<'TOML'
 interface = "veth-server"
@@ -78,6 +87,53 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+
+echo "=== Test 1.5: tcp_reset_on_drop should reply TCP RST for dropped traffic ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "debug"
+ebpf_log_enabled = true
+whitelist = ["10.0.0.1/32"]
+blacklist = ["10.0.0.2"]
+tcp_reset_on_drop = true
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 2
+
+ip netns exec eshield-server tcpdump -i veth-server -nn -c 5 -w /tmp/t15_server.pcap tcp port 12345 2>/dev/null &
+SVR_DUMP=$!
+ip netns exec eshield-client tcpdump -i veth-client -nn -c 5 -w /tmp/t15_client.pcap tcp port 12345 2>/dev/null &
+CLI_DUMP=$!
+sleep 1
+
+start=$(date +%s%N)
+set +e
+ip netns exec eshield-client nc -w 2 -z 10.0.0.1 12345 >/dev/null 2>&1
+NC_EXIT=$?
+set -e
+end=$(date +%s%N)
+elapsed_ms=$(( (end - start) / 1000000 ))
+
+sleep 1
+kill $SVR_DUMP $CLI_DUMP 2>/dev/null || true
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+
+# RST causes immediate connection refused; silent drop causes nc to wait the full timeout.
+if [ "$NC_EXIT" -ne 0 ] && [ "$elapsed_ms" -lt 1500 ]; then
+    echo "PASS: TCP RST received for dropped connection (${elapsed_ms}ms)"
+else
+    echo "FAIL: expected RST (immediate refusal), got nc exit=$NC_EXIT elapsed=${elapsed_ms}ms"
+    echo "--- server pcap ---"
+    ip netns exec eshield-server tcpdump -nn -r /tmp/t15_server.pcap 2>/dev/null || true
+    echo "--- client pcap ---"
+    ip netns exec eshield-client tcpdump -nn -r /tmp/t15_client.pcap 2>/dev/null || true
+    exit 1
+fi
 
 echo "=== Test 2: Per-IP rate limit should drop flood traffic ==="
 cat > "$mktemp_cfg" <<'TOML'

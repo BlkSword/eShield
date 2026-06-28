@@ -11,6 +11,7 @@ mod port_acl;
 mod rate_limit;
 mod syn_cookie;
 mod syn_flood;
+mod tcp_reset;
 mod udp_flood;
 mod waf;
 
@@ -65,7 +66,13 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(xdp_action::XDP_PASS);
     }
 
-    // 4. 端口/协议 ACL
+    // 4. 获取运行时配置（端口 ACL 的 RST 开关也需要）
+    let runtime = match CONFIG.get(0) {
+        Some(c) => *c,
+        None => return Ok(xdp_action::XDP_PASS),
+    };
+
+    // 5. 端口/协议 ACL
     if port_acl::check_port_acl(ctx, &src_key, protocol, dport) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
@@ -73,14 +80,8 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.total_dropped += 1;
             }
         }
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
-
-    // 5. 获取运行时配置
-    let runtime = match CONFIG.get(0) {
-        Some(c) => *c,
-        None => return Ok(xdp_action::XDP_PASS),
-    };
 
     // 计算 TCP payload 偏移与长度（供 L7 / WAF 使用）。
     // 使用 ctx.data_end() 与 ctx.data() 的差值计算实际 payload 长度，
@@ -148,7 +149,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
         emit_geoip_event(ctx, &src_key, protocol);
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 7. SYN Cookie 代理（仅 IPv4 TCP） / SYN Flood 检测
@@ -197,7 +198,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                         stats.syn_flood_blocked += 1;
                     }
                 }
-                return Ok(xdp_action::XDP_DROP);
+                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
             }
         }
     }
@@ -211,7 +212,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.udp_flood_blocked += 1;
             }
         }
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 8. ICMP/ICMPv6 Flood 检测
@@ -225,7 +226,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.icmp_flood_blocked += 1;
             }
         }
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 9. L7 轻量指纹扫描（TCP 载荷前 64 字节）
@@ -237,7 +238,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.l7_blocked += 1;
             }
         }
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 10. HTTP WAF 规则引擎（TCP 首包解析）
@@ -247,11 +248,11 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     {
         if let Some(action) = waf::check(ctx, &src_key, payload_offset) {
             if action == eshield_common::WafAction::Drop as u8 {
-                return Ok(xdp_action::XDP_DROP);
+                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
             }
             // Challenge 动作同样先 DROP，用户需主动访问 challenge 页面完成验证后进入临时白名单。
             if action == eshield_common::WafAction::Challenge as u8 {
-                return Ok(xdp_action::XDP_DROP);
+                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
             }
             // log 动作不拦截，继续后续检查
         }
@@ -267,7 +268,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
         rate_limit::emit_rate_limit_event(ctx, &src_key, protocol);
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 11. 黑名单检查
@@ -283,7 +284,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
         blacklist::emit_blacklist_event(ctx, &src_key, protocol);
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 12. 默认放行
@@ -293,6 +294,22 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         }
     }
     Ok(xdp_action::XDP_PASS)
+}
+
+#[inline(never)]
+fn drop_packet(ctx: &XdpContext, protocol: u8, ip_hdr_len: usize, tcp_reset_on_drop: u8) -> u32 {
+    debug!(
+        ctx,
+        "drop_packet proto={} rst={} ip_hdr_len={}",
+        protocol as u32,
+        tcp_reset_on_drop as u32,
+        ip_hdr_len as u32
+    );
+    if tcp_reset_on_drop != 0 && protocol == parser::IPPROTO_TCP {
+        tcp_reset::reply_tcp_rst(ctx, ip_hdr_len)
+    } else {
+        xdp_action::XDP_DROP
+    }
 }
 
 fn parse_ipv4(ctx: &XdpContext) -> Result<(IpKey, u8, usize, u16), ()> {

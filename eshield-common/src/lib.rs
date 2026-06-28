@@ -284,7 +284,8 @@ pub struct RuntimeConfig {
     pub waf_enabled: u8,
     pub challenge_enabled: u8,
     pub geoip_enabled: u8,
-    pub padding: [u8; 7],
+    pub tcp_reset_on_drop: u8,
+    pub padding: [u8; 6],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）

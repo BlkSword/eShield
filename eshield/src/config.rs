@@ -18,6 +18,8 @@ pub struct Config {
     pub udp_flood_enabled: bool,
     #[serde(default = "default_false")]
     pub icmp_flood_enabled: bool,
+    #[serde(default = "default_false")]
+    pub tcp_reset_on_drop: bool,
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
@@ -196,7 +198,7 @@ fn default_challenge_ttl_s() -> u64 {
     3600
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
