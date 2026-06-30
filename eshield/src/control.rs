@@ -7,6 +7,7 @@ use eshield_common::{
     rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
     RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
 };
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -15,7 +16,9 @@ use tracing::info;
 
 use crate::adaptive::AdaptiveEngine;
 use crate::audit::{AuditAction, Auditor};
-use crate::config::{Config, GeoIpConfig, L7ScanConfig, PortAclItem, ThreatFeed, WafRuleItem};
+use crate::config::{
+    Config, GeoIpConfig, L7ScanConfig, PortAclItem, ProtectionProject, ThreatFeed, WafRuleItem,
+};
 use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
 use crate::store::RuleStore;
 
@@ -60,6 +63,7 @@ pub struct RuntimeConfigSnapshot {
     pub adaptive: crate::config::AdaptiveConfig,
     pub waf_rules: Vec<WafRuleItem>,
     pub port_acl: Vec<PortAclItem>,
+    pub protection_projects: Vec<ProtectionProject>,
     pub l7_scan: L7ScanConfig,
     pub geoip: GeoIpConfig,
     pub threat_intel_feeds: Vec<ThreatFeed>,
@@ -123,6 +127,7 @@ impl ControlState {
             init_rate_limit_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
             init_port_acl_map(&mut guard, &config.port_acl)?;
+            init_protection_projects_map(&mut guard, &config.protection_projects)?;
             init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
@@ -147,6 +152,7 @@ impl ControlState {
         init_rate_limit_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
         init_port_acl_map(&mut guard, &config.port_acl)?;
+        init_protection_projects_map(&mut guard, &config.protection_projects)?;
         init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
@@ -560,6 +566,32 @@ impl ControlState {
         Ok(())
     }
 
+    /// 完全替换当前防护项目，更新 eBPF Map、运行时快照与持久化存储。
+    pub async fn set_protection_projects(
+        &self,
+        projects: Vec<ProtectionProject>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut guard = self.ebpf.lock().await;
+            init_protection_projects_map(&mut guard, &projects)?;
+        }
+
+        self.runtime.write().await.protection_projects = projects.clone();
+
+        if let Some(store) = &self.store {
+            store.save_protection_projects(&projects).await?;
+        }
+
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "protection_projects": projects }),
+        )
+        .await;
+        info!("protection projects updated: count={}", projects.len());
+        Ok(())
+    }
+
     /// 完全替换当前 WAF 规则集，更新 eBPF Map、运行时快照与持久化存储。
     pub async fn set_waf_rules(&self, rules: Vec<WafRuleItem>) -> anyhow::Result<()> {
         let mut compiled = Vec::with_capacity(rules.len().min(eshield_common::WAF_RULES_MAX));
@@ -643,6 +675,12 @@ impl ControlState {
             }
         }
 
+        if let Ok(projects) = store.load_protection_projects().await {
+            if !projects.is_empty() {
+                self.set_protection_projects(projects).await?;
+            }
+        }
+
         Ok(())
     }
 
@@ -693,6 +731,7 @@ impl RuntimeConfigSnapshot {
             },
             waf_rules: config.waf.rules.clone(),
             port_acl: config.port_acl.clone(),
+            protection_projects: config.protection_projects.clone(),
             l7_scan: config.l7_scan.clone(),
             geoip: config.geoip.clone(),
             threat_intel_feeds: config.threat_intel.feeds.clone(),
@@ -816,6 +855,21 @@ fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<(
         port_acl.set(i as u32, entry, 0)?;
     }
 
+    Ok(())
+}
+
+fn init_protection_projects_map(
+    _ebpf: &mut Ebpf,
+    projects: &[ProtectionProject],
+) -> anyhow::Result<()> {
+    // 当前 eBPF 栈空间有限，项目策略未在 eBPF 侧实时匹配；
+    // 配置仍由控制面持久化并展示在 Dashboard，后续可启用内核态下发。
+    if !projects.is_empty() {
+        tracing::info!(
+            "protection_projects loaded (userspace-only): count={}",
+            projects.len()
+        );
+    }
     Ok(())
 }
 

@@ -485,10 +485,16 @@
           <div class="section-header-row">
             <div>
               <h2 class="section-title">防护项目</h2>
-              <div class="section-subtitle">集中管理所有防御模块的开关与核心参数</div>
+              <div class="section-subtitle">按目标（协议/端口/IP）管理站点/应用级策略</div>
             </div>
-            <button class="btn btn-secondary btn-sm" onclick="refreshProtectionModules()">刷新</button>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-sm" onclick="openProtectionProjectModal()">+ 添加项目</button>
+              <button class="btn btn-secondary btn-sm" onclick="refreshProtectionModules()">刷新</button>
+            </div>
           </div>
+          <h3 class="section-title" style="font-size:14px;margin:18px 0 12px">项目列表</h3>
+          <div class="module-grid" id="protection-projects-grid">加载中...</div>
+          <h3 class="section-title" style="font-size:14px;margin:28px 0 12px">全局模块开关</h3>
           <div class="module-grid" id="protection-modules-grid">加载中...</div>
         </div>
 
@@ -749,6 +755,36 @@
       <div class="form-group"><label>启用</label><label class="switch-toggle"><input type="checkbox" id="pm-enabled"><span class="switch-slider"></span></label></div>
       <div id="pm-extra-fields"></div>
       <div style="margin-top:22px;display:flex;gap:10px"><button class="btn" onclick="saveProtectionModule()">保存</button><button class="btn btn-secondary" onclick="closeProtectionModuleModal()">取消</button></div>
+    </div>
+  </aside>
+
+  <div class="drawer-backdrop" id="protection-project-backdrop" onclick="closeProtectionProjectModal()"></div>
+  <aside class="drawer" id="protection-project-modal">
+    <div class="drawer-header"><h3 id="protection-project-modal-title" style="margin:0;font-size:16px">防护项目</h3><button class="icon-btn" onclick="closeProtectionProjectModal()">✕</button></div>
+    <div class="drawer-body">
+      <input type="hidden" id="pp-edit-idx" value="-1">
+      <div class="form-group"><label>名称</label><input type="text" id="pp-name" placeholder="例如 Web 服务"></div>
+      <div class="form-group" style="margin-top:14px"><label>描述</label><input type="text" id="pp-desc" placeholder="可选"></div>
+      <div class="form-group" style="margin-top:14px"><label>协议</label><select id="pp-protocol"><option value="tcp">tcp</option><option value="udp">udp</option><option value="icmp">icmp</option><option value="icmpv6">icmpv6</option><option value="any">any</option></select></div>
+      <div class="form-group" style="margin-top:14px"><label>目的端口</label><input type="text" id="pp-dport" placeholder="例如 80 或 any"></div>
+      <div class="form-group" style="margin-top:14px"><label>目标 IP / CIDR（可选，留空表示任意）</label><textarea id="pp-target-ips" rows="3" placeholder="每行一个，例如 10.0.0.1/32"></textarea></div>
+      <div class="form-group" style="margin-top:14px"><label>默认动作</label><select id="pp-action"><option value="defend">defend（启用下方模块）</option><option value="pass">pass（直接放行）</option><option value="drop">drop（直接丢弃）</option></select></div>
+      <div class="form-group" style="margin-top:14px"><label>启用模块</label>
+        <div id="pp-modules" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="syn_flood"><span class="switch-slider"></span>SYN Flood</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="udp_flood"><span class="switch-slider"></span>UDP Flood</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="icmp_flood"><span class="switch-slider"></span>ICMP Flood</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="rate_limit"><span class="switch-slider"></span>速率限制</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="adaptive"><span class="switch-slider"></span>自适应</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="waf"><span class="switch-slider"></span>WAF</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="l7_scan"><span class="switch-slider"></span>L7 扫描</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="geoip"><span class="switch-slider"></span>GeoIP</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="challenge"><span class="switch-slider"></span>Challenge</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="tcp_reset"><span class="switch-slider"></span>TCP RST</label>
+          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="port_acl"><span class="switch-slider"></span>端口 ACL</label>
+        </div>
+      </div>
+      <div style="margin-top:22px;display:flex;gap:10px"><button class="btn" onclick="saveProtectionProject()">保存</button><button class="btn btn-secondary" onclick="closeProtectionProjectModal()">取消</button></div>
     </div>
   </aside>
 
@@ -1126,6 +1162,7 @@
       return v === undefined ? '-' : Number(v).toLocaleString();
     }
     async function refreshProtectionModules() {
+      await refreshProtectionProjects();
       try {
         const [modules, stats] = await Promise.all([
           apiJson('GET', '/api/protection-modules'),
@@ -1239,6 +1276,100 @@
         closeProtectionModuleModal();
         refreshProtectionModules();
       } catch (e) { toast(e.message, 'error'); }
+    }
+
+    let protectionProjects = [];
+    function renderProtectionProjects() {
+      const grid = document.getElementById('protection-projects-grid');
+      grid.innerHTML = '';
+      if (protectionProjects.length === 0) {
+        grid.innerHTML = '<div class="empty">暂无项目，点击右上角添加。</div>';
+        return;
+      }
+      protectionProjects.forEach((p, idx) => {
+        const card = document.createElement('div');
+        card.className = 'card module-card';
+        const actionTag = p.action === 'pass' ? '<span class="tag tag-success">放行</span>' : p.action === 'drop' ? '<span class="tag tag-danger">丢弃</span>' : '<span class="tag tag-info">防御</span>';
+        const target = p.target_ips && p.target_ips.length ? p.target_ips.join(', ') : '任意 IP';
+        const modules = (p.enabled_modules || []).join(', ') || '-';
+        card.innerHTML = `
+          <div class="module-card-header">
+            <div><div class="module-card-title">${p.name}</div><div class="module-card-desc">${p.description || ''}</div></div>
+            ${actionTag}
+          </div>
+          <div class="module-card-desc"><strong>目标：</strong>${p.protocol || 'any'} / ${p.dport || 'any'}<br><strong>IP：</strong>${target}</div>
+          <div class="module-card-desc"><strong>模块：</strong>${modules}</div>
+          <div class="module-card-footer">
+            <button class="btn btn-ghost btn-sm" onclick="openProtectionProjectModal(${idx})">编辑</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteProtectionProject(${idx})">删除</button>
+          </div>`;
+        grid.appendChild(card);
+      });
+    }
+    function openProtectionProjectModal(idx = -1) {
+      document.getElementById('pp-edit-idx').value = idx;
+      const p = idx >= 0 ? protectionProjects[idx] : null;
+      document.getElementById('protection-project-modal-title').textContent = p ? '编辑项目' : '添加项目';
+      document.getElementById('pp-name').value = p ? p.name : '';
+      document.getElementById('pp-desc').value = p ? (p.description || '') : '';
+      document.getElementById('pp-protocol').value = p ? p.protocol : 'tcp';
+      document.getElementById('pp-dport').value = p ? p.dport : '';
+      document.getElementById('pp-target-ips').value = p && p.target_ips ? p.target_ips.join('\n') : '';
+      document.getElementById('pp-action').value = p ? p.action : 'defend';
+      document.querySelectorAll('#pp-modules input').forEach(cb => cb.checked = false);
+      if (p && p.enabled_modules) {
+        p.enabled_modules.forEach(m => {
+          const cb = document.querySelector(`#pp-modules input[value="${m}"]`);
+          if (cb) cb.checked = true;
+        });
+      }
+      document.getElementById('protection-project-backdrop').classList.add('active');
+      document.getElementById('protection-project-modal').classList.add('active');
+    }
+    function closeProtectionProjectModal() {
+      document.getElementById('protection-project-backdrop').classList.remove('active');
+      document.getElementById('protection-project-modal').classList.remove('active');
+    }
+    async function saveProtectionProject() {
+      const idx = parseInt(document.getElementById('pp-edit-idx').value);
+      let projects = protectionProjects.slice();
+      const enabledModules = Array.from(document.querySelectorAll('#pp-modules input:checked')).map(cb => cb.value);
+      const targetIps = document.getElementById('pp-target-ips').value.split('\n').map(s => s.trim()).filter(s => s);
+      const item = {
+        name: document.getElementById('pp-name').value,
+        description: document.getElementById('pp-desc').value,
+        protocol: document.getElementById('pp-protocol').value,
+        dport: document.getElementById('pp-dport').value,
+        target_ips: targetIps,
+        enabled_modules: enabledModules,
+        action: document.getElementById('pp-action').value
+      };
+      if (!item.name) { toast('请输入项目名称', 'error'); return; }
+      if (!item.dport) { toast('请输入目的端口', 'error'); return; }
+      if (idx >= 0 && idx < projects.length) projects[idx] = item; else projects.push(item);
+      try {
+        await api('POST', '/api/protection-projects', { projects });
+        toast('项目已保存', 'success');
+        closeProtectionProjectModal();
+        refreshProtectionProjects();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function deleteProtectionProject(idx) {
+      if (!confirm('确定删除这个项目？')) return;
+      let projects = protectionProjects.slice();
+      projects.splice(idx, 1);
+      try {
+        await api('POST', '/api/protection-projects', { projects });
+        toast('项目已删除', 'success');
+        refreshProtectionProjects();
+      } catch (e) { toast(e.message, 'error'); }
+    }
+    async function refreshProtectionProjects() {
+      try {
+        const data = await apiJson('GET', '/api/protection-projects');
+        protectionProjects = data.projects || [];
+        renderProtectionProjects();
+      } catch (e) { console.error(e); toast('加载项目失败', 'error'); }
     }
 
     async function refreshLists() {

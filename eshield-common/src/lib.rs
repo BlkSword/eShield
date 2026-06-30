@@ -333,6 +333,55 @@ pub struct PortAclEntry {
     pub padding: [u8; 11],
 }
 
+/// 防护项目策略键：按目的 IPv4 + 协议 + 端口匹配。
+///
+/// 当前 eBPF 栈空间有限，项目策略暂只支持 IPv4 精确地址匹配；
+/// IPv6 流量回退到全局运行时策略。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProjectPolicyKey {
+    pub addr: u32,
+    pub dport: u16,
+    pub protocol: u8,
+    pub padding: u8,
+}
+
+/// 防护项目策略值。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProjectPolicy {
+    /// 模块位图，见 `project_modules`
+    pub flags: u16,
+    /// 0=none, 1=pass, 2=drop, 3=defend
+    pub action: u8,
+    pub padding: [u8; 5],
+}
+
+
+/// 项目策略可用模块位图。
+pub mod project_modules {
+    pub const NONE: u16 = 0;
+    pub const SYN_FLOOD: u16 = 1 << 0;
+    pub const UDP_FLOOD: u16 = 1 << 1;
+    pub const ICMP_FLOOD: u16 = 1 << 2;
+    pub const RATE_LIMIT: u16 = 1 << 3;
+    pub const ADAPTIVE: u16 = 1 << 4;
+    pub const WAF: u16 = 1 << 5;
+    pub const L7_SCAN: u16 = 1 << 6;
+    pub const GEOIP: u16 = 1 << 7;
+    pub const CHALLENGE: u16 = 1 << 8;
+    pub const TCP_RESET: u16 = 1 << 9;
+    pub const PORT_ACL: u16 = 1 << 10;
+}
+
+/// 项目策略动作。
+pub mod project_action {
+    pub const NONE: u8 = 0;
+    pub const PASS: u8 = 1;
+    pub const DROP: u8 = 2;
+    pub const DEFEND: u8 = 3;
+}
+
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
@@ -349,8 +398,8 @@ impl Default for RateLimitConfig {
 mod userspace_impls {
     use super::{
         BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
-        PortAclEntry, RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4,
-        WhitelistKeyV6,
+        PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig,
+        WafRule, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -360,6 +409,8 @@ mod userspace_impls {
     unsafe impl Pod for RateCounter {}
     unsafe impl Pod for L7Pattern {}
     unsafe impl Pod for PortAclEntry {}
+    unsafe impl Pod for ProjectPolicy {}
+    unsafe impl Pod for ProjectPolicyKey {}
     unsafe impl Pod for WhitelistKeyV4 {}
     unsafe impl Pod for WhitelistKeyV6 {}
     unsafe impl Pod for GeoIpKeyV4 {}

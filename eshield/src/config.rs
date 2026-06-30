@@ -31,6 +31,8 @@ pub struct Config {
     #[serde(default)]
     pub port_acl: Vec<PortAclItem>,
     #[serde(default)]
+    pub protection_projects: Vec<ProtectionProject>,
+    #[serde(default)]
     pub geoip: GeoIpConfig,
     #[serde(default)]
     pub threat_intel: ThreatIntelConfig,
@@ -83,6 +85,26 @@ pub struct PortAclItem {
     pub protocol: String,
     pub dport: String,
     pub action: String,
+}
+
+/// 防护项目：按协议 + 端口 + 可选目标 IP 绑定一组防御策略。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtectionProject {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub protocol: String,
+    pub dport: String,
+    #[serde(default)]
+    pub target_ips: Vec<String>,
+    #[serde(default)]
+    pub enabled_modules: Vec<String>,
+    #[serde(default = "default_project_action")]
+    pub action: String,
+}
+
+fn default_project_action() -> String {
+    "defend".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -420,6 +442,7 @@ impl Config {
         validate_threat_intel(self)?;
         validate_waf(self)?;
         validate_challenge(self)?;
+        validate_protection_projects(self)?;
 
         Ok(())
     }
@@ -583,6 +606,68 @@ fn validate_challenge(config: &Config) -> anyhow::Result<()> {
     }
     if config.challenge.ttl_s == 0 {
         anyhow::bail!("challenge.ttl_s must be > 0");
+    }
+    Ok(())
+}
+
+fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
+    let valid_modules: std::collections::HashSet<&str> = [
+        "syn_flood",
+        "udp_flood",
+        "icmp_flood",
+        "rate_limit",
+        "adaptive",
+        "waf",
+        "l7_scan",
+        "geoip",
+        "challenge",
+        "tcp_reset",
+        "port_acl",
+    ]
+    .into_iter()
+    .collect();
+    for (i, proj) in config.protection_projects.iter().enumerate() {
+        if proj.name.is_empty() {
+            anyhow::bail!("protection_projects[{}]: name cannot be empty", i);
+        }
+        if !matches!(proj.protocol.to_lowercase().as_str(), "tcp" | "udp" | "icmp" | "icmpv6" | "any") {
+            anyhow::bail!(
+                "protection_projects[{}]: invalid protocol '{}', expected tcp/udp/icmp/icmpv6/any",
+                i,
+                proj.protocol
+            );
+        }
+        if proj.dport.is_empty() {
+            anyhow::bail!("protection_projects[{}]: dport cannot be empty", i);
+        }
+        if proj.dport != "any" {
+            let _: u16 = proj
+                .dport
+                .parse()
+                .with_context(|| format!("protection_projects[{}]: invalid dport", i))?;
+        }
+        if !matches!(proj.action.to_lowercase().as_str(), "pass" | "drop" | "defend") {
+            anyhow::bail!(
+                "protection_projects[{}]: invalid action '{}', expected pass/drop/defend",
+                i,
+                proj.action
+            );
+        }
+        for (j, m) in proj.enabled_modules.iter().enumerate() {
+            if !valid_modules.contains(m.as_str()) {
+                anyhow::bail!(
+                    "protection_projects[{}].enabled_modules[{}]: unknown module '{}'",
+                    i,
+                    j,
+                    m
+                );
+            }
+        }
+        for (j, ip) in proj.target_ips.iter().enumerate() {
+            crate::ip::parse_ip_or_cidr(ip).with_context(|| {
+                format!("protection_projects[{}].target_ips[{}]: invalid IP/CIDR", i, j)
+            })?;
+        }
     }
     Ok(())
 }

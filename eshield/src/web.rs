@@ -95,6 +95,10 @@ pub async fn run(
         .route("/api/waf/rules", get(list_waf_rules_handler).post(set_waf_rules_handler))
         .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
         .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
+        .route(
+            "/api/protection-projects",
+            get(list_protection_projects_handler).post(set_protection_projects_handler),
+        )
         .route("/api/l7-patterns", get(list_l7_patterns_handler).post(set_l7_patterns_handler))
         .route("/api/geoip/reload", post(reload_geoip_handler))
         .route("/api/threat-intel/sync", post(sync_threat_intel_handler))
@@ -186,6 +190,11 @@ struct ReorderWafRulesReq {
 #[derive(Deserialize)]
 struct SetPortAclReq {
     items: Vec<crate::config::PortAclItem>,
+}
+
+#[derive(Deserialize)]
+struct SetProtectionProjectsReq {
+    projects: Vec<crate::config::ProtectionProject>,
 }
 
 #[derive(Deserialize)]
@@ -533,6 +542,31 @@ async fn set_port_acl_handler(
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("端口 ACL 已更新")
+}
+
+async fn list_protection_projects_handler(
+    State(state): State<Arc<WebState>>,
+) -> Json<serde_json::Value> {
+    let rt = state.control.runtime.read().await;
+    Json(serde_json::json!({ "projects": rt.protection_projects }))
+}
+
+async fn set_protection_projects_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<SetProtectionProjectsReq>,
+) -> Result<&'static str, (StatusCode, String)> {
+    if req.projects.len() > 256 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "too many protection projects (max 256)".to_string(),
+        ));
+    }
+    state
+        .control
+        .set_protection_projects(req.projects)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok("防护项目已更新")
 }
 
 async fn list_l7_patterns_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {

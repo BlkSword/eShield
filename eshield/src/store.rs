@@ -11,6 +11,7 @@ const WHITELIST: TableDefinition<&[u8], &[u8]> = TableDefinition::new("whitelist
 const PORT_ACL: TableDefinition<u32, &[u8]> = TableDefinition::new("port_acl");
 const WAF_RULES: TableDefinition<u32, &[u8]> = TableDefinition::new("waf_rules");
 const L7_PATTERNS: TableDefinition<u32, &[u8]> = TableDefinition::new("l7_patterns");
+const PROTECTION_PROJECTS: TableDefinition<u32, &[u8]> = TableDefinition::new("protection_projects");
 
 #[derive(Clone)]
 pub struct RuleStore {
@@ -266,6 +267,46 @@ impl RuleStore {
         tokio::task::spawn_blocking(move || {
             let tx = db.begin_read()?;
             let table = match tx.open_table(L7_PATTERNS) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let value = table.get(&0u32)?;
+            match value {
+                Some(v) => Ok(serde_json::from_slice(v.value())?),
+                None => Ok(Vec::new()),
+            }
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn save_protection_projects(
+        &self,
+        projects: &[crate::config::ProtectionProject],
+    ) -> anyhow::Result<()> {
+        let db = self.db.clone();
+        let value = serde_json::to_vec(projects)?;
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(PROTECTION_PROJECTS)?;
+                table.insert(&0u32, value.as_slice())?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn load_protection_projects(
+        &self,
+    ) -> anyhow::Result<Vec<crate::config::ProtectionProject>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(PROTECTION_PROJECTS) {
                 Ok(t) => t,
                 Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
                 Err(e) => return Err(e.into()),
