@@ -198,6 +198,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
             &config,
             Some(auditor.clone()),
             Some(store.clone()),
+            Some(adaptive.clone()),
         )
         .await
         .context("failed to initialize control state")?,

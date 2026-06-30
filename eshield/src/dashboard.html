@@ -198,6 +198,17 @@
     .card-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
     .card-title { font-size: 14px; font-weight: 600; margin: 0; }
     .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+    .module-card { padding: 18px; position: relative; display: flex; flex-direction: column; gap: 12px; }
+    .module-card:hover { border-color: var(--border-strong); }
+    .module-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .module-card-title { font-size: 14px; font-weight: 600; margin: 0; }
+    .module-card-desc { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+    .module-card-footer { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 8px; }
+    .module-card-stats { display: flex; align-items: baseline; gap: 6px; }
+    .module-card-stats .value { font-size: 22px; font-weight: 700; }
+    .module-card-stats .label { font-size: 12px; color: var(--text-tertiary); }
+    .module-category { font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; }
     .metric-card { padding: 20px; position: relative; }
     .metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .metric-label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
@@ -396,6 +407,10 @@
         </div>
         <div class="nav-group">
           <div class="nav-label">防护策略</div>
+          <a class="nav-item" href="#/protection" data-page="protection">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+            防护项目
+          </a>
           <a class="nav-item" href="#/rules" data-page="rules">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
             规则中心
@@ -463,6 +478,18 @@
         <div class="page" id="page-events">
           <div class="section-header-row"><h2 class="section-title">实时事件流</h2></div>
           <div class="card"><div class="card-body"><div id="events-stream" class="empty">事件流开发中，请先使用审计日志页面。</div></div></div>
+        </div>
+
+        <!-- Protection Projects -->
+        <div class="page" id="page-protection">
+          <div class="section-header-row">
+            <div>
+              <h2 class="section-title">防护项目</h2>
+              <div class="section-subtitle">集中管理所有防御模块的开关与核心参数</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" onclick="refreshProtectionModules()">刷新</button>
+          </div>
+          <div class="module-grid" id="protection-modules-grid">加载中...</div>
         </div>
 
         <!-- Rules -->
@@ -715,6 +742,16 @@
     </div>
   </aside>
 
+  <div class="drawer-backdrop" id="protection-module-backdrop" onclick="closeProtectionModuleModal()"></div>
+  <aside class="drawer" id="protection-module-modal">
+    <div class="drawer-header"><h3 id="protection-module-modal-title" style="margin:0;font-size:16px">模块配置</h3><button class="icon-btn" onclick="closeProtectionModuleModal()">✕</button></div>
+    <div class="drawer-body" id="protection-module-form">
+      <div class="form-group"><label>启用</label><label class="switch-toggle"><input type="checkbox" id="pm-enabled"><span class="switch-slider"></span></label></div>
+      <div id="pm-extra-fields"></div>
+      <div style="margin-top:22px;display:flex;gap:10px"><button class="btn" onclick="saveProtectionModule()">保存</button><button class="btn btn-secondary" onclick="closeProtectionModuleModal()">取消</button></div>
+    </div>
+  </aside>
+
   <div class="drawer-backdrop" id="drawer-backdrop" onclick="closeDrawer()"></div>
   <aside class="drawer" id="ip-drawer">
     <div class="drawer-header"><h3 id="drawer-title" style="margin:0;font-size:16px">IP 情报</h3><button class="icon-btn" onclick="closeDrawer()">✕</button></div>
@@ -758,13 +795,14 @@
       if (page) page.classList.add('active');
       const nav = document.querySelector(`.nav-item[data-page="${hash}"]`);
       if (nav) nav.classList.add('active');
-      const titles = { overview: '总览', events: '事件流', rules: '规则中心', security: '安全运营', network: '网络防护', audit: '审计日志', settings: '设置' };
+      const titles = { overview: '总览', events: '事件流', protection: '防护项目', rules: '规则中心', security: '安全运营', network: '网络防护', audit: '审计日志', settings: '设置' };
       document.getElementById('page-heading').textContent = titles[hash] || hash;
       if (hash === 'rules') refreshRules();
       if (hash === 'security') refreshLists();
       if (hash === 'audit') refreshAudit();
       if (hash === 'network') refreshNetwork();
       if (hash === 'settings') refreshSettings();
+      if (hash === 'protection') refreshProtectionModules();
       if (hash === 'overview') { setTimeout(initTrafficChart, 0); refreshStats(); }
     }
 
@@ -1066,6 +1104,142 @@
 
     async function reloadGeoIP() { try { await api('POST', '/api/geoip/reload'); toast('GeoIP 已重新加载', 'success'); refreshRules(); } catch (e) { toast(e.message, 'error'); } }
     async function syncThreatIntel() { try { await api('POST', '/api/threat-intel/sync'); toast('威胁情报同步已触发', 'success'); } catch (e) { toast(e.message, 'error'); } }
+
+    let protectionModules = [];
+    let currentProtectionModule = null;
+    const moduleIcons = {
+      syn_flood: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
+      udp_flood: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
+      icmp_flood: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
+      rate_limit: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'),
+      adaptive: icon('<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-13h2v6h-2zm0 8h2v2h-2"/>'),
+      waf: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
+      l7_scan: icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'),
+      geoip: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
+      challenge: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="12" r="4"/>'),
+      tcp_reset: icon('<path d="M4 4h16v16H4z"/><path d="M9 9l6 6M15 9l-6 6"/>'),
+      port_acl: icon('<path d="M4 4h16v16H4z"/><path d="M8 12h8"/>')
+    };
+    function moduleStatValue(m) {
+      if (!m.stats_key || !currentStats) return '-';
+      const v = currentStats[m.stats_key];
+      return v === undefined ? '-' : Number(v).toLocaleString();
+    }
+    async function refreshProtectionModules() {
+      try {
+        const [modules, stats] = await Promise.all([
+          apiJson('GET', '/api/protection-modules'),
+          apiJson('GET', '/api/stats')
+        ]);
+        protectionModules = modules.modules || [];
+        currentStats = stats;
+        const grid = document.getElementById('protection-modules-grid');
+        grid.innerHTML = '';
+        if (protectionModules.length === 0) {
+          grid.innerHTML = '<div class="empty">暂无防护模块信息</div>';
+          return;
+        }
+        protectionModules.forEach((m, idx) => {
+          const card = document.createElement('div');
+          card.className = 'card module-card';
+          const enabled = m.enabled ? '<span class="tag tag-success">已启用</span>' : '<span class="tag tag-muted">未启用</span>';
+          const statValue = moduleStatValue(m);
+          const statHtml = statValue !== '-' ? `<div class="module-card-stats"><span class="value">${statValue}</span><span class="label">拦截/触发</span></div>` : '';
+          const configureBtn = m.editable_fields && m.editable_fields.length ? `<button class="btn btn-sm" onclick="openProtectionModuleModal(${idx})">配置</button>` : '';
+          card.innerHTML = `
+            <div class="module-category">${m.category || '防护'}</div>
+            <div class="module-card-header">
+              <div style="display:flex;align-items:center;gap:10px">
+                <div class="metric-icon blue">${moduleIcons[m.id] || moduleIcons.port_acl}</div>
+                <div><div class="module-card-title">${m.name}</div></div>
+              </div>
+              ${enabled}
+            </div>
+            <div class="module-card-desc">${m.description || ''}</div>
+            <div class="module-card-footer">
+              ${statHtml}
+              ${configureBtn}
+            </div>`;
+          grid.appendChild(card);
+        });
+      } catch (e) { console.error(e); toast('加载防护项目失败', 'error'); }
+    }
+    function openProtectionModuleModal(idx) {
+      currentProtectionModule = protectionModules[idx];
+      if (!currentProtectionModule) return;
+      document.getElementById('protection-module-modal-title').textContent = currentProtectionModule.name;
+      const enabledField = currentProtectionModule.editable_fields.find(f => f.id === 'enabled');
+      document.getElementById('pm-enabled').checked = enabledField ? !!enabledField.value : currentProtectionModule.enabled;
+      const extra = document.getElementById('pm-extra-fields');
+      extra.innerHTML = '';
+      currentProtectionModule.editable_fields.filter(f => f.id !== 'enabled').forEach(f => {
+        let html = `<div class="form-group" style="margin-top:14px"><label>${f.label}</label>`;
+        if (f.type === 'number') {
+          html += `<input type="number" id="pm-field-${f.id}" value="${f.value !== undefined ? f.value : ''}" min="0">`;
+        } else if (f.type === 'select') {
+          html += `<select id="pm-field-${f.id}">${(f.options || []).map(o => `<option value="${o}" ${o === f.value ? 'selected' : ''}>${o}</option>`).join('')}</select>`;
+        } else if (f.type === 'readonly') {
+          html += `<div style="padding:8px 0;font-weight:600">${f.value !== undefined ? f.value : '-'}</div>`;
+        }
+        html += '</div>';
+        extra.innerHTML += html;
+      });
+      document.getElementById('protection-module-backdrop').classList.add('active');
+      document.getElementById('protection-module-modal').classList.add('active');
+    }
+    function closeProtectionModuleModal() {
+      document.getElementById('protection-module-backdrop').classList.remove('active');
+      document.getElementById('protection-module-modal').classList.remove('active');
+      currentProtectionModule = null;
+    }
+    async function saveProtectionModule() {
+      if (!currentProtectionModule) return;
+      const patch = {};
+      const id = currentProtectionModule.id;
+      const enabled = document.getElementById('pm-enabled').checked;
+      const map = {
+        syn_flood: 'syn_proxy_enabled',
+        udp_flood: 'udp_flood_enabled',
+        icmp_flood: 'icmp_flood_enabled',
+        waf: 'waf_enabled',
+        l7_scan: 'l7_scan_enabled',
+        geoip: 'geoip_enabled',
+        tcp_reset: 'tcp_reset_on_drop',
+        challenge: 'challenge_enabled'
+      };
+      if (map[id]) patch[map[id]] = enabled;
+
+      if (id === 'rate_limit') {
+        patch.rate_limit_enabled = enabled;
+        patch.rate_limit = {
+          enabled,
+          threshold: parseInt(document.getElementById('pm-field-threshold').value) || 0,
+          tick_ms: parseInt(document.getElementById('pm-field-tick_ms').value) || 0,
+          decay_num: parseInt(document.getElementById('pm-field-decay_num').value) || 0,
+          decay_den: parseInt(document.getElementById('pm-field-decay_den').value) || 0,
+          block_duration_s: parseInt(document.getElementById('pm-field-block_duration_s').value) || 0
+        };
+      }
+      if (id === 'adaptive') {
+        patch.adaptive = {
+          enabled,
+          threshold: parseInt(document.getElementById('pm-field-threshold').value) || 0,
+          window_s: parseInt(document.getElementById('pm-field-window_s').value) || 0,
+          block_duration_s: parseInt(document.getElementById('pm-field-block_duration_s').value) || 0
+        };
+      }
+      if (id === 'challenge') {
+        patch.challenge_enabled = enabled;
+        patch.challenge_ttl_s = parseInt(document.getElementById('pm-field-ttl_s').value) || 0;
+        patch.challenge_mode = document.getElementById('pm-field-mode').value;
+      }
+      try {
+        await api('PATCH', '/api/config', patch);
+        toast('配置已保存', 'success');
+        closeProtectionModuleModal();
+        refreshProtectionModules();
+      } catch (e) { toast(e.message, 'error'); }
+    }
 
     async function refreshLists() {
       try {

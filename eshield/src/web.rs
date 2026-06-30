@@ -80,6 +80,7 @@ pub async fn run(
             get(config_handler).patch(patch_config_handler),
         )
         .route("/api/config/reload", post(reload_config_handler))
+        .route("/api/protection-modules", get(protection_modules_handler))
         .route(
             "/api/blacklist",
             post(block_ip_handler).delete(unblock_ip_handler),
@@ -246,6 +247,148 @@ async fn stats_handler(State(state): State<Arc<WebState>>) -> Json<StatsResponse
 async fn config_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
     let rt = state.control.runtime.read().await.clone();
     Json(serde_json::to_value(rt).unwrap_or_default())
+}
+
+async fn protection_modules_handler(
+    State(state): State<Arc<WebState>>,
+) -> Json<serde_json::Value> {
+    let rt = state.control.runtime.read().await.clone();
+    let modules = vec![
+        serde_json::json!({
+            "id": "syn_flood",
+            "name": "SYN Flood 防护",
+            "category": "DDoS",
+            "description": "基于 SYN 代理/ cookie 抵御 SYN Flood 攻击。",
+            "enabled": rt.syn_proxy_enabled,
+            "stats_key": "syn_flood_blocked",
+            "editable_fields": [field_switch("enabled", "启用防护", rt.syn_proxy_enabled)]
+        }),
+        serde_json::json!({
+            "id": "udp_flood",
+            "name": "UDP Flood 防护",
+            "category": "DDoS",
+            "description": "检测并丢弃异常 UDP 泛洪流量。",
+            "enabled": rt.udp_flood_enabled,
+            "stats_key": "udp_flood_blocked",
+            "editable_fields": [field_switch("enabled", "启用防护", rt.udp_flood_enabled)]
+        }),
+        serde_json::json!({
+            "id": "icmp_flood",
+            "name": "ICMP Flood 防护",
+            "category": "DDoS",
+            "description": "检测并丢弃异常 ICMP/ICMPv6 泛洪流量。",
+            "enabled": rt.icmp_flood_enabled,
+            "stats_key": "icmp_flood_blocked",
+            "editable_fields": [field_switch("enabled", "启用防护", rt.icmp_flood_enabled)]
+        }),
+        serde_json::json!({
+            "id": "rate_limit",
+            "name": "速率限制 / CC 防护",
+            "category": "访问控制",
+            "description": "基于令牌桶对每个源 IP 进行速率限制。",
+            "enabled": rt.rate_limit.enabled,
+            "stats_key": "rate_limited",
+            "editable_fields": [
+                field_switch("enabled", "启用限速", rt.rate_limit.enabled),
+                field_number("threshold", "阈值（包/窗口）", rt.rate_limit.threshold),
+                field_number("tick_ms", "窗口 Tick (ms)", rt.rate_limit.tick_ms),
+                field_number("decay_num", "衰减分子", rt.rate_limit.decay_num),
+                field_number("decay_den", "衰减分母", rt.rate_limit.decay_den),
+                field_number("block_duration_s", "封禁时长 (s)", rt.rate_limit.block_duration_s)
+            ]
+        }),
+        serde_json::json!({
+            "id": "adaptive",
+            "name": "自适应黑名单",
+            "category": "访问控制",
+            "description": "对短时间窗口内多次触发规则的源 IP 自动追加黑名单。",
+            "enabled": rt.adaptive.enabled,
+            "stats_key": "adaptive_blocked",
+            "editable_fields": [
+                field_switch("enabled", "启用自适应", rt.adaptive.enabled),
+                field_number("threshold", "触发阈值（次）", rt.adaptive.threshold),
+                field_number("window_s", "统计窗口 (s)", rt.adaptive.window_s),
+                field_number("block_duration_s", "封禁时长 (s)", rt.adaptive.block_duration_s)
+            ]
+        }),
+        serde_json::json!({
+            "id": "waf",
+            "name": "WAF 规则引擎",
+            "category": "应用层",
+            "description": "基于 Method/Path/Host/UA 的 HTTP 层规则匹配。",
+            "enabled": rt.waf_enabled,
+            "stats_key": "waf_blocked",
+            "editable_fields": [field_switch("enabled", "启用 WAF", rt.waf_enabled)]
+        }),
+        serde_json::json!({
+            "id": "l7_scan",
+            "name": "L7 指纹扫描",
+            "category": "应用层",
+            "description": "匹配应用层指纹特征，识别扫描/探测行为。",
+            "enabled": rt.l7_scan_enabled,
+            "stats_key": "l7_blocked",
+            "editable_fields": [field_switch("enabled", "启用 L7 扫描", rt.l7_scan_enabled)]
+        }),
+        serde_json::json!({
+            "id": "geoip",
+            "name": "GeoIP 地区封禁",
+            "category": "访问控制",
+            "description": "根据国家/地区或 ASN 放行或封禁流量。",
+            "enabled": rt.geoip_enabled,
+            "stats_key": "geoip_blocked",
+            "editable_fields": [field_switch("enabled", "启用 GeoIP", rt.geoip_enabled)]
+        }),
+        serde_json::json!({
+            "id": "challenge",
+            "name": "挑战验证（人机验证）",
+            "category": "应用层",
+            "description": "对可疑客户端下发 JS/302 挑战，通过后加入临时白名单。",
+            "enabled": rt.challenge_enabled,
+            "stats_key": "challenge_issued",
+            "editable_fields": [
+                field_switch("enabled", "启用挑战", rt.challenge_enabled),
+                field_select("mode", "验证模式", vec!["js", "302"], &rt.challenge_mode),
+                field_number("ttl_s", "放行有效期 (s)", rt.challenge_ttl_s)
+            ]
+        }),
+        serde_json::json!({
+            "id": "tcp_reset",
+            "name": "TCP RST 回包",
+            "category": "网络层",
+            "description": "对丢弃的 TCP 连接回复 RST，加速客户端失败重连。",
+            "enabled": rt.tcp_reset_on_drop,
+            "stats_key": None::<String>,
+            "editable_fields": [field_switch("enabled", "启用 RST 回包", rt.tcp_reset_on_drop)]
+        }),
+        serde_json::json!({
+            "id": "port_acl",
+            "name": "端口 ACL",
+            "category": "访问控制",
+            "description": "基于协议和目的端口的显式 allow/drop 规则。",
+            "enabled": !rt.port_acl.is_empty(),
+            "stats_key": None::<String>,
+            "editable_fields": [
+                field_readonly("rules_count", "已配置规则数", serde_json::json!(rt.port_acl.len()))
+            ]
+        }),
+    ];
+    Json(serde_json::json!({ "modules": modules }))
+}
+
+fn field_switch(id: &str, label: &str, value: bool) -> serde_json::Value {
+    serde_json::json!({"id": id, "type": "switch", "label": label, "value": value})
+}
+
+fn field_number(id: &str, label: &str, value: u64) -> serde_json::Value {
+    serde_json::json!({"id": id, "type": "number", "label": label, "value": value})
+}
+
+fn field_select(id: &str, label: &str, options: Vec<&str>, value: &str) -> serde_json::Value {
+    serde_json::json!({"id": id, "type": "select", "label": label, "options": options, "value": value})
+}
+
+fn field_readonly(id: &str, label: &str, value: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({"id": id, "type": "readonly", "label": label, "value": value})
 }
 
 async fn patch_config_handler(

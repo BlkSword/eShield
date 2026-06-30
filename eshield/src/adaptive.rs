@@ -10,7 +10,7 @@ use crate::state::Stats;
 /// 用户态自适应阈值引擎：根据 Ring Buffer 中的 DROP 事件，
 /// 对短时间窗口内多次触发规则的源 IP 追加动态黑名单。
 pub struct AdaptiveEngine {
-    config: AdaptiveConfig,
+    config: std::sync::RwLock<AdaptiveConfig>,
     /// 每个 IP 的最近事件时间戳（秒），用于滑动窗口计数
     windows: dashmap::DashMap<IpKey, Vec<u64>>,
     /// 已自适应封禁的 IP 及其解封时间戳（秒）
@@ -20,22 +20,30 @@ pub struct AdaptiveEngine {
 impl AdaptiveEngine {
     pub fn new(config: AdaptiveConfig) -> Self {
         Self {
-            config,
+            config: std::sync::RwLock::new(config),
             windows: dashmap::DashMap::new(),
             blocked: dashmap::DashMap::new(),
         }
     }
 
+    /// 热更新自适应阈值配置。
+    pub fn update_config(&self, config: AdaptiveConfig) {
+        if let Ok(mut c) = self.config.write() {
+            *c = config;
+        }
+    }
+
     /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map。
     pub fn on_event(&self, _stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
-        if !self.config.enabled {
+        let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
+        if !cfg.enabled {
             return Ok(());
         }
 
         let now_s = now_s();
-        let window_s = self.config.window_s;
-        let threshold = self.config.threshold;
-        let block_duration_s = self.config.block_duration_s;
+        let window_s = cfg.window_s;
+        let threshold = cfg.threshold;
+        let block_duration_s = cfg.block_duration_s;
 
         // 已封禁且未过期则跳过
         if let Some(entry) = self.blocked.get(&src_ip) {

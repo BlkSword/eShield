@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::info;
 
+use crate::adaptive::AdaptiveEngine;
 use crate::audit::{AuditAction, Auditor};
 use crate::config::{Config, GeoIpConfig, L7ScanConfig, PortAclItem, ThreatFeed, WafRuleItem};
 use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
@@ -28,6 +29,7 @@ pub struct ControlState {
     pub geoip_blocks: Mutex<Vec<(IpKey, u32)>>,
     pub auditor: Option<Auditor>,
     pub store: Option<RuleStore>,
+    adaptive: Option<Arc<AdaptiveEngine>>,
 }
 
 /// 运行时可读快照（用于 Web / CLI 展示）。
@@ -88,6 +90,9 @@ pub struct RuntimeConfigPatch {
     pub geoip_enabled: Option<bool>,
     pub tcp_reset_on_drop: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
+    pub adaptive: Option<crate::config::AdaptiveConfig>,
+    pub challenge_ttl_s: Option<u64>,
+    pub challenge_mode: Option<String>,
 }
 
 impl ControlState {
@@ -97,6 +102,7 @@ impl ControlState {
         config: &Config,
         auditor: Option<Auditor>,
         store: Option<RuleStore>,
+        adaptive: Option<Arc<AdaptiveEngine>>,
     ) -> anyhow::Result<Self> {
         let state = Self {
             ebpf,
@@ -107,6 +113,7 @@ impl ControlState {
             geoip_blocks: Mutex::new(Vec::new()),
             auditor,
             store,
+            adaptive,
         };
 
         // 初始化运行时配置与策略
@@ -146,6 +153,9 @@ impl ControlState {
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
 
         *self.runtime.write().await = RuntimeConfigSnapshot::from_config(&config);
+        if let Some(adaptive) = &self.adaptive {
+            adaptive.update_config(config.adaptive.clone());
+        }
         drop(guard);
         drop(whitelist);
         drop(blacklist);
@@ -418,6 +428,18 @@ impl ControlState {
         }
         if let Some(enabled) = patch.tcp_reset_on_drop {
             snapshot.tcp_reset_on_drop = enabled;
+        }
+        if let Some(ref adaptive_cfg) = patch.adaptive {
+            snapshot.adaptive = adaptive_cfg.clone();
+            if let Some(adaptive) = &self.adaptive {
+                adaptive.update_config(adaptive_cfg.clone());
+            }
+        }
+        if let Some(ttl) = patch.challenge_ttl_s {
+            snapshot.challenge_ttl_s = ttl;
+        }
+        if let Some(ref mode) = patch.challenge_mode {
+            snapshot.challenge_mode = mode.clone();
         }
 
         let mut guard = self.ebpf.lock().await;
