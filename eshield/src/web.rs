@@ -68,9 +68,11 @@ pub async fn run(
     let public = Router::new()
         .route("/healthz", get(health::healthz_handler))
         .route("/ready", get(health::ready_handler))
+        .route("/login", get(login_handler))
         .route("/challenge", get(challenge_handler))
         .route("/blocked", get(blocked_handler))
         .route("/api/challenge/pass", post(challenge_pass_handler))
+        .route("/api/auth/login", post(login_api_handler))
         .with_state(state.clone());
 
     let protected = Router::new()
@@ -82,6 +84,7 @@ pub async fn run(
             get(config_handler).patch(patch_config_handler),
         )
         .route("/api/config/reload", post(reload_config_handler))
+        .route("/api/auth/check", get(auth_check_handler))
         .route("/api/protection-modules", get(protection_modules_handler))
         .route(
             "/api/blacklist",
@@ -180,6 +183,11 @@ struct ChallengePassReq {
 }
 
 #[derive(Deserialize)]
+struct LoginReq {
+    token: String,
+}
+
+#[derive(Deserialize)]
 struct SetWafRulesReq {
     rules: Vec<crate::config::WafRuleItem>,
 }
@@ -226,6 +234,25 @@ async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<Str
         .replace("{timestamp}", &Utc::now().to_rfc3339())
         .replace("{request_id}", &format!("{:08x}", rand::random::<u32>()));
     Html(html)
+}
+
+async fn login_handler() -> Html<String> {
+    Html(include_str!("login.html").to_string())
+}
+
+async fn login_api_handler(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<LoginReq>,
+) -> Response {
+    if state.auth.verify(&req.token) {
+        (StatusCode::OK, "OK").into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+    }
+}
+
+async fn auth_check_handler() -> &'static str {
+    "OK"
 }
 
 async fn challenge_pass_handler(

@@ -449,6 +449,9 @@
         </div>
         <div class="header-right">
           <span class="status-pill"><span class="status-dot"></span>运行中</span>
+          <button class="icon-btn" id="logout-btn" title="退出登录">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          </button>
           <button class="icon-btn" id="theme-btn" title="切换主题">
             <svg id="theme-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
           </button>
@@ -678,18 +681,6 @@
           </div>
 
           <div class="setting-group">
-            <div class="setting-group-title">API 认证</div>
-            <div class="card">
-              <div class="card-body">
-                <div class="form-row">
-                  <div class="form-group" style="flex:1;max-width:420px"><label>Bearer Token</label><input type="password" id="api-token" placeholder="输入 Token" onchange="saveToken()"></div>
-                  <button class="btn btn-secondary" onclick="testAuth()">测试连接</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="setting-group">
             <div class="setting-group-title">系统操作</div>
             <div class="card"><div class="card-body"><button class="btn btn-secondary" onclick="reloadConfig()">从配置文件重新加载</button></div></div>
           </div>
@@ -842,19 +833,39 @@
       if (hash === 'overview') { setTimeout(initTrafficChart, 0); refreshStats(); }
     }
 
-    function loadToken() { document.getElementById('api-token').value = localStorage.getItem('eshield-token') || ''; }
-    function saveToken() { localStorage.setItem('eshield-token', document.getElementById('api-token').value); toast('Token 已保存', 'success'); }
     function authHeaders() {
-      const t = document.getElementById('api-token').value.trim();
+      const t = localStorage.getItem('eshield-token') || '';
       const h = { 'Content-Type': 'application/json' };
       if (t) h['Authorization'] = 'Bearer ' + t;
       return h;
+    }
+
+    async function checkAuth() {
+      try {
+        const r = await fetch('/api/auth/check', { headers: authHeaders() });
+        if (r.status === 401) {
+          localStorage.removeItem('eshield-token');
+          window.location.href = '/login';
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('eshield-token');
+      window.location.href = '/login';
     }
 
     async function api(method, path, body) {
       const opts = { method, headers: authHeaders() };
       if (body !== undefined) opts.body = JSON.stringify(body);
       const r = await fetch(path, opts);
+      if (r.status === 401) {
+        localStorage.removeItem('eshield-token');
+        window.location.href = '/login';
+        throw new Error('Unauthorized');
+      }
       const txt = await r.text();
       if (!r.ok) throw new Error(txt);
       return txt;
@@ -1603,7 +1614,6 @@
       catch (e) { toast(e.message, 'error'); }
     }
 
-    async function testAuth() { try { await api('GET', '/api/config'); toast('认证成功', 'success'); } catch (e) { toast('认证失败: ' + e.message, 'error'); } }
     async function reloadConfig() { try { await api('POST', '/api/config/reload'); toast('配置已重载', 'success'); } catch (e) { toast(e.message, 'error'); } }
 
     function toast(msg, type = 'info') {
@@ -1616,11 +1626,12 @@
 
     document.addEventListener('DOMContentLoaded', () => {
       initTheme();
-      loadToken();
+      checkAuth();
       renderOverviewCards();
       navigate();
       connectAuditStream();
       document.getElementById('theme-btn').addEventListener('click', toggleTheme);
+      document.getElementById('logout-btn').addEventListener('click', logout);
       document.getElementById('menu-btn').addEventListener('click', () => document.getElementById('sidebar').classList.toggle('collapsed'));
       window.addEventListener('hashchange', navigate);
       document.getElementById('series-range').addEventListener('change', refreshTrafficChart);

@@ -188,7 +188,16 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         cooldown_s: config.alert_cooldown_s,
         interface: config.interface.clone(),
     });
-    let auth = AuthState::new(config.api_token.clone());
+    // 若未配置 api_token，则自动生成随机 Token 并打印到日志，避免控制台默认匿名访问。
+    let api_token = config.api_token.clone().or_else(|| {
+        let token = format!("{:032x}", rand::random::<u128>());
+        info!(
+            "api_token not configured; generated random console access token: {}",
+            token
+        );
+        Some(token)
+    });
+    let auth = AuthState::new(api_token);
 
     // 控制面：封装所有 eBPF Map 操作，供 Web / CLI / SIGHUP 使用
     let control = Arc::new(

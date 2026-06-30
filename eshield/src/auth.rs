@@ -1,6 +1,7 @@
 use axum::{
+    body::Body,
     extract::Request,
-    http::StatusCode,
+    http::{header::ACCEPT, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -19,6 +20,12 @@ impl AuthState {
         }
     }
 
+    pub fn verify(&self, provided: &str) -> bool {
+        match &self.token {
+            None => false,
+            Some(token) => constant_time_eq(token, provided),
+        }
+    }
 }
 
 /// axum 中间件：若配置了 Token，则校验请求头中的 Bearer Token。
@@ -39,6 +46,22 @@ pub async fn auth_middleware(
             if provided.map(|t| constant_time_eq(token, t)).unwrap_or(false) {
                 next.run(request).await
             } else {
+                // 对未认证的 Dashboard 根路径浏览器请求重定向到登录页，提升体验。
+                let is_html_root = request.uri().path() == "/"
+                    && request
+                        .headers()
+                        .get(ACCEPT)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.contains("text/html"))
+                        .unwrap_or(false);
+                if is_html_root {
+                    return Response::builder()
+                        .status(StatusCode::FOUND)
+                        .header("Location", "/login")
+                        .body(Body::empty())
+                        .unwrap()
+                        .into_response();
+                }
                 (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
             }
         }
