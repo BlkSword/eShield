@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_stream::wrappers::BroadcastStream;
+use chrono::Utc;
 
 use crate::auth::{self, AuthState};
 use crate::audit::Auditor;
@@ -68,6 +69,7 @@ pub async fn run(
         .route("/healthz", get(health::healthz_handler))
         .route("/ready", get(health::ready_handler))
         .route("/challenge", get(challenge_handler))
+        .route("/blocked", get(blocked_handler))
         .route("/api/challenge/pass", post(challenge_pass_handler))
         .with_state(state.clone());
 
@@ -213,6 +215,16 @@ async fn challenge_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<S
     let html = include_str!("challenge.html")
         .replace("{nonce}", &nonce)
         .replace("{ip}", &addr.ip().to_string());
+    Html(html)
+}
+
+const BLOCKED_HTML: &str = include_str!("blocked.html");
+
+async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
+    let html = BLOCKED_HTML
+        .replace("{ip}", &addr.ip().to_string())
+        .replace("{timestamp}", &Utc::now().to_rfc3339())
+        .replace("{request_id}", &format!("{:08x}", rand::random::<u32>()));
     Html(html)
 }
 
