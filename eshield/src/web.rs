@@ -124,11 +124,12 @@ pub async fn run(
 }
 
 async fn auth_middleware(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<WebState>>,
     request: Request,
     next: Next,
 ) -> Response {
-    auth::auth_middleware(State(state.auth.clone()), request, next).await
+    auth::auth_middleware(ConnectInfo(addr), State(state.auth.clone()), request, next).await
 }
 
 #[derive(Serialize)]

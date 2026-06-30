@@ -1,10 +1,11 @@
 use axum::{
     body::Body,
-    extract::Request,
+    extract::{ConnectInfo, Request},
     http::{header::ACCEPT, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -47,13 +48,20 @@ impl AuthState {
     }
 }
 
-/// axum 中间件：仅对 Dashboard 根路径 `/` 的 HTML 请求强制校验 Token。
-/// /api/*、/metrics、/login 等端点均放行，以便 CLI 无需 token 即可操作。
+/// axum 中间件：对非本机来源的请求强制校验 Token。
+/// CLI 在本地运行时来源地址为 127.0.0.1/::1，无需 token；
+/// 外部 Web 访问 `/`、所有 `/api/*` 及 `/metrics` 必须提供正确 Bearer Token。
 pub async fn auth_middleware(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<AuthState>,
     request: Request,
     next: Next,
 ) -> Response {
+    // 本机请求直接放行，供 CLI 使用
+    if addr.ip().is_loopback() {
+        return next.run(request).await;
+    }
+
     let token = state.get_token().await;
     let is_html_root = request.uri().path() == "/"
         && request
@@ -65,7 +73,6 @@ pub async fn auth_middleware(
 
     match token {
         None => next.run(request).await,
-        Some(_token) if !is_html_root => next.run(request).await,
         Some(token) => {
             let header = request
                 .headers()
@@ -75,13 +82,15 @@ pub async fn auth_middleware(
             let provided = header.and_then(|h| h.strip_prefix("Bearer "));
             if provided.map(|t| constant_time_eq(&token, t)).unwrap_or(false) {
                 next.run(request).await
-            } else {
+            } else if is_html_root {
                 Response::builder()
                     .status(StatusCode::FOUND)
                     .header("Location", "/login")
                     .body(Body::empty())
                     .unwrap()
                     .into_response()
+            } else {
+                (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
             }
         }
     }
