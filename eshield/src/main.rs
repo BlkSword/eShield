@@ -45,10 +45,6 @@ const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
 #[command(name = "eshield")]
 #[command(about = "eBPF/XDP 主机级 CC 防御盾")]
 struct Cli {
-    /// API Bearer Token；访问受保护的 /api/* 端点时使用。
-    #[arg(long, global = true, env = "ESHIELD_TOKEN")]
-    token: Option<String>,
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -118,17 +114,17 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Start { config } => start(&config).await,
-        Commands::Status { endpoint } => show_status(&endpoint, cli.token.as_deref()).await,
+        Commands::Status { endpoint } => show_status(&endpoint).await,
         Commands::Block {
             ip,
             duration,
             endpoint,
-        } => send_block(&endpoint, &ip, duration, cli.token.as_deref()).await,
-        Commands::Unblock { ip, endpoint } => send_unblock(&endpoint, &ip, cli.token.as_deref()).await,
-        Commands::Reload { endpoint } => send_reload(&endpoint, cli.token.as_deref()).await,
+        } => send_block(&endpoint, &ip, duration).await,
+        Commands::Unblock { ip, endpoint } => send_unblock(&endpoint, &ip).await,
+        Commands::Reload { endpoint } => send_reload(&endpoint).await,
         Commands::Check { config } => check_config(&config).await,
         Commands::Tui { endpoint } => tui::run(endpoint).await,
-        Commands::ResetToken { endpoint } => send_reset_token(&endpoint, cli.token.as_deref()).await,
+        Commands::ResetToken { endpoint } => send_reset_token(&endpoint).await,
     }
 }
 
@@ -371,20 +367,13 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn show_status(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+async fn show_status(endpoint: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let mut req = client.get(format!("{}/api/stats", endpoint));
-    if let Some(t) = token {
-        req = req.header("Authorization", format!("Bearer {}", t));
-    }
-    let resp = req
+    let stats: serde_json::Value = client
+        .get(format!("{}/api/stats", endpoint))
         .send()
         .await
-        .context("无法连接 eShield API，守护进程是否已启动？")?;
-    if !resp.status().is_success() {
-        anyhow::bail!("获取状态失败: {}", resp.text().await.unwrap_or_default());
-    }
-    let stats: serde_json::Value = resp
+        .context("无法连接 eShield API，守护进程是否已启动？")?
         .json()
         .await
         .context("解析 API 响应失败")?;
@@ -437,25 +426,14 @@ async fn show_status(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn with_auth(req: reqwest::RequestBuilder, token: Option<&str>) -> reqwest::RequestBuilder {
-    if let Some(t) = token {
-        req.header("Authorization", format!("Bearer {}", t))
-    } else {
-        req
-    }
-}
-
-async fn send_block(endpoint: &str, ip: &str, duration: u64, token: Option<&str>) -> anyhow::Result<()> {
+async fn send_block(endpoint: &str, ip: &str, duration: u64) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let resp = with_auth(
-        client
-            .post(format!("{}/api/blacklist", endpoint))
-            .json(&serde_json::json!({ "ip": ip, "duration_s": duration })),
-        token,
-    )
-    .send()
-    .await
-    .context("无法连接 eShield API")?;
+    let resp = client
+        .post(format!("{}/api/blacklist", endpoint))
+        .json(&serde_json::json!({ "ip": ip, "duration_s": duration }))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
 
     if resp.status().is_success() {
         println!("已封禁 {}，时长 {} 秒", ip, duration);
@@ -465,17 +443,14 @@ async fn send_block(endpoint: &str, ip: &str, duration: u64, token: Option<&str>
     Ok(())
 }
 
-async fn send_unblock(endpoint: &str, ip: &str, token: Option<&str>) -> anyhow::Result<()> {
+async fn send_unblock(endpoint: &str, ip: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let resp = with_auth(
-        client
-            .delete(format!("{}/api/blacklist", endpoint))
-            .json(&serde_json::json!({ "ip": ip })),
-        token,
-    )
-    .send()
-    .await
-    .context("无法连接 eShield API")?;
+    let resp = client
+        .delete(format!("{}/api/blacklist", endpoint))
+        .json(&serde_json::json!({ "ip": ip }))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
 
     if resp.status().is_success() {
         println!("已解封 {}", ip);
@@ -485,15 +460,13 @@ async fn send_unblock(endpoint: &str, ip: &str, token: Option<&str>) -> anyhow::
     Ok(())
 }
 
-async fn send_reload(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+async fn send_reload(endpoint: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let resp = with_auth(
-        client.post(format!("{}/api/config/reload", endpoint)),
-        token,
-    )
-    .send()
-    .await
-    .context("无法连接 eShield API")?;
+    let resp = client
+        .post(format!("{}/api/config/reload", endpoint))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
 
     if resp.status().is_success() {
         println!("配置已重新加载");
@@ -503,15 +476,13 @@ async fn send_reload(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> 
     Ok(())
 }
 
-async fn send_reset_token(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+async fn send_reset_token(endpoint: &str) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let resp = with_auth(
-        client.post(format!("{}/api/auth/reset-token", endpoint)),
-        token,
-    )
-    .send()
-    .await
-    .context("无法连接 eShield API")?;
+    let resp = client
+        .post(format!("{}/api/auth/reset-token", endpoint))
+        .send()
+        .await
+        .context("无法连接 eShield API")?;
 
     if resp.status().is_success() {
         let body: serde_json::Value = resp.json().await.context("解析 API 响应失败")?;

@@ -47,15 +47,25 @@ impl AuthState {
     }
 }
 
-/// axum 中间件：若配置了 Token，则校验请求头中的 Bearer Token。
+/// axum 中间件：仅对 Dashboard 根路径 `/` 的 HTML 请求强制校验 Token。
+/// /api/*、/metrics、/login 等端点均放行，以便 CLI 无需 token 即可操作。
 pub async fn auth_middleware(
     State(state): State<AuthState>,
     request: Request,
     next: Next,
 ) -> Response {
     let token = state.get_token().await;
+    let is_html_root = request.uri().path() == "/"
+        && request
+            .headers()
+            .get(ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.contains("text/html"))
+            .unwrap_or(false);
+
     match token {
         None => next.run(request).await,
+        Some(_token) if !is_html_root => next.run(request).await,
         Some(token) => {
             let header = request
                 .headers()
@@ -66,23 +76,12 @@ pub async fn auth_middleware(
             if provided.map(|t| constant_time_eq(&token, t)).unwrap_or(false) {
                 next.run(request).await
             } else {
-                // 对未认证的 Dashboard 根路径浏览器请求重定向到登录页，提升体验。
-                let is_html_root = request.uri().path() == "/"
-                    && request
-                        .headers()
-                        .get(ACCEPT)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|s| s.contains("text/html"))
-                        .unwrap_or(false);
-                if is_html_root {
-                    return Response::builder()
-                        .status(StatusCode::FOUND)
-                        .header("Location", "/login")
-                        .body(Body::empty())
-                        .unwrap()
-                        .into_response();
-                }
-                (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+                Response::builder()
+                    .status(StatusCode::FOUND)
+                    .header("Location", "/login")
+                    .body(Body::empty())
+                    .unwrap()
+                    .into_response()
             }
         }
     }
