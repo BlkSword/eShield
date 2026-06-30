@@ -684,6 +684,23 @@
             <div class="setting-group-title">系统操作</div>
             <div class="card"><div class="card-body"><button class="btn btn-secondary" onclick="reloadConfig()">从配置文件重新加载</button></div></div>
           </div>
+
+          <div class="setting-group">
+            <div class="setting-group-title">访问令牌</div>
+            <div class="card">
+              <div class="card-body">
+                <p style="margin:0 0 14px;color:var(--text-secondary);font-size:13px;">重置后会立即失效旧令牌，当前会话会自动切换到新令牌。新令牌仅显示一次，请妥善保存。</p>
+                <button class="btn btn-danger" onclick="resetToken()">重置访问令牌</button>
+                <div id="token-result" style="display:none;margin-top:16px;">
+                  <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:6px;">新令牌（仅显示一次）</label>
+                  <div style="display:flex;gap:8px;">
+                    <input type="text" id="new-token" readonly style="flex:1;font-family:monospace;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;color:var(--text);">
+                    <button class="btn btn-secondary" onclick="copyToken()">复制</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </main>
@@ -1615,6 +1632,29 @@
     }
 
     async function reloadConfig() { try { await api('POST', '/api/config/reload'); toast('配置已重载', 'success'); } catch (e) { toast(e.message, 'error'); } }
+
+    async function resetToken() {
+      if (!confirm('确定要重置访问令牌吗？旧令牌将立即失效，所有其他会话会被登出。')) return;
+      try {
+        const d = await apiJson('POST', '/api/auth/reset-token');
+        const token = d.token;
+        localStorage.setItem('eshield-token', token);
+        document.getElementById('new-token').value = token;
+        document.getElementById('token-result').style.display = 'block';
+        toast('访问令牌已重置', 'success');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function copyToken() {
+      const input = document.getElementById('new-token');
+      try {
+        await navigator.clipboard.writeText(input.value);
+        toast('已复制到剪贴板', 'success');
+      } catch (e) {
+        input.select();
+        toast('复制失败，请手动选中复制', 'error');
+      }
+    }
 
     function toast(msg, type = 'info') {
       const el = document.createElement('div');

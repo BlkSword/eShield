@@ -8,7 +8,7 @@ aya-ebpf = { version = "0.1.1" }
 aya-log = { version = "0.2.1" }
 aya-log-ebpf = { version = "0.1.0" }
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "sync", "time", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

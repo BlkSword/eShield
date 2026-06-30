@@ -16,10 +16,11 @@ use tokio_stream::wrappers::BroadcastStream;
 use chrono::Utc;
 
 use crate::auth::{self, AuthState};
-use crate::audit::Auditor;
+use crate::audit::{AuditAction, Auditor};
 use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::health;
 use crate::ip::format_ip_key;
+use crate::login_limiter::LoginLimiter;
 use crate::state::Stats;
 
 fn map_data(map: &aya::maps::Map) -> Option<&aya::maps::MapData> {
@@ -49,6 +50,7 @@ pub struct WebState {
     pub control: Arc<ControlState>,
     pub auditor: Auditor,
     pub auth: AuthState,
+    pub login_limiter: Arc<LoginLimiter>,
 }
 
 pub async fn run(
@@ -63,6 +65,7 @@ pub async fn run(
         control,
         auditor,
         auth,
+        login_limiter: Arc::new(LoginLimiter::new()),
     });
 
     let public = Router::new()
@@ -85,6 +88,7 @@ pub async fn run(
         )
         .route("/api/config/reload", post(reload_config_handler))
         .route("/api/auth/check", get(auth_check_handler))
+        .route("/api/auth/reset-token", post(reset_token_handler))
         .route("/api/protection-modules", get(protection_modules_handler))
         .route(
             "/api/blacklist",
@@ -241,18 +245,58 @@ async fn login_handler() -> Html<String> {
 }
 
 async fn login_api_handler(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<WebState>>,
     Json(req): Json<LoginReq>,
 ) -> Response {
-    if state.auth.verify(&req.token) {
+    let ip = addr.ip();
+    if let Err(msg) = state.login_limiter.check(ip) {
+        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+    }
+
+    if state.auth.verify(&req.token).await {
+        state.login_limiter.record_success(ip);
+        state
+            .auditor
+            .log(
+                "console",
+                AuditAction::Login,
+                serde_json::json!({"ip": ip.to_string(), "result": "success"}),
+                Some(ip.to_string()),
+            )
+            .await;
         (StatusCode::OK, "OK").into_response()
     } else {
+        state.login_limiter.record_failure(ip);
+        state
+            .auditor
+            .log(
+                "console",
+                AuditAction::Login,
+                serde_json::json!({"ip": ip.to_string(), "result": "failed"}),
+                Some(ip.to_string()),
+            )
+            .await;
         (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
     }
 }
 
 async fn auth_check_handler() -> &'static str {
     "OK"
+}
+
+async fn reset_token_handler(State(state): State<Arc<WebState>>) -> Response {
+    let new_token = state.auth.reset_token().await;
+    state
+        .auditor
+        .log(
+            "console",
+            AuditAction::ResetToken,
+            serde_json::json!({"token_prefix": &new_token[..8]}),
+            None,
+        )
+        .await;
+    Json(serde_json::json!({"token": new_token})).into_response()
 }
 
 async fn challenge_pass_handler(

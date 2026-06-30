@@ -17,6 +17,8 @@ pub enum AuditAction {
     Start,
     Stop,
     ChallengePass,
+    Login,
+    ResetToken,
 }
 
 /// 单条审计记录

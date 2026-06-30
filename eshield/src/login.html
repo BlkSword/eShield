@@ -96,7 +96,7 @@
       <input type="password" id="token" name="token" placeholder="Bearer Token" autocomplete="off" autofocus required>
       <button type="submit">登录</button>
     </form>
-    <div class="error" id="error">令牌无效，请检查后重试。</div>
+    <div class="error" id="error"></div>
     <div class="hint">默认令牌可在服务启动日志中查看，或通过 <code>api_token</code> 配置项指定。</div>
   </div>
 
@@ -106,6 +106,7 @@
       const token = document.getElementById('token').value.trim();
       const errorEl = document.getElementById('error');
       errorEl.style.display = 'none';
+      errorEl.textContent = '令牌无效，请检查后重试。';
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
@@ -115,6 +116,9 @@
         if (res.ok) {
           localStorage.setItem('eshield-token', token);
           window.location.href = '/';
+        } else if (res.status === 429) {
+          errorEl.textContent = '登录尝试过于频繁，请稍后再试。';
+          errorEl.style.display = 'block';
         } else {
           errorEl.style.display = 'block';
         }
