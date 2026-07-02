@@ -505,19 +505,12 @@
         <div class="page" id="page-rules">
           <div class="section-header-row"><h2 class="section-title">规则中心</h2></div>
           <div class="tabs">
-            <div class="tab active" data-tab="waf">WAF 规则</div>
-            <div class="tab" data-tab="portacl">端口 ACL</div>
+            <div class="tab active" data-tab="portacl">端口 ACL</div>
             <div class="tab" data-tab="l7">L7 指纹</div>
             <div class="tab" data-tab="geoip">GeoIP</div>
             <div class="tab" data-tab="ti">威胁情报</div>
           </div>
-          <div class="tab-panel active" id="tab-waf">
-            <div class="card">
-              <div class="card-header"><div class="card-title">WAF 规则</div><button class="btn btn-sm" onclick="openWafModal()">+ 添加规则</button></div>
-              <div class="card-body" style="padding:0"><table><thead><tr><th>优先级</th><th>名称</th><th>状态</th><th>动作</th><th>Method</th><th>路径</th><th>Host</th><th>UA</th><th>操作</th></tr></thead><tbody id="waf-body"><tr><td colspan="9" class="empty">加载中...</td></tr></tbody></table></div>
-            </div>
-          </div>
-          <div class="tab-panel" id="tab-portacl">
+          <div class="tab-panel active" id="tab-portacl">
             <div class="card">
               <div class="card-header"><div class="card-title">端口 / 协议 ACL</div><button class="btn btn-sm" onclick="openPortAclModal()">+ 添加</button></div>
               <div class="card-body" style="padding:0"><table><thead><tr><th>协议</th><th>目的端口</th><th>动作</th><th>操作</th></tr></thead><tbody id="port-acl-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table></div>
@@ -602,16 +595,8 @@
                 <label class="switch-toggle"><input type="checkbox" id="tcp-reset-enabled"><span class="switch-slider"></span></label>
               </div>
               <div class="setting-item">
-                <div class="setting-info"><div class="setting-name">WAF 规则引擎</div><div class="setting-desc">启用 HTTP 维度 WAF 规则匹配。</div></div>
-                <label class="switch-toggle"><input type="checkbox" id="waf-enabled"><span class="switch-slider"></span></label>
-              </div>
-              <div class="setting-item">
                 <div class="setting-info"><div class="setting-name">GeoIP / ASN 过滤</div><div class="setting-desc">基于国家或 ASN 的地理过滤。</div></div>
                 <label class="switch-toggle"><input type="checkbox" id="geoip-enabled"><span class="switch-slider"></span></label>
-              </div>
-              <div class="setting-item">
-                <div class="setting-info"><div class="setting-name">Challenge 验证</div><div class="setting-desc">对可疑访问返回 JS 挑战页，通过后加入临时白名单。</div></div>
-                <label class="switch-toggle"><input type="checkbox" id="challenge-enabled"><span class="switch-slider"></span></label>
               </div>
             </div>
             <div style="margin-top:12px; display:flex; justify-content:flex-end;"><button class="btn" onclick="updateSwitches()">保存开关设置</button></div>
@@ -654,7 +639,6 @@
                   <option value="disallow_cidr">移除 CIDR</option>
                   <option value="reload_config">重载配置</option>
                   <option value="patch_config">修改配置</option>
-                  <option value="challenge_pass">验证通过</option>
                   <option value="start">启动</option>
                   <option value="stop">停止</option>
                 </select>
@@ -715,24 +699,6 @@
 
   <div class="toast-container" id="toast-container"></div>
 
-  <div class="drawer-backdrop" id="modal-backdrop" onclick="closeWafModal()"></div>
-  <aside class="drawer" id="waf-modal">
-    <div class="drawer-header"><h3 id="waf-modal-title" style="margin:0;font-size:16px">WAF 规则</h3><button class="icon-btn" onclick="closeWafModal()">✕</button></div>
-    <div class="drawer-body">
-      <input type="hidden" id="waf-edit-idx" value="-1">
-      <div class="form-group"><label>名称</label><input type="text" id="waf-name" placeholder="例如 block-admin"></div>
-      <div class="form-group" style="margin-top:14px"><label>优先级</label><input type="number" id="waf-priority" value="0" min="0" max="255"></div>
-      <div class="form-group" style="margin-top:14px"><label>动作</label><select id="waf-action"><option value="drop">drop</option><option value="log">log</option><option value="challenge">challenge</option></select></div>
-      <div class="form-group" style="margin-top:14px"><label>Method</label><input type="text" id="waf-method" placeholder="GET / POST / ANY"></div>
-      <div class="form-group" style="margin-top:14px"><label>路径前缀</label><input type="text" id="waf-path" placeholder="例如 /admin"></div>
-      <div class="form-group" style="margin-top:14px"><label>Host</label><input type="text" id="waf-host" placeholder="例如 api.example.com"></div>
-      <div class="form-group" style="margin-top:14px"><label>User-Agent</label><input type="text" id="waf-ua" placeholder="例如 bot"></div>
-      <div class="form-group" style="margin-top:14px"><label>Body 前缀</label><input type="text" id="waf-body" placeholder="例如 <?php"></div>
-      <label class="switch" style="margin-top:16px"><input type="checkbox" id="waf-enabled" checked> 启用</label>
-      <div style="margin-top:22px;display:flex;gap:10px"><button class="btn" onclick="saveWafRule()">保存</button><button class="btn btn-secondary" onclick="closeWafModal()">取消</button></div>
-    </div>
-  </aside>
-
   <div class="drawer-backdrop" id="portacl-backdrop" onclick="closePortAclModal()"></div>
   <aside class="drawer" id="portacl-modal">
     <div class="drawer-header"><h3 id="portacl-modal-title" style="margin:0;font-size:16px">端口 / 协议 ACL</h3><button class="icon-btn" onclick="closePortAclModal()">✕</button></div>
@@ -784,10 +750,8 @@
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="icmp_flood"><span class="switch-slider"></span>ICMP Flood</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="rate_limit"><span class="switch-slider"></span>速率限制</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="adaptive"><span class="switch-slider"></span>自适应</label>
-          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="waf"><span class="switch-slider"></span>WAF</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="l7_scan"><span class="switch-slider"></span>L7 扫描</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="geoip"><span class="switch-slider"></span>GeoIP</label>
-          <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="challenge"><span class="switch-slider"></span>Challenge</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="tcp_reset"><span class="switch-slider"></span>TCP RST</label>
           <label class="switch-toggle" style="font-size:12px"><input type="checkbox" value="port_acl"><span class="switch-slider"></span>端口 ACL</label>
         </div>
@@ -911,7 +875,6 @@
         metricCard('当前 PPS', 'card-pps', icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), 'green') +
         metricCard('速率限制拦截', 'card-rate', icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), 'yellow') +
         metricCard('SYN Flood 拦截', 'card-syn', icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), 'blue') +
-        metricCard('WAF 拦截', 'card-waf', icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'), 'blue') +
         metricCard('GeoIP 拦截', 'card-geoip', icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), 'blue') +
         metricCard('黑名单拦截', 'card-blacklist', icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), 'red');
     }
@@ -930,7 +893,6 @@
         setCard('card-pps', d.current_pps, '每秒');
         setCard('card-rate', d.rate_limited, '累计');
         setCard('card-syn', d.syn_flood_blocked, '累计');
-        setCard('card-waf', d.waf_blocked, '累计');
         setCard('card-geoip', d.geoip_blocked, '累计');
         setCard('card-blacklist', d.blacklist_blocked, '累计');
         const tbody = document.getElementById('attackers-body');
@@ -953,7 +915,7 @@
       trafficChart.setOption({
         backgroundColor: 'transparent',
         tooltip: { trigger: 'axis' },
-        legend: { data: ['总丢弃', '速率限制', 'SYN Flood', 'WAF', 'GeoIP'], textStyle: { color: textColor } },
+        legend: { data: ['总丢弃', '速率限制', 'SYN Flood', 'GeoIP'], textStyle: { color: textColor } },
         grid: { left: 46, right: 20, top: 36, bottom: 24 },
         xAxis: { type: 'time', axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
         yAxis: { type: 'value', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
@@ -961,7 +923,6 @@
           { name: '总丢弃', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2 } },
           { name: '速率限制', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2 } },
           { name: 'SYN Flood', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2 } },
-          { name: 'WAF', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2 } },
           { name: 'GeoIP', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2 } }
         ]
       });
@@ -972,16 +933,15 @@
       try {
         const duration = parseInt(document.getElementById('series-range').value);
         const data = await apiJson('GET', '/api/metrics/series?duration_s=' + duration);
-        const total = [], rate = [], syn = [], waf = [], geoip = [];
+        const total = [], rate = [], syn = [], geoip = [];
         (data.series || []).forEach(p => {
           const t = new Date(p.timestamp * 1000);
           total.push([t, p.dps || 0]);
           rate.push([t, (p.rate_limited || 0) / 10]);
           syn.push([t, (p.syn_flood_blocked || 0) / 10]);
-          waf.push([t, (p.waf_blocked || 0) / 10]);
           geoip.push([t, (p.geoip_blocked || 0) / 10]);
         });
-        trafficChart.setOption({ series: [{ data: total }, { data: rate }, { data: syn }, { data: waf }, { data: geoip }] });
+        trafficChart.setOption({ series: [{ data: total }, { data: rate }, { data: syn }, { data: geoip }] });
       } catch (e) { console.error(e); }
     }
 
@@ -993,67 +953,6 @@
       t.classList.add('active');
       document.getElementById('tab-' + tab).classList.add('active');
     }));
-
-    function openWafModal(idx = -1) {
-      document.getElementById('waf-modal-title').textContent = idx === -1 ? '添加 WAF 规则' : '编辑 WAF 规则';
-      document.getElementById('waf-edit-idx').value = idx;
-      const rules = currentConfig.waf_rules || [];
-      if (idx >= 0 && idx < rules.length) {
-        const r = rules[idx], m = r.match || {};
-        document.getElementById('waf-name').value = r.name;
-        document.getElementById('waf-priority').value = r.priority;
-        document.getElementById('waf-action').value = r.action;
-        document.getElementById('waf-method').value = m.method || '';
-        document.getElementById('waf-path').value = m.path_prefix || '';
-        document.getElementById('waf-host').value = m.host || '';
-        document.getElementById('waf-ua').value = m.user_agent || '';
-        document.getElementById('waf-body').value = m.body_prefix || '';
-        document.getElementById('waf-enabled').checked = r.enabled;
-      } else {
-        document.getElementById('waf-name').value = '';
-        document.getElementById('waf-priority').value = '0';
-        document.getElementById('waf-action').value = 'drop';
-        ['waf-method','waf-path','waf-host','waf-ua','waf-body'].forEach(id => document.getElementById(id).value = '');
-        document.getElementById('waf-enabled').checked = true;
-      }
-      document.getElementById('modal-backdrop').classList.add('active');
-      document.getElementById('waf-modal').classList.add('active');
-    }
-    function closeWafModal() { document.getElementById('modal-backdrop').classList.remove('active'); document.getElementById('waf-modal').classList.remove('active'); }
-    async function saveWafRule() {
-      const idx = parseInt(document.getElementById('waf-edit-idx').value);
-      let rules = (currentConfig.waf_rules || []).slice();
-      const rule = {
-        name: document.getElementById('waf-name').value,
-        priority: parseInt(document.getElementById('waf-priority').value) || 0,
-        enabled: document.getElementById('waf-enabled').checked,
-        match: {
-          method: document.getElementById('waf-method').value || undefined,
-          path_prefix: document.getElementById('waf-path').value || undefined,
-          host: document.getElementById('waf-host').value || undefined,
-          user_agent: document.getElementById('waf-ua').value || undefined,
-          body_prefix: document.getElementById('waf-body').value || undefined
-        },
-        action: document.getElementById('waf-action').value
-      };
-      if (idx >= 0 && idx < rules.length) rules[idx] = rule; else rules.push(rule);
-      try { await api('POST', '/api/waf/rules', { rules }); toast('规则已保存', 'success'); closeWafModal(); refreshRules(); }
-      catch (e) { toast(e.message, 'error'); }
-    }
-    async function deleteWafRule(idx) {
-      if (!confirm('确定删除这条 WAF 规则？')) return;
-      let rules = (currentConfig.waf_rules || []).slice(); rules.splice(idx, 1);
-      try { await api('POST', '/api/waf/rules', { rules }); toast('规则已删除', 'success'); refreshRules(); }
-      catch (e) { toast(e.message, 'error'); }
-    }
-    async function moveWafRule(idx, direction) {
-      let rules = (currentConfig.waf_rules || []).slice();
-      const newIdx = idx + direction;
-      if (newIdx < 0 || newIdx >= rules.length) return;
-      [rules[idx], rules[newIdx]] = [rules[newIdx], rules[idx]];
-      try { await api('POST', '/api/waf/rules', { rules }); toast('顺序已更新', 'success'); refreshRules(); }
-      catch (e) { toast(e.message, 'error'); }
-    }
 
     function openPortAclModal(idx = -1) {
       document.getElementById('portacl-modal-title').textContent = idx === -1 ? '添加端口 ACL' : '编辑端口 ACL';
@@ -1117,16 +1016,6 @@
       try {
         const c = await apiJson('GET', '/api/config');
         currentConfig = c;
-        const wafBody = document.getElementById('waf-body');
-        wafBody.innerHTML = '';
-        const rules = c.waf_rules || [];
-        if (rules.length === 0) wafBody.innerHTML = '<tr><td colspan="9" class="empty">未配置</td></tr>';
-        rules.forEach((r, i) => {
-          const m = r.match || {};
-          const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${r.priority}</td><td>${r.name}</td><td>${r.enabled ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-muted">禁用</span>'}</td><td><span class="tag ${r.action === 'drop' ? 'tag-danger' : r.action === 'challenge' ? 'tag-warning' : 'tag-info'}">${r.action}</span></td><td>${m.method || '-'}</td><td>${m.path_prefix || '-'}</td><td>${m.host || '-'}</td><td>${m.user_agent || '-'}</td><td><button class="btn btn-ghost btn-sm" onclick="openWafModal(${i})">编辑</button> <button class="btn btn-ghost btn-sm" onclick="moveWafRule(${i}, -1)">↑</button> <button class="btn btn-ghost btn-sm" onclick="moveWafRule(${i}, 1)">↓</button> <button class="btn btn-danger btn-sm" onclick="deleteWafRule(${i})">删除</button></td>`;
-          wafBody.appendChild(tr);
-        });
         const portAclBody = document.getElementById('port-acl-body');
         portAclBody.innerHTML = '';
         const acls = c.port_acl || [];
@@ -1177,10 +1066,8 @@
       icmp_flood: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
       rate_limit: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'),
       adaptive: icon('<path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm-1-13h2v6h-2zm0 8h2v2h-2"/>'),
-      waf: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>'),
       l7_scan: icon('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>'),
       geoip: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
-      challenge: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><circle cx="12" cy="12" r="4"/>'),
       tcp_reset: icon('<path d="M4 4h16v16H4z"/><path d="M9 9l6 6M15 9l-6 6"/>'),
       port_acl: icon('<path d="M4 4h16v16H4z"/><path d="M8 12h8"/>')
     };
@@ -1266,11 +1153,9 @@
         syn_flood: 'syn_proxy_enabled',
         udp_flood: 'udp_flood_enabled',
         icmp_flood: 'icmp_flood_enabled',
-        waf: 'waf_enabled',
         l7_scan: 'l7_scan_enabled',
         geoip: 'geoip_enabled',
-        tcp_reset: 'tcp_reset_on_drop',
-        challenge: 'challenge_enabled'
+        tcp_reset: 'tcp_reset_on_drop'
       };
       if (map[id]) patch[map[id]] = enabled;
 
@@ -1292,11 +1177,6 @@
           window_s: parseInt(document.getElementById('pm-field-window_s').value) || 0,
           block_duration_s: parseInt(document.getElementById('pm-field-block_duration_s').value) || 0
         };
-      }
-      if (id === 'challenge') {
-        patch.challenge_enabled = enabled;
-        patch.challenge_ttl_s = parseInt(document.getElementById('pm-field-ttl_s').value) || 0;
-        patch.challenge_mode = document.getElementById('pm-field-mode').value;
       }
       try {
         await api('PATCH', '/api/config', patch);
@@ -1442,9 +1322,7 @@
         document.getElementById('udp-flood-enabled').checked = c.udp_flood_enabled;
         document.getElementById('icmp-flood-enabled').checked = c.icmp_flood_enabled;
         document.getElementById('tcp-reset-enabled').checked = c.tcp_reset_on_drop;
-        document.getElementById('waf-enabled').checked = c.waf_enabled;
         document.getElementById('geoip-enabled').checked = c.geoip_enabled;
-        document.getElementById('challenge-enabled').checked = c.challenge_enabled;
         const a = c.adaptive || {};
         document.getElementById('adaptive-info').innerHTML = `<div class="metric-list">
           <div class="metric-item"><div class="label">状态</div><div class="value">${a.enabled ? '启用' : '禁用'}</div></div>
@@ -1479,9 +1357,7 @@
           udp_flood_enabled: document.getElementById('udp-flood-enabled').checked,
           icmp_flood_enabled: document.getElementById('icmp-flood-enabled').checked,
           tcp_reset_on_drop: document.getElementById('tcp-reset-enabled').checked,
-          waf_enabled: document.getElementById('waf-enabled').checked,
-          geoip_enabled: document.getElementById('geoip-enabled').checked,
-          challenge_enabled: document.getElementById('challenge-enabled').checked
+          geoip_enabled: document.getElementById('geoip-enabled').checked
         });
         toast('开关已更新', 'success');
       } catch (e) { toast(e.message, 'error'); }
@@ -1497,7 +1373,6 @@
           <div class="setting-item"><div class="setting-info"><div class="setting-name">日志级别</div><div class="setting-desc">当前 tracing 日志级别</div></div><div class="setting-meta">${c.log_level || 'info'}</div></div>
           <div class="setting-item"><div class="setting-info"><div class="setting-name">JSON 日志</div><div class="setting-desc">是否以结构化 JSON 输出日志</div></div><div class="setting-meta">${c.log_json ? '是' : '否'}</div></div>
           <div class="setting-item"><div class="setting-info"><div class="setting-name">持久化存储</div><div class="setting-desc">规则与黑名单持久化路径</div></div><div class="setting-meta">${c.store_path || '-'}</div></div>
-          <div class="setting-item"><div class="setting-info"><div class="setting-name">Challenge 模式 / 有效期</div><div class="setting-desc">通过挑战后临时放行时长</div></div><div class="setting-meta">${c.challenge_mode || 'js'} / ${c.challenge_ttl_s || '-'}s</div></div>
         `;
         const alert = document.getElementById('alert-info');
         alert.innerHTML = `

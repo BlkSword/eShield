@@ -2,7 +2,6 @@
 #![no_main]
 
 mod blacklist;
-mod challenge;
 mod icmp_flood;
 mod l7_scan;
 mod maps;
@@ -13,7 +12,6 @@ mod syn_cookie;
 mod syn_flood;
 mod tcp_reset;
 mod udp_flood;
-mod waf;
 
 use aya_ebpf::maps::lpm_trie::Key as LpmKey;
 use aya_ebpf::{
@@ -81,33 +79,6 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
-    }
-
-    // 计算 TCP payload 偏移与长度（供 L7 / WAF 使用）。
-    // 使用 ctx.data_end() 与 ctx.data() 的差值计算实际 payload 长度，
-    // 避免依赖 IP total_len 的字节序转换，同时 verifier 可以证明有界。
-    let data_start = ctx.data();
-    let data_end = ctx.data_end();
-    let mut payload_offset = 0usize;
-    let mut payload_len = 0usize;
-    if protocol == parser::IPPROTO_TCP {
-        if let Some(tcp) = unsafe { ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) } {
-            let tcp_hdr_len = unsafe { (*tcp).doff() as usize } * 4;
-            payload_offset = ETH_HDR_LEN + ip_hdr_len + tcp_hdr_len;
-            if data_start + payload_offset < data_end {
-                payload_len = data_end - (data_start + payload_offset);
-            }
-        }
-    }
-
-    // 6. Challenge 临时白名单：已通过挑战的 IP 直接放行
-    if runtime.challenge_enabled != 0 && challenge::is_allowed(&src_key, now_ns) {
-        unsafe {
-            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
-                (*stats).total_passed += 1;
-            }
-        }
-        return Ok(xdp_action::XDP_PASS);
     }
 
     if runtime.ebpf_debug != 0 {
@@ -241,24 +212,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
-    // 10. HTTP WAF 规则引擎（TCP 首包解析）
-    if protocol == parser::IPPROTO_TCP
-        && runtime.waf_enabled != 0
-        && payload_len > 0
-    {
-        if let Some(action) = waf::check(ctx, &src_key, payload_offset, dport) {
-            if action == eshield_common::WafAction::Drop as u8 {
-                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
-            }
-            // Challenge 动作同样先 DROP，用户需主动访问 challenge 页面完成验证后进入临时白名单。
-            if action == eshield_common::WafAction::Challenge as u8 {
-                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
-            }
-            // log 动作不拦截，继续后续检查
-        }
-    }
-
-    // 11. 速率限制检查（触发则加入黑名单并 DROP）
+    // 10. 速率限制检查（触发则加入黑名单并 DROP）
     if rate_limit::check_rate_limit(&src_key, now_ns) {
         unsafe {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
@@ -296,15 +250,13 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
     Ok(xdp_action::XDP_PASS)
 }
 
-#[inline(never)]
+#[inline(always)]
 fn drop_packet(ctx: &XdpContext, protocol: u8, ip_hdr_len: usize, tcp_reset_on_drop: u8) -> u32 {
-    debug!(
-        ctx,
-        "drop_packet proto={} rst={} ip_hdr_len={}",
-        protocol as u32,
-        tcp_reset_on_drop as u32,
-        ip_hdr_len as u32
-    );
+    unsafe {
+        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+            (*stats).tcp_rst_attempt += 1;
+        }
+    }
     if tcp_reset_on_drop != 0 && protocol == parser::IPPROTO_TCP {
         tcp_reset::reply_tcp_rst(ctx, ip_hdr_len)
     } else {

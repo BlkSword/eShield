@@ -85,9 +85,7 @@ impl AlertManager {
             m.insert("adaptive".to_string(), stats.adaptive_blocked.load(Ordering::Relaxed));
             m.insert("udp_flood".to_string(), stats.udp_flood_blocked.load(Ordering::Relaxed));
             m.insert("icmp_flood".to_string(), stats.icmp_flood_blocked.load(Ordering::Relaxed));
-            m.insert("waf".to_string(), stats.waf_blocked.load(Ordering::Relaxed));
             m.insert("geoip".to_string(), stats.geoip_blocked.load(Ordering::Relaxed));
-            m.insert("challenge".to_string(), stats.challenge_issued.load(Ordering::Relaxed));
             m
         };
 

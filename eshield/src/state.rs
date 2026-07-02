@@ -19,15 +19,18 @@ pub struct Stats {
     pub adaptive_blocked: AtomicU64,
     pub udp_flood_blocked: AtomicU64,
     pub icmp_flood_blocked: AtomicU64,
-    pub waf_blocked: AtomicU64,
     pub geoip_blocked: AtomicU64,
-    pub challenge_issued: AtomicU64,
+    pub tcp_rst_sent: AtomicU64,
+    pub tcp_rst_fail: AtomicU64,
+    pub tcp_rst_attempt: AtomicU64,
     pub current_pps: AtomicU64,
     pub current_dps: AtomicU64,
     pub tcp_dropped: AtomicU64,
     pub udp_dropped: AtomicU64,
     pub icmp_dropped: AtomicU64,
     pub other_dropped: AtomicU64,
+    /// 程序启动时的 CLOCK_MONOTONIC 时间（ns），用于过滤 Ring Buffer 中的 stale 事件。
+    pub program_start_ns: AtomicU64,
     pub port_dropped: DashMap<u16, AtomicU64>,
     pub process_hist: [AtomicU64; 6],
     pub top_attackers: DashMap<IpKey, AtomicU64>,
@@ -47,15 +50,17 @@ impl Default for Stats {
             adaptive_blocked: AtomicU64::new(0),
             udp_flood_blocked: AtomicU64::new(0),
             icmp_flood_blocked: AtomicU64::new(0),
-            waf_blocked: AtomicU64::new(0),
             geoip_blocked: AtomicU64::new(0),
-            challenge_issued: AtomicU64::new(0),
+            tcp_rst_sent: AtomicU64::new(0),
+            tcp_rst_fail: AtomicU64::new(0),
+            tcp_rst_attempt: AtomicU64::new(0),
             current_pps: AtomicU64::new(0),
             current_dps: AtomicU64::new(0),
             tcp_dropped: AtomicU64::new(0),
             udp_dropped: AtomicU64::new(0),
             icmp_dropped: AtomicU64::new(0),
             other_dropped: AtomicU64::new(0),
+            program_start_ns: AtomicU64::new(0),
             port_dropped: DashMap::new(),
             process_hist: [
                 AtomicU64::new(0),
@@ -84,25 +89,16 @@ impl Stats {
             return;
         }
 
-        let total: u64 = by_source.values().sum();
-        self.total_dropped.fetch_add(total, Ordering::Relaxed);
-
+        // 总包数/总丢包数以及 SYN/UDP/ICMP/L7/GeoIP 等分类计数
+        // 从 eBPF GLOBAL_STATS 同步；事件侧只更新没有独立全局计数器的
+        // 黑名单、速率限制、自适应以及协议/端口/来源维度。
         for (&reason, &count) in by_reason {
-            let counter = match reason {
-                r if r == rules::BLACKLIST => &self.blacklist_blocked,
-                r if r == rules::RATE_LIMIT => &self.rate_limited,
-                r if r == rules::SYN_FLOOD => &self.syn_flood_blocked,
-                r if r == rules::L7_PATTERN => &self.l7_blocked,
-                r if r == rules::ADAPTIVE => &self.adaptive_blocked,
-                r if r == rules::PORT_ACL => &self.total_dropped,
-                r if r == rules::UDP_FLOOD => &self.udp_flood_blocked,
-                r if r == rules::ICMP_FLOOD => &self.icmp_flood_blocked,
-                r if r == rules::WAF => &self.waf_blocked,
-                r if r == rules::GEOIP => &self.geoip_blocked,
-                r if r == rules::CHALLENGE => &self.challenge_issued,
-                _ => &self.total_dropped,
+            match reason {
+                r if r == rules::BLACKLIST => self.blacklist_blocked.fetch_add(count, Ordering::Relaxed),
+                r if r == rules::RATE_LIMIT => self.rate_limited.fetch_add(count, Ordering::Relaxed),
+                r if r == rules::ADAPTIVE => self.adaptive_blocked.fetch_add(count, Ordering::Relaxed),
+                _ => continue,
             };
-            counter.fetch_add(count, Ordering::Relaxed);
         }
 
         for (&src_ip, &count) in by_source {
@@ -163,7 +159,6 @@ impl AppStateInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eshield_common::IpFamily;
     use std::collections::HashMap;
 
     #[test]
@@ -177,7 +172,6 @@ mod tests {
 
         stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
 
-        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 5);
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 2);
         assert_eq!(
@@ -194,7 +188,6 @@ mod tests {
     fn test_add_dropped_batch_empty_is_noop() {
         let stats = Stats::default();
         stats.add_dropped_batch(&HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new());
-        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 0);
         assert!(stats.top_attackers.is_empty());
     }
 
@@ -208,31 +201,8 @@ mod tests {
 
         stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
 
-        assert_eq!(stats.total_dropped.load(Ordering::Relaxed), 7);
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);
     }
 
-    #[test]
-    fn test_add_dropped_batch_udp_icmp_flood() {
-        let stats = Stats::default();
-        let mut by_reason = HashMap::new();
-        by_reason.insert(rules::UDP_FLOOD, 4);
-        by_reason.insert(rules::ICMP_FLOOD, 3);
-        let mut by_source = HashMap::new();
-        by_source.insert(IpKey::from_ipv6([0; 16]), 7);
-
-        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
-
-        assert_eq!(stats.udp_flood_blocked.load(Ordering::Relaxed), 4);
-        assert_eq!(stats.icmp_flood_blocked.load(Ordering::Relaxed), 3);
-        assert_eq!(
-            stats
-                .top_attackers
-                .get(&IpKey::from_ipv6([0; 16]))
-                .unwrap()
-                .load(Ordering::Relaxed),
-            7
-        );
-    }
 }

@@ -28,3 +28,6 @@ ROADMAP.md
 # Sync logs
 sync*.log
 ROADMAP.md
+
+# Local runtime config
+config.toml

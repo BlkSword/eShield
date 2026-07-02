@@ -18,10 +18,15 @@ mod tui;
 mod web;
 
 use anyhow::Context;
-use aya::{include_bytes_aligned, programs::Xdp, Ebpf};
+use aya::{
+    include_bytes_aligned,
+    programs::Xdp,
+    Ebpf,
+};
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
 use rand::Rng;
+use eshield_common::GlobalStats;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +45,20 @@ use crate::{
 };
 
 const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
+
+/// 读取 CLOCK_MONOTONIC，返回自系统启动以来的纳秒数。
+fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    unsafe {
+        if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) != 0 {
+            return 0;
+        }
+    }
+    (ts.tv_sec as u64).wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as u64)
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "eshield")]
@@ -180,6 +199,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppStateInner::new());
+    state.stats.program_start_ns.store(monotonic_ns(), Ordering::Relaxed);
     let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
 
     // Ebpf 状态由控制面、事件消费任务与热加载共享
@@ -280,6 +300,30 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动前清空 Ring Buffer 中可能残留的 stale 事件（如前一次测试未消费完的事件），
+    // 避免它们被新进程的事件消费器重复计数。
+    {
+        let mut guard = ebpf.lock().await;
+        match aya::maps::RingBuf::try_from(
+            guard.map_mut("EVENTS").expect("EVENTS map not found"),
+        ) {
+            Ok(mut ring_buf) => {
+                let mut drained = 0usize;
+                while ring_buf.next().is_some() {
+                    drained += 1;
+                    if drained >= 1_000_000 {
+                        warn!("drained more than 1M stale events, stopping to avoid spin");
+                        break;
+                    }
+                }
+                if drained > 0 {
+                    info!("drained {} stale events from EVENTS ring buffer", drained);
+                }
+            }
+            Err(e) => warn!("failed to open EVENTS map for drain: {}", e),
+        }
+    }
+
     // 启动事件消费任务：周期性获取 Ebpf 锁消费事件，避免阻塞热加载
     let event_handle = {
         let stats = state.stats.clone();
@@ -295,34 +339,32 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                         break;
                     }
                 }
+                // 每批事件处理后让出 1ms，避免单核占满并给 Web / 控制面留响应时间
+                tokio::time::sleep(Duration::from_millis(1)).await;
             }
         })
     };
 
-    // 启动时序指标采样任务：每 10 秒记录一个数据点，并更新当前 PPS/DPS
+    // 启动全局统计同步任务：每秒从 eBPF GLOBAL_STATS 同步 total_* / RST 计数 / PPS/DPS
+    let _global_stats_handle = {
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            sync_global_stats(ebpf, stats).await;
+        })
+    };
+
+    // 启动时序指标采样任务：每 10 秒记录一个数据点
     let timeseries_handle = {
         let stats = state.stats.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(10));
-            let mut last_packets = 0u64;
-            let mut last_dropped = 0u64;
             loop {
                 tick.tick().await;
                 let ts = stats.timeseries.clone();
                 if let Ok(mut window) = ts.try_write() {
                     window.record(&stats);
                 };
-
-                let total_packets = stats.total_packets.load(Ordering::Relaxed);
-                let total_dropped = stats.total_dropped.load(Ordering::Relaxed);
-                stats
-                    .current_pps
-                    .store((total_packets - last_packets) / 10, Ordering::Relaxed);
-                stats
-                    .current_dps
-                    .store((total_dropped - last_dropped) / 10, Ordering::Relaxed);
-                last_packets = total_packets;
-                last_dropped = total_dropped;
             }
         })
     };
@@ -568,4 +610,67 @@ fn random_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill(&mut bytes[..]);
     bytes
+}
+
+/// 从 eBPF GLOBAL_STATS Per-CPU 数组读取并同步到用户态 Stats。
+/// 同时计算 current_pps / current_dps。
+async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut last_packets = 0u64;
+    let mut last_dropped = 0u64;
+    loop {
+        interval.tick().await;
+        let mut guard = ebpf.lock().await;
+        let mut acc = GlobalStats::default();
+        match aya::maps::PerCpuArray::<_, GlobalStats>::try_from(
+            guard.map_mut("GLOBAL_STATS").expect("GLOBAL_STATS map not found"),
+        ) {
+            Ok(global) => match global.get(&0, 0) {
+                Ok(values) => {
+                    for v in values.iter() {
+                        acc.total_packets += v.total_packets;
+                        acc.total_dropped += v.total_dropped;
+                        acc.total_passed += v.total_passed;
+                        acc.syn_flood_blocked += v.syn_flood_blocked;
+                        acc.rate_limited += v.rate_limited;
+                        acc.l7_blocked += v.l7_blocked;
+                        acc.udp_flood_blocked += v.udp_flood_blocked;
+                        acc.icmp_flood_blocked += v.icmp_flood_blocked;
+                        acc.geoip_blocked += v.geoip_blocked;
+                        acc.tcp_rst_sent += v.tcp_rst_sent;
+                        acc.tcp_rst_fail += v.tcp_rst_fail;
+                        acc.tcp_rst_attempt += v.tcp_rst_attempt;
+                    }
+                    info!(
+                        "sync_global_stats total_packets={} total_dropped={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
+                        acc.total_packets, acc.total_dropped, acc.geoip_blocked,
+                        acc.tcp_rst_sent, acc.tcp_rst_fail, acc.tcp_rst_attempt,
+                    );
+                }
+                Err(e) => warn!("failed to read GLOBAL_STATS: {}", e),
+            },
+            Err(e) => warn!("failed to open GLOBAL_STATS map: {}", e),
+        }
+        drop(guard);
+
+        stats.total_packets.store(acc.total_packets, Ordering::Relaxed);
+        stats.total_dropped.store(acc.total_dropped, Ordering::Relaxed);
+        stats.total_passed.store(acc.total_passed, Ordering::Relaxed);
+        stats.syn_flood_blocked.store(acc.syn_flood_blocked, Ordering::Relaxed);
+        stats.rate_limited.store(acc.rate_limited, Ordering::Relaxed);
+        stats.l7_blocked.store(acc.l7_blocked, Ordering::Relaxed);
+        stats.udp_flood_blocked.store(acc.udp_flood_blocked, Ordering::Relaxed);
+        stats.icmp_flood_blocked.store(acc.icmp_flood_blocked, Ordering::Relaxed);
+        stats.geoip_blocked.store(acc.geoip_blocked, Ordering::Relaxed);
+        stats.tcp_rst_sent.store(acc.tcp_rst_sent, Ordering::Relaxed);
+        stats.tcp_rst_fail.store(acc.tcp_rst_fail, Ordering::Relaxed);
+        stats.tcp_rst_attempt.store(acc.tcp_rst_attempt, Ordering::Relaxed);
+
+        let pps = acc.total_packets.saturating_sub(last_packets);
+        let dps = acc.total_dropped.saturating_sub(last_dropped);
+        stats.current_pps.store(pps, Ordering::Relaxed);
+        stats.current_dps.store(dps, Ordering::Relaxed);
+        last_packets = acc.total_packets;
+        last_dropped = acc.total_dropped;
+    }
 }

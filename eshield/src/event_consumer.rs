@@ -1,6 +1,7 @@
 use aya::Ebpf;
 use eshield_common::{DropEvent, IpFamily, IpKey};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::debug;
@@ -23,13 +24,13 @@ pub async fn run(
                 .ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?,
         )?;
 
-        let mut events = Vec::with_capacity(256);
+        let mut events = Vec::with_capacity(4096);
         while let Some(item) = ring_buf.next() {
             if item.len() >= std::mem::size_of::<DropEvent>() {
                 let event: &DropEvent = unsafe { &*(item.as_ptr() as *const DropEvent) };
                 events.push(*event);
             }
-            if events.len() >= 256 {
+            if events.len() >= 4096 {
                 break;
             }
         }
@@ -43,8 +44,15 @@ pub async fn run(
     let mut by_port: HashMap<u16, u64> = HashMap::new();
 
     let process_start = std::time::Instant::now();
+    let program_start_ns = stats.program_start_ns.load(Ordering::Relaxed);
 
     for event in &events {
+        // 过滤 Ring Buffer 中残留的 stale 事件（来自前一次测试/进程的事件）。
+        // eBPF 的 bpf_ktime_get_ns 与用户态 CLOCK_MONOTONIC 都是自系统启动以来的
+        // 单调时间，允许 1 秒容差。
+        if program_start_ns != 0 && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns {
+            continue;
+        }
         let src_key = match IpFamily::from_u8(event.family) {
             Some(IpFamily::Ipv4) => IpKey::from_ipv4([
                 event.src_ip[12],
@@ -61,9 +69,8 @@ pub async fn run(
         *by_protocol.entry(event.protocol).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
-        // WAF/Challenge/GeoIP 事件由各自模块独立处理，不进入通用自适应阈值引擎
-        if event.rule_id != eshield_common::rules::WAF
-            && event.rule_id != eshield_common::rules::CHALLENGE
+        // GeoIP 事件由独立模块处理，不进入通用自适应阈值引擎
+        if adaptive.is_enabled()
             && event.rule_id != eshield_common::rules::GEOIP
         {
             if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
@@ -84,6 +91,10 @@ pub async fn run(
     }
 
     stats.add_dropped_batch(&by_reason, &by_source, &by_protocol, &by_port);
+
+    if !events.is_empty() {
+        tracing::info!(events_len = events.len(), ?by_reason, ?by_protocol, ?by_port, "event_consumer batch");
+    }
 
     let elapsed_us = process_start.elapsed().as_micros() as u64;
     stats.record_process_time_us(elapsed_us);

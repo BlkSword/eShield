@@ -72,9 +72,7 @@ pub async fn run(
         .route("/healthz", get(health::healthz_handler))
         .route("/ready", get(health::ready_handler))
         .route("/login", get(login_handler))
-        .route("/challenge", get(challenge_handler))
         .route("/blocked", get(blocked_handler))
-        .route("/api/challenge/pass", post(challenge_pass_handler))
         .route("/api/auth/login", post(login_api_handler))
         .with_state(state.clone());
 
@@ -101,8 +99,6 @@ pub async fn run(
         .route("/api/audit", get(audit_handler))
         .route("/api/audit/stream", get(audit_stream_handler))
         .route("/api/metrics/attacker-series", get(attacker_series_handler))
-        .route("/api/waf/rules", get(list_waf_rules_handler).post(set_waf_rules_handler))
-        .route("/api/waf/rules/reorder", post(reorder_waf_rules_handler))
         .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
         .route(
             "/api/protection-projects",
@@ -146,9 +142,10 @@ struct StatsResponse {
     adaptive_blocked: u64,
     udp_flood_blocked: u64,
     icmp_flood_blocked: u64,
-    waf_blocked: u64,
     geoip_blocked: u64,
-    challenge_issued: u64,
+    tcp_rst_sent: u64,
+    tcp_rst_fail: u64,
+    tcp_rst_attempt: u64,
     top_attackers: Vec<Attacker>,
 }
 
@@ -181,25 +178,8 @@ struct DisallowCidrReq {
 }
 
 #[derive(Deserialize)]
-struct ChallengePassReq {
-    ip: String,
-    nonce: String,
-    answer: u64,
-}
-
-#[derive(Deserialize)]
 struct LoginReq {
     token: String,
-}
-
-#[derive(Deserialize)]
-struct SetWafRulesReq {
-    rules: Vec<crate::config::WafRuleItem>,
-}
-
-#[derive(Deserialize)]
-struct ReorderWafRulesReq {
-    names: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -215,20 +195,6 @@ struct SetProtectionProjectsReq {
 #[derive(Deserialize)]
 struct SetL7PatternsReq {
     patterns: Vec<crate::config::L7PatternConfig>,
-}
-
-/// Challenge 签名密钥，用于防止 nonce 伪造（硬编码，生产环境应使用配置或随机启动密钥）。
-const CHALLENGE_SECRET: u64 = 0x5f37_9a21_b4cd_8e01;
-
-async fn challenge_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
-    let a = rand::random::<u64>() % 10_000;
-    let b = rand::random::<u64>() % 10_000;
-    let sig = a ^ b ^ CHALLENGE_SECRET;
-    let nonce = format!("{}:{}:{}", a, b, sig);
-    let html = include_str!("challenge.html")
-        .replace("{nonce}", &nonce)
-        .replace("{ip}", &addr.ip().to_string());
-    Html(html)
 }
 
 const BLOCKED_HTML: &str = include_str!("blocked.html");
@@ -298,39 +264,6 @@ async fn reset_token_handler(State(state): State<Arc<WebState>>) -> Response {
         )
         .await;
     Json(serde_json::json!({"token": new_token})).into_response()
-}
-
-async fn challenge_pass_handler(
-    State(state): State<Arc<WebState>>,
-    Json(req): Json<ChallengePassReq>,
-) -> Result<&'static str, (StatusCode, String)> {
-    let parts: Vec<&str> = req.nonce.split(':').collect();
-    if parts.len() != 3 {
-        return Err((StatusCode::BAD_REQUEST, "invalid nonce format".to_string()));
-    }
-    let a = parts[0]
-        .parse::<u64>()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid nonce: {}", e)))?;
-    let b = parts[1]
-        .parse::<u64>()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid nonce: {}", e)))?;
-    let sig = parts[2]
-        .parse::<u64>()
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("invalid nonce: {}", e)))?;
-    if sig != (a ^ b ^ CHALLENGE_SECRET) {
-        return Err((StatusCode::BAD_REQUEST, "invalid nonce signature".to_string()));
-    }
-    if req.answer != a.saturating_add(b) {
-        return Err((StatusCode::BAD_REQUEST, "incorrect answer".to_string()));
-    }
-
-    let ttl_s = state.control.runtime.read().await.challenge_ttl_s;
-    state
-        .control
-        .challenge_allow(&req.ip, ttl_s)
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok("验证通过，已加入临时白名单")
 }
 
 async fn stats_handler(State(state): State<Arc<WebState>>) -> Json<StatsResponse> {
@@ -405,15 +338,6 @@ async fn protection_modules_handler(
             ]
         }),
         serde_json::json!({
-            "id": "waf",
-            "name": "WAF 规则引擎",
-            "category": "应用层",
-            "description": "基于 Method/Path/Host/UA 的 HTTP 层规则匹配。",
-            "enabled": rt.waf_enabled,
-            "stats_key": "waf_blocked",
-            "editable_fields": [field_switch("enabled", "启用 WAF", rt.waf_enabled)]
-        }),
-        serde_json::json!({
             "id": "l7_scan",
             "name": "L7 指纹扫描",
             "category": "应用层",
@@ -430,19 +354,6 @@ async fn protection_modules_handler(
             "enabled": rt.geoip_enabled,
             "stats_key": "geoip_blocked",
             "editable_fields": [field_switch("enabled", "启用 GeoIP", rt.geoip_enabled)]
-        }),
-        serde_json::json!({
-            "id": "challenge",
-            "name": "挑战验证（人机验证）",
-            "category": "应用层",
-            "description": "对可疑客户端下发 JS/302 挑战，通过后加入临时白名单。",
-            "enabled": rt.challenge_enabled,
-            "stats_key": "challenge_issued",
-            "editable_fields": [
-                field_switch("enabled", "启用挑战", rt.challenge_enabled),
-                field_select("mode", "验证模式", vec!["js", "302"], &rt.challenge_mode),
-                field_number("ttl_s", "放行有效期 (s)", rt.challenge_ttl_s)
-            ]
         }),
         serde_json::json!({
             "id": "tcp_reset",
@@ -474,10 +385,6 @@ fn field_switch(id: &str, label: &str, value: bool) -> serde_json::Value {
 
 fn field_number(id: &str, label: &str, value: u64) -> serde_json::Value {
     serde_json::json!({"id": id, "type": "number", "label": label, "value": value})
-}
-
-fn field_select(id: &str, label: &str, options: Vec<&str>, value: &str) -> serde_json::Value {
-    serde_json::json!({"id": id, "type": "select", "label": label, "options": options, "value": value})
 }
 
 fn field_readonly(id: &str, label: &str, value: serde_json::Value) -> serde_json::Value {
@@ -603,11 +510,6 @@ async fn metrics_series_handler(
     Json(serde_json::json!({ "series": series }))
 }
 
-async fn list_waf_rules_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
-    let rt = state.control.runtime.read().await;
-    Json(serde_json::json!({ "rules": rt.waf_rules }))
-}
-
 async fn list_port_acl_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
     let rt = state.control.runtime.read().await;
     Json(serde_json::json!({ "items": rt.port_acl }))
@@ -695,46 +597,6 @@ async fn sync_threat_intel_handler(State(state): State<Arc<WebState>>) -> &'stat
         });
     }
     "威胁情报同步已触发"
-}
-
-async fn set_waf_rules_handler(
-    State(state): State<Arc<WebState>>,
-    Json(req): Json<SetWafRulesReq>,
-) -> Result<&'static str, (StatusCode, String)> {
-    if req.rules.len() > eshield_common::WAF_RULES_MAX {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("too many WAF rules (max {})", eshield_common::WAF_RULES_MAX),
-        ));
-    }
-    state
-        .control
-        .set_waf_rules(req.rules)
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok("WAF 规则已更新")
-}
-
-async fn reorder_waf_rules_handler(
-    State(state): State<Arc<WebState>>,
-    Json(req): Json<ReorderWafRulesReq>,
-) -> Result<&'static str, (StatusCode, String)> {
-    let mut rules = state.control.runtime.read().await.waf_rules.clone();
-    let mut new_order: Vec<crate::config::WafRuleItem> = Vec::with_capacity(req.names.len());
-    for name in &req.names {
-        if let Some(pos) = rules.iter().position(|r| &r.name == name) {
-            new_order.push(rules.remove(pos));
-        } else {
-            return Err((StatusCode::BAD_REQUEST, format!("rule not found: {}", name)));
-        }
-    }
-    new_order.extend(rules);
-    state
-        .control
-        .set_waf_rules(new_order)
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok("WAF 规则顺序已更新")
 }
 
 async fn audit_handler(
@@ -864,9 +726,10 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         adaptive_blocked: stats.adaptive_blocked.load(Ordering::Relaxed),
         udp_flood_blocked: stats.udp_flood_blocked.load(Ordering::Relaxed),
         icmp_flood_blocked: stats.icmp_flood_blocked.load(Ordering::Relaxed),
-        waf_blocked: stats.waf_blocked.load(Ordering::Relaxed),
         geoip_blocked: stats.geoip_blocked.load(Ordering::Relaxed),
-        challenge_issued: stats.challenge_issued.load(Ordering::Relaxed),
+        tcp_rst_sent: stats.tcp_rst_sent.load(Ordering::Relaxed),
+        tcp_rst_fail: stats.tcp_rst_fail.load(Ordering::Relaxed),
+        tcp_rst_attempt: stats.tcp_rst_attempt.load(Ordering::Relaxed),
         top_attackers,
     }
 }
@@ -908,15 +771,9 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
          # HELP eshield_icmp_flood_blocked_total ICMP flood blocked packets\n\
          # TYPE eshield_icmp_flood_blocked_total counter\n\
          eshield_icmp_flood_blocked_total{{interface=\"{}\"}} {}\n\n\
-         # HELP eshield_waf_blocked_total WAF blocked packets\n\
-         # TYPE eshield_waf_blocked_total counter\n\
-         eshield_waf_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_geoip_blocked_total GeoIP blocked packets\n\
          # TYPE eshield_geoip_blocked_total counter\n\
          eshield_geoip_blocked_total{{interface=\"{}\"}} {}\n\n\
-         # HELP eshield_challenge_issued_total Challenge issued\n\
-         # TYPE eshield_challenge_issued_total counter\n\
-         eshield_challenge_issued_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_dropped_by_protocol_total Dropped packets by IP protocol\n\
          # TYPE eshield_dropped_by_protocol_total counter\n\
          eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"tcp\"}} {}\n\
@@ -932,9 +789,7 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         interface, stats.adaptive_blocked,
         interface, stats.udp_flood_blocked,
         interface, stats.icmp_flood_blocked,
-        interface, stats.waf_blocked,
         interface, stats.geoip_blocked,
-        interface, stats.challenge_issued,
         interface, tcp, interface, udp, interface, icmp, interface, other,
     );
 

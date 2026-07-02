@@ -16,7 +16,6 @@ pub enum AuditAction {
     PatchConfig,
     Start,
     Stop,
-    ChallengePass,
     Login,
     ResetToken,
 }

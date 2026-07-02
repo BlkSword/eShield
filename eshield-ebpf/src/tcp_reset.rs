@@ -1,9 +1,9 @@
 use aya_ebpf::programs::XdpContext;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::helpers::gen::{bpf_csum_diff, bpf_xdp_adjust_tail};
-use aya_log_ebpf::debug;
 use core::mem;
 
+use crate::maps::GLOBAL_STATS;
 use crate::parser::{EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN, IPPROTO_TCP};
 
 const TCP_FLAG_RST: u8 = 0x04;
@@ -12,71 +12,69 @@ const IPV4_HDR_LEN: usize = 20;
 const TCP_HDR_LEN: usize = 20;
 const RST_PKT_LEN: u16 = (IPV4_HDR_LEN + TCP_HDR_LEN) as u16;
 
+#[inline(always)]
+fn inc_rst_sent() {
+    unsafe {
+        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+            (*stats).tcp_rst_sent += 1;
+        }
+    }
+}
+
+#[inline(always)]
+fn inc_rst_fail() {
+    unsafe {
+        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+            (*stats).tcp_rst_fail += 1;
+        }
+    }
+}
+
 /// For an IPv4 TCP packet that is about to be dropped, turn it into a TCP RST
 /// and transmit it back out the same interface (XDP_TX).
-///
-/// Returns `XDP_TX` on success, or `XDP_DROP` if the packet is not a TCP packet
-/// or cannot be rewritten safely.
-#[inline(never)]
+#[inline(always)]
 pub fn reply_tcp_rst(ctx: &XdpContext, ip_hdr_len: usize) -> u32 {
     if ip_hdr_len == IPV4_HDR_LEN {
         reply_tcp_rst_v4(ctx)
     } else {
         // IPv6 RST is more complex (no IP checksum but larger pseudo-header).
         // Keep behaviour conservative: fall back to silent drop.
+        inc_rst_fail();
         xdp_action::XDP_DROP
     }
 }
 
-#[inline(never)]
+#[inline(always)]
 fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
-    debug!(ctx, "reply_tcp_rst_v4 enter");
-
-    // Only handle IPv4 with standard 20-byte IP header.  The caller already
-    // verified ip_hdr_len == 20; this check also proves the packet is long
-    // enough for the headers we are about to rewrite.
-    let _eth: *mut EthHdr = match unsafe { ptr_at_mut(ctx, 0) } {
-        Some(p) => p,
-        None => return xdp_action::XDP_DROP,
-    };
-    let _ip: *mut IpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN) } {
-        Some(p) => p,
-        None => return xdp_action::XDP_DROP,
-    };
-    let _tcp: *mut TcpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN + IPV4_HDR_LEN) } {
-        Some(p) => p,
-        None => return xdp_action::XDP_DROP,
-    };
-
-    // Shrink the packet to Ethernet + IPv4 + 20-byte TCP header.  This removes
-    // any TCP options that may have been present in the incoming SYN so that
-    // the IPv4 total length matches the actual frame length for XDP_TX.
+    // The caller already verified ip_hdr_len == 20; shrink the packet to
+    // Ethernet + IPv4 + 20-byte TCP header so the IPv4 total length matches
+    // the actual frame length for XDP_TX.
     let cur_len = (ctx.data_end() - ctx.data()) as i32;
     let target_len = (ETH_HDR_LEN + RST_PKT_LEN as usize) as i32;
     let delta = target_len - cur_len;
     if unsafe { bpf_xdp_adjust_tail(ctx.ctx, delta) } != 0 {
-        debug!(ctx, "reply_tcp_rst_v4 adjust_tail failed");
+        inc_rst_fail();
         return xdp_action::XDP_DROP;
     }
 
     // Re-derive header pointers after the tail adjustment.
     let eth: *mut EthHdr = match unsafe { ptr_at_mut(ctx, 0) } {
         Some(p) => p,
-        None => return xdp_action::XDP_DROP,
+        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
     };
     let ip: *mut IpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN) } {
         Some(p) => p,
-        None => return xdp_action::XDP_DROP,
+        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
     };
     let tcp: *mut TcpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN + IPV4_HDR_LEN) } {
         Some(p) => p,
-        None => return xdp_action::XDP_DROP,
+        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
     };
 
     unsafe {
         // Only handle TCP.
         if (*ip).proto != IPPROTO_TCP {
-            debug!(ctx, "reply_tcp_rst_v4 not tcp proto={}", (*ip).proto as u32);
+            inc_rst_fail();
             return xdp_action::XDP_DROP;
         }
 
@@ -95,8 +93,7 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
         (*tcp).source = (*tcp).dest;
         (*tcp).dest = src_port;
 
-        // Build RST|ACK response.
-        // ack = incoming seq + 1.
+        // Build RST|ACK response: ack = incoming seq + 1.
         let incoming_seq = u32::from_be((*tcp).seq);
         (*tcp).seq = 0;
         (*tcp).ack_seq = u32::to_be(incoming_seq.wrapping_add(1));
@@ -107,50 +104,56 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
         (*tcp).window = 0;
         (*tcp).urg_ptr = 0;
 
-        // Zero checksums before recomputing.
+        // Zero checksums before recomputing and rewrite IPv4 total length.
         (*ip).check = 0;
         (*tcp).check = 0;
-
-        // Rewrite IPv4 total length to match the RST packet (no payload).
         (*ip).tot_len = u16::to_be(RST_PKT_LEN);
 
         // Recompute IPv4 header checksum using the kernel helper.
         let ip_check = csum(ctx, ETH_HDR_LEN, IPV4_HDR_LEN, 0);
         if ip_check < 0 {
+            inc_rst_fail();
             return xdp_action::XDP_DROP;
         }
         (*ip).check = finalize_csum(ip_check);
 
-        // Build IPv4 pseudo-header on stack and compute TCP checksum.
-        // saddr/daddr are read from the packet as little-endian u32s but the
-        // underlying bytes are already in network order, so use to_le_bytes()
-        // to recover the original packet bytes.
-        let saddr = (*ip).saddr;
-        let daddr = (*ip).daddr;
-        let saddr_bytes = saddr.to_le_bytes();
-        let daddr_bytes = daddr.to_le_bytes();
-        let mut pseudo = [0u8; 12];
-        pseudo[0] = saddr_bytes[0];
-        pseudo[1] = saddr_bytes[1];
-        pseudo[2] = saddr_bytes[2];
-        pseudo[3] = saddr_bytes[3];
-        pseudo[4] = daddr_bytes[0];
-        pseudo[5] = daddr_bytes[1];
-        pseudo[6] = daddr_bytes[2];
-        pseudo[7] = daddr_bytes[3];
-        pseudo[8] = 0;
-        pseudo[9] = IPPROTO_TCP;
-        pseudo[10] = 0;
-        pseudo[11] = TCP_HDR_LEN as u8;
-
-        let pseudo_sum = bpf_csum_diff(
+        // Build IPv4 pseudo-header incrementally to keep stack usage tiny.
+        // Pseudo-header bytes: saddr(4) + daddr(4) + 0 + proto + 0 + len(2).
+        let mut word: u32 = (*ip).saddr;
+        let mut pseudo_sum = bpf_csum_diff(
             core::ptr::null_mut(),
             0,
-            pseudo.as_ptr() as *mut u32,
-            pseudo.len() as u32,
+            &mut word as *mut u32,
+            4,
             0,
         );
         if pseudo_sum < 0 {
+            inc_rst_fail();
+            return xdp_action::XDP_DROP;
+        }
+        word = (*ip).daddr;
+        pseudo_sum = bpf_csum_diff(
+            core::ptr::null_mut(),
+            0,
+            &mut word as *mut u32,
+            4,
+            pseudo_sum as u32,
+        );
+        if pseudo_sum < 0 {
+            inc_rst_fail();
+            return xdp_action::XDP_DROP;
+        }
+        // Last pseudo-header word as little-endian bytes [0, proto, 0, len].
+        word = ((IPPROTO_TCP as u32) << 8) | ((TCP_HDR_LEN as u32) << 24);
+        pseudo_sum = bpf_csum_diff(
+            core::ptr::null_mut(),
+            0,
+            &mut word as *mut u32,
+            4,
+            pseudo_sum as u32,
+        );
+        if pseudo_sum < 0 {
+            inc_rst_fail();
             return xdp_action::XDP_DROP;
         }
 
@@ -161,12 +164,13 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
             pseudo_sum as u32,
         );
         if tcp_check < 0 {
+            inc_rst_fail();
             return xdp_action::XDP_DROP;
         }
         (*tcp).check = finalize_csum(tcp_check);
     }
 
-    debug!(ctx, "reply_tcp_rst_v4 returning XDP_TX");
+    inc_rst_sent();
     xdp_action::XDP_TX
 }
 

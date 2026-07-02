@@ -4,7 +4,7 @@ use aya_ebpf::{
 };
 use eshield_common::{
     BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-    RateCounter, RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
+    RateCounter, RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -27,7 +27,7 @@ pub static GEOIP_BLOCKED_V6: LpmTrie<GeoIpKeyV6, u8> = LpmTrie::with_max_entries
 #[map]
 pub static BLACKLIST: LruHashMap<IpKey, BlockEntry> = LruHashMap::with_max_entries(100000, 0);
 
-/// Per-CPU 全局统计
+/// 全局统计（Per-CPU，避免多核并发更新时的计数丢失）
 #[map]
 pub static GLOBAL_STATS: PerCpuArray<GlobalStats> = PerCpuArray::with_max_entries(1, 0);
 
@@ -62,14 +62,6 @@ pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(16, 0);
 /// 端口/协议 ACL 规则表
 #[map]
 pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);
-
-/// WAF 规则表
-#[map]
-pub static WAF_RULES: Array<WafRule> = Array::with_max_entries(8, 0);
-
-/// Challenge 临时放行名单（LRU Hash）：value 为过期时间戳（ns）
-#[map]
-pub static CHALLENGE_ALLOWLIST: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);
 
 /// SYN Proxy 连接表（LRU Hash）：已通过 Cookie 验证的连接元组
 /// value 为过期时间戳（ns）

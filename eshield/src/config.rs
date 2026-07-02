@@ -36,10 +36,6 @@ pub struct Config {
     pub geoip: GeoIpConfig,
     #[serde(default)]
     pub threat_intel: ThreatIntelConfig,
-    #[serde(default)]
-    pub waf: WafConfig,
-    #[serde(default)]
-    pub challenge: ChallengeConfig,
     #[serde(default = "default_web_port")]
     pub web_port: u16,
     #[serde(default)]
@@ -166,66 +162,6 @@ fn default_feed_action() -> String {
     "drop".to_string()
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct WafConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default)]
-    pub rules: Vec<WafRuleItem>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WafRuleItem {
-    pub name: String,
-    #[serde(default)]
-    pub priority: u8,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub r#match: WafMatch,
-    #[serde(default = "default_waf_action")]
-    pub action: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct WafMatch {
-    pub method: Option<String>,
-    pub path_prefix: Option<String>,
-    pub host: Option<String>,
-    pub user_agent: Option<String>,
-    pub body_prefix: Option<String>,
-}
-
-fn default_waf_action() -> String {
-    "drop".to_string()
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ChallengeConfig {
-    #[serde(default = "default_false")]
-    pub enabled: bool,
-    #[serde(default = "default_challenge_mode")]
-    pub mode: String,
-    #[allow(dead_code)]
-    #[serde(default = "default_challenge_cookie")]
-    pub cookie_name: String,
-    #[serde(default = "default_challenge_ttl_s")]
-    pub ttl_s: u64,
-    #[allow(dead_code)]
-    pub template_html: Option<String>,
-}
-
-fn default_challenge_mode() -> String {
-    "js".to_string()
-}
-
-fn default_challenge_cookie() -> String {
-    "eshield_challenge".to_string()
-}
-
-fn default_challenge_ttl_s() -> u64 {
-    3600
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdaptiveConfig {
     #[serde(default = "default_true")]
@@ -272,9 +208,6 @@ pub struct SynProxyConfig {
     #[allow(dead_code)]
     #[serde(default = "default_syn_conn_timeout_s")]
     pub conn_timeout_s: u32,
-    #[allow(dead_code)]
-    #[serde(default = "default_false")]
-    pub challenge_on_syn: bool,
 }
 
 impl Default for SynProxyConfig {
@@ -284,7 +217,6 @@ impl Default for SynProxyConfig {
             backend_ports: Vec::new(),
             max_conns: 1024 * 1024,
             conn_timeout_s: 60,
-            challenge_on_syn: false,
         }
     }
 }
@@ -440,8 +372,6 @@ impl Config {
 
         validate_geoip(self)?;
         validate_threat_intel(self)?;
-        validate_waf(self)?;
-        validate_challenge(self)?;
         validate_protection_projects(self)?;
 
         Ok(())
@@ -552,64 +482,6 @@ fn validate_threat_intel(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_waf(config: &Config) -> anyhow::Result<()> {
-    if !config.waf.enabled {
-        return Ok(());
-    }
-    for (i, rule) in config.waf.rules.iter().enumerate() {
-        if rule.name.is_empty() {
-            anyhow::bail!("waf.rules[{}]: name cannot be empty", i);
-        }
-        if !matches!(rule.action.as_str(), "drop" | "log" | "challenge") {
-            anyhow::bail!(
-                "waf.rules[{}]: action must be drop/log/challenge, got '{}'",
-                i,
-                rule.action
-            );
-        }
-        if let Some(method) = &rule.r#match.method {
-            if !matches!(method.to_uppercase().as_str(), "GET" | "POST" | "PUT" | "DELETE" | "HEAD" | "OPTIONS" | "PATCH" | "ANY") {
-                anyhow::bail!("waf.rules[{}]: invalid method '{}'", i, method);
-            }
-        }
-        let check_len = |field: &Option<String>, label: &str| -> anyhow::Result<()> {
-            if let Some(v) = field {
-                let bytes = v.as_bytes();
-                if bytes.len() > eshield_common::WAF_FIELD_LEN {
-                    anyhow::bail!(
-                        "waf.rules[{}]: {} exceeds {} bytes",
-                        i,
-                        label,
-                        eshield_common::WAF_FIELD_LEN
-                    );
-                }
-            }
-            Ok(())
-        };
-        check_len(&rule.r#match.path_prefix, "path_prefix")?;
-        check_len(&rule.r#match.host, "host")?;
-        check_len(&rule.r#match.user_agent, "user_agent")?;
-        check_len(&rule.r#match.body_prefix, "body_prefix")?;
-    }
-    Ok(())
-}
-
-fn validate_challenge(config: &Config) -> anyhow::Result<()> {
-    if !config.challenge.enabled {
-        return Ok(());
-    }
-    if !matches!(config.challenge.mode.as_str(), "js" | "302") {
-        anyhow::bail!(
-            "challenge.mode must be 'js' or '302', got '{}'",
-            config.challenge.mode
-        );
-    }
-    if config.challenge.ttl_s == 0 {
-        anyhow::bail!("challenge.ttl_s must be > 0");
-    }
-    Ok(())
-}
-
 fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
     let valid_modules: std::collections::HashSet<&str> = [
         "syn_flood",
@@ -617,10 +489,8 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
         "icmp_flood",
         "rate_limit",
         "adaptive",
-        "waf",
         "l7_scan",
         "geoip",
-        "challenge",
         "tcp_reset",
         "port_acl",
     ]

@@ -33,6 +33,11 @@ impl AdaptiveEngine {
         }
     }
 
+    /// 当前是否启用。
+    pub fn is_enabled(&self) -> bool {
+        self.config.read().map(|c| c.enabled).unwrap_or(false)
+    }
+
     /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map。
     pub fn on_event(&self, _stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
         let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());

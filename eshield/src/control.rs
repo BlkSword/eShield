@@ -5,7 +5,7 @@ use aya::{
 };
 use eshield_common::{
     rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
-    RateLimitConfig, RuntimeConfig, WafRule, WhitelistKeyV4, WhitelistKeyV6,
+    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 use serde::{Deserialize, Serialize};
@@ -17,9 +17,9 @@ use tracing::info;
 use crate::adaptive::AdaptiveEngine;
 use crate::audit::{AuditAction, Auditor};
 use crate::config::{
-    Config, GeoIpConfig, L7ScanConfig, PortAclItem, ProtectionProject, ThreatFeed, WafRuleItem,
+    Config, GeoIpConfig, L7ScanConfig, PortAclItem, ProtectionProject, ThreatFeed,
 };
-use crate::ip::{format_ip_key, parse_cidr, parse_ip, parse_ip_or_cidr};
+use crate::ip::{format_ip_key, parse_cidr, parse_ip_or_cidr};
 use crate::store::RuleStore;
 
 /// 控制面共享状态，Web / CLI / SIGHUP 都通过它操作 eBPF Maps。
@@ -53,15 +53,10 @@ pub struct RuntimeConfigSnapshot {
     pub ebpf_debug_enabled: bool,
     pub udp_flood_enabled: bool,
     pub icmp_flood_enabled: bool,
-    pub waf_enabled: bool,
-    pub challenge_enabled: bool,
-    pub challenge_mode: String,
-    pub challenge_ttl_s: u64,
     pub geoip_enabled: bool,
     pub tcp_reset_on_drop: bool,
     pub rate_limit: RateLimitParams,
     pub adaptive: crate::config::AdaptiveConfig,
-    pub waf_rules: Vec<WafRuleItem>,
     pub port_acl: Vec<PortAclItem>,
     pub protection_projects: Vec<ProtectionProject>,
     pub l7_scan: L7ScanConfig,
@@ -89,14 +84,10 @@ pub struct RuntimeConfigPatch {
     pub ebpf_debug_enabled: Option<bool>,
     pub udp_flood_enabled: Option<bool>,
     pub icmp_flood_enabled: Option<bool>,
-    pub waf_enabled: Option<bool>,
-    pub challenge_enabled: Option<bool>,
     pub geoip_enabled: Option<bool>,
     pub tcp_reset_on_drop: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
     pub adaptive: Option<crate::config::AdaptiveConfig>,
-    pub challenge_ttl_s: Option<u64>,
-    pub challenge_mode: Option<String>,
 }
 
 impl ControlState {
@@ -128,7 +119,6 @@ impl ControlState {
             init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
             init_port_acl_map(&mut guard, &config.port_acl)?;
             init_protection_projects_map(&mut guard, &config.protection_projects)?;
-            init_waf_rules_map(&mut guard, config)?;
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
             let mut geoip_blocks = state.geoip_blocks.lock().await;
@@ -153,7 +143,6 @@ impl ControlState {
         init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
         init_port_acl_map(&mut guard, &config.port_acl)?;
         init_protection_projects_map(&mut guard, &config.protection_projects)?;
-        init_waf_rules_map(&mut guard, &config)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
@@ -228,30 +217,6 @@ impl ControlState {
         )
         .await;
         info!("threat intel block: {} duration={}s", format_ip_key(&key), duration_s);
-        Ok(())
-    }
-
-    /// Challenge 验证通过：将源 IP 加入临时白名单。
-    pub async fn challenge_allow(&self, ip_str: &str, ttl_s: u64) -> anyhow::Result<()> {
-        let key = parse_ip(ip_str)?;
-        let now_ns = now_ns();
-        let expiry_ns = now_ns.saturating_add(ttl_s.saturating_mul(1_000_000_000));
-
-        let mut guard = self.ebpf.lock().await;
-        let mut allowlist: LruHashMap<_, IpKey, u64> = guard
-            .map_mut("CHALLENGE_ALLOWLIST")
-            .context("CHALLENGE_ALLOWLIST map not found")?
-            .try_into()?;
-        allowlist.insert(key, expiry_ns, 0)?;
-        drop(guard);
-
-        self.audit(
-            "challenge",
-            AuditAction::ChallengePass,
-            serde_json::json!({ "ip": ip_str, "ttl_s": ttl_s }),
-        )
-        .await;
-        info!("challenge allow: {} ttl={}s", ip_str, ttl_s);
         Ok(())
     }
 
@@ -423,12 +388,6 @@ impl ControlState {
         if let Some(enabled) = patch.icmp_flood_enabled {
             snapshot.icmp_flood_enabled = enabled;
         }
-        if let Some(enabled) = patch.waf_enabled {
-            snapshot.waf_enabled = enabled;
-        }
-        if let Some(enabled) = patch.challenge_enabled {
-            snapshot.challenge_enabled = enabled;
-        }
         if let Some(enabled) = patch.geoip_enabled {
             snapshot.geoip_enabled = enabled;
         }
@@ -440,12 +399,6 @@ impl ControlState {
             if let Some(adaptive) = &self.adaptive {
                 adaptive.update_config(adaptive_cfg.clone());
             }
-        }
-        if let Some(ttl) = patch.challenge_ttl_s {
-            snapshot.challenge_ttl_s = ttl;
-        }
-        if let Some(ref mode) = patch.challenge_mode {
-            snapshot.challenge_mode = mode.clone();
         }
 
         let mut guard = self.ebpf.lock().await;
@@ -484,11 +437,9 @@ impl ControlState {
                     ebpf_debug: u8::from(snapshot.ebpf_debug_enabled),
                     udp_flood_enabled: u8::from(snapshot.udp_flood_enabled),
                     icmp_flood_enabled: u8::from(snapshot.icmp_flood_enabled),
-                    waf_enabled: u8::from(snapshot.waf_enabled),
-                    challenge_enabled: u8::from(snapshot.challenge_enabled),
                     geoip_enabled: u8::from(snapshot.geoip_enabled),
                     tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
-                    padding: [0; 6],
+                    padding: [0; 8],
                 },
                 0,
             )?;
@@ -592,45 +543,6 @@ impl ControlState {
         Ok(())
     }
 
-    /// 完全替换当前 WAF 规则集，更新 eBPF Map、运行时快照与持久化存储。
-    pub async fn set_waf_rules(&self, rules: Vec<WafRuleItem>) -> anyhow::Result<()> {
-        let mut compiled = Vec::with_capacity(rules.len().min(eshield_common::WAF_RULES_MAX));
-        for (i, item) in rules.iter().enumerate().take(eshield_common::WAF_RULES_MAX) {
-            compiled.push(
-                compile_waf_rule(item).with_context(|| format!("invalid waf rule {}", i))?,
-            );
-        }
-
-        {
-            let mut guard = self.ebpf.lock().await;
-            let mut waf_rules: Array<_, WafRule> = guard
-                .map_mut("WAF_RULES")
-                .context("WAF_RULES map not found")?
-                .try_into()?;
-            for i in 0..eshield_common::WAF_RULES_MAX as u32 {
-                let _ = waf_rules.set(i, WafRule::default(), 0);
-            }
-            for (i, rule) in compiled.iter().enumerate() {
-                waf_rules.set(i as u32, *rule, 0)?;
-            }
-        }
-
-        self.runtime.write().await.waf_rules = rules.clone();
-
-        if let Some(store) = &self.store {
-            store.save_waf_rules(&rules).await?;
-        }
-
-        self.audit(
-            "api",
-            AuditAction::PatchConfig,
-            serde_json::json!({ "waf_rules": rules }),
-        )
-        .await;
-        info!("WAF rules updated: count={}", compiled.len());
-        Ok(())
-    }
-
     /// 从持久化存储加载动态规则并应用（不记录审计，避免启动/重载时产生大量日志）。
     pub async fn load_persisted_rules(&self) -> anyhow::Result<()> {
         let Some(store) = &self.store else { return Ok(()) };
@@ -655,12 +567,6 @@ impl ControlState {
 
         for (key, prefix) in store.load_whitelist().await? {
             self.allow_cidr_raw(key, prefix).await?;
-        }
-
-        if let Ok(rules) = store.load_waf_rules().await {
-            if !rules.is_empty() {
-                self.set_waf_rules(rules).await?;
-            }
         }
 
         if let Ok(items) = store.load_port_acl_items().await {
@@ -714,10 +620,6 @@ impl RuntimeConfigSnapshot {
             ebpf_debug_enabled: config.ebpf_log_enabled,
             udp_flood_enabled: config.udp_flood_enabled,
             icmp_flood_enabled: config.icmp_flood_enabled,
-            waf_enabled: config.waf.enabled,
-            challenge_enabled: config.challenge.enabled,
-            challenge_mode: config.challenge.mode.clone(),
-            challenge_ttl_s: config.challenge.ttl_s,
             geoip_enabled: config.geoip.enabled,
             tcp_reset_on_drop: config.tcp_reset_on_drop,
             adaptive: config.adaptive.clone(),
@@ -729,7 +631,6 @@ impl RuntimeConfigSnapshot {
                 decay_den: config.rate_limit.decay_den,
                 block_duration_s: config.rate_limit.block_duration_s,
             },
-            waf_rules: config.waf.rules.clone(),
             port_acl: config.port_acl.clone(),
             protection_projects: config.protection_projects.clone(),
             l7_scan: config.l7_scan.clone(),
@@ -753,11 +654,9 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         ebpf_debug: u8::from(config.ebpf_log_enabled),
         udp_flood_enabled: u8::from(config.udp_flood_enabled),
         icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
-        waf_enabled: u8::from(config.waf.enabled),
-        challenge_enabled: u8::from(config.challenge.enabled),
         geoip_enabled: u8::from(config.geoip.enabled),
         tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
-        padding: [0; 6],
+        padding: [0; 8],
     };
     tracing::info!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
@@ -871,105 +770,6 @@ fn init_protection_projects_map(
         );
     }
     Ok(())
-}
-
-fn init_waf_rules_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
-    let mut waf_rules: Array<_, WafRule> = ebpf
-        .map_mut("WAF_RULES")
-        .context("WAF_RULES map not found")?
-        .try_into()?;
-
-    for i in 0..eshield_common::WAF_RULES_MAX as u32 {
-        let _ = waf_rules.set(i, WafRule::default(), 0);
-    }
-
-    for (i, item) in config.waf.rules.iter().enumerate().take(eshield_common::WAF_RULES_MAX) {
-        let rule = compile_waf_rule(item).with_context(|| format!("invalid waf rule {}", i))?;
-        waf_rules.set(i as u32, rule, 0)?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn compile_waf_rule(item: &crate::config::WafRuleItem) -> anyhow::Result<WafRule> {
-    use eshield_common::{waf_match, HttpMethod, WafAction};
-
-    let action = match item.action.to_lowercase().as_str() {
-        "drop" => WafAction::Drop as u8,
-        "log" => WafAction::Log as u8,
-        "challenge" => WafAction::Challenge as u8,
-        other => anyhow::bail!("invalid waf action: {}", other),
-    };
-
-    let method = if let Some(m) = &item.r#match.method {
-        match m.to_uppercase().as_str() {
-            "GET" => HttpMethod::Get as u8,
-            "POST" => HttpMethod::Post as u8,
-            "PUT" => HttpMethod::Put as u8,
-            "DELETE" => HttpMethod::Delete as u8,
-            "HEAD" => HttpMethod::Head as u8,
-            "OPTIONS" => HttpMethod::Options as u8,
-            "PATCH" => HttpMethod::Patch as u8,
-            "ANY" => HttpMethod::Any as u8,
-            other => anyhow::bail!("invalid waf method: {}", other),
-        }
-    } else {
-        HttpMethod::Any as u8
-    };
-
-    let mut match_flags = 0u8;
-
-    fn sig_mask(src: &Option<String>) -> ([u8; eshield_common::WAF_FIELD_LEN], [u8; eshield_common::WAF_FIELD_LEN]) {
-        let mut sig = [0u8; eshield_common::WAF_FIELD_LEN];
-        let mut mask = [0u8; eshield_common::WAF_FIELD_LEN];
-        if let Some(s) = src {
-            let bytes = s.as_bytes();
-            let len = bytes.len().min(eshield_common::WAF_FIELD_LEN);
-            sig[..len].copy_from_slice(&bytes[..len]);
-            for i in 0..len {
-                mask[i] = 0xff;
-            }
-        }
-        (sig, mask)
-    }
-
-    let (path_sig, path_mask) = sig_mask(&item.r#match.path_prefix);
-    let (host_sig, host_mask) = sig_mask(&item.r#match.host);
-    let (user_agent_sig, user_agent_mask) = sig_mask(&item.r#match.user_agent);
-    let (body_sig, body_mask) = sig_mask(&item.r#match.body_prefix);
-
-    if item.r#match.path_prefix.is_some() {
-        match_flags |= waf_match::PATH_PREFIX;
-    }
-    if item.r#match.host.is_some() {
-        match_flags |= waf_match::HOST;
-    }
-    if item.r#match.user_agent.is_some() {
-        match_flags |= waf_match::USER_AGENT;
-    }
-    if item.r#match.body_prefix.is_some() {
-        match_flags |= waf_match::BODY_PREFIX;
-    }
-    if item.r#match.method.is_some() {
-        match_flags |= waf_match::METHOD;
-    }
-
-    Ok(WafRule {
-        enabled: u8::from(item.enabled),
-        priority: item.priority,
-        action,
-        method,
-        match_flags,
-        padding: [0; 3],
-        path_sig,
-        path_mask,
-        host_sig,
-        host_mask,
-        user_agent_sig,
-        user_agent_mask,
-        body_sig,
-        body_mask,
-    })
 }
 
 async fn apply_whitelist_map(
@@ -1186,6 +986,7 @@ fn now_ns() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ip::parse_ip;
     use eshield_common::IpFamily;
 
     #[test]

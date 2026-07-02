@@ -195,7 +195,7 @@ fn entries_cidr(entries: Vec<IpKey>) -> Vec<(IpKey, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ThreatFeed, ThreatIntelConfig};
+    use crate::config::ThreatFeed;
 
     #[test]
     fn test_parse_text_feed_plain() {

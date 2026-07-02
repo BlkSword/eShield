@@ -69,20 +69,6 @@ threshold = 10              # 指定窗口内触发多少次后自动封禁
 window_s = 5
 block_duration_s = 300
 
-[waf]
-enabled = false
-# rules 支持 method/path_prefix/host/user_agent/body_prefix 匹配
-# action 支持 drop / log / challenge
-rules = [
-    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } },
-    { name = "challenge-secret", enabled = true, priority = 2, action = "challenge", match = { method = "GET", path_prefix = "/secret" } },
-]
-
-[challenge]
-enabled = true              # 需与 waf 的 challenge action 配合使用
-mode = "js"                 # js / 302（当前仅实现 js）
-ttl_s = 3600                # 验证通过后临时白名单有效期
-
 [geoip]
 enabled = false
 # db_path = "/usr/share/GeoIP/GeoLite2-Country.mmdb"   # MaxMind MMDB（预留）

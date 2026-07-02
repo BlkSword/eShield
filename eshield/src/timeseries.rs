@@ -19,9 +19,7 @@ pub struct MetricPoint {
     pub adaptive_blocked: u64,
     pub udp_flood_blocked: u64,
     pub icmp_flood_blocked: u64,
-    pub waf_blocked: u64,
     pub geoip_blocked: u64,
-    pub challenge_issued: u64,
     /// Derived: dropped packets per second since the previous point.
     pub dps: u64,
     /// Derived: passed packets per second since the previous point.
@@ -119,9 +117,7 @@ impl TimeSeriesWindow {
             adaptive_blocked: stats.adaptive_blocked.load(Ordering::Relaxed),
             udp_flood_blocked: stats.udp_flood_blocked.load(Ordering::Relaxed),
             icmp_flood_blocked: stats.icmp_flood_blocked.load(Ordering::Relaxed),
-            waf_blocked: stats.waf_blocked.load(Ordering::Relaxed),
             geoip_blocked: stats.geoip_blocked.load(Ordering::Relaxed),
-            challenge_issued: stats.challenge_issued.load(Ordering::Relaxed),
             dps,
             pps,
             top_attackers,
