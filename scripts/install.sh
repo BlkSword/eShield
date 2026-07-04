@@ -9,6 +9,7 @@ REPO="eshield/eshield"
 VERSION="${VERSION:-0.3.1}"
 INSTALL_BIN="/usr/local/bin/eshield"
 INSTALL_CFG="/etc/eshield/config.toml"
+STORE_PATH="/var/lib/eshield/rules.redb"
 
 ARCH=$(uname -m)
 case "$ARCH" in
@@ -57,13 +58,34 @@ else
 fi
 
 mkdir -p /etc/eshield
+mkdir -p "$(dirname "$STORE_PATH")"
+
 if [ ! -f "$INSTALL_CFG" ]; then
     cat > "$INSTALL_CFG" <<'EOF'
+# 要挂载 XDP 的网卡
 interface = "eth0"
+
 log_level = "info"
+log_json = false
+ebpf_log_enabled = false
+
+udp_flood_enabled = false
+icmp_flood_enabled = false
+tcp_reset_on_drop = false
+
+web_bind = "0.0.0.0:8443"
+# api_token = "changeme"
+
+store_path = "/var/lib/eshield/rules.redb"
+
+# 告警 Webhook（可选）
+# alert_webhook_url = "https://hooks.example.com/eshield"
+alert_webhook_type = "generic"
+alert_threshold_dps = 1000
+alert_cooldown_s = 60
+
 whitelist = ["127.0.0.1/32"]
 blacklist = []
-web_port = 8443
 
 [rate_limit]
 enabled = true
@@ -79,6 +101,21 @@ enabled = false
 [l7_scan]
 enabled = false
 patterns = []
+
+[adaptive]
+enabled = true
+threshold = 10
+window_s = 5
+block_duration_s = 300
+
+[geoip]
+enabled = false
+country_blocks_csv = "/etc/eshield/geoip_country.csv"
+block_countries = ["XX"]
+default_action = "pass"
+
+[threat_intel]
+enabled = false
 EOF
     echo "已创建默认配置文件: $INSTALL_CFG"
 fi
