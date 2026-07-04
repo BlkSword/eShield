@@ -90,7 +90,10 @@
       letter-spacing: -0.3px;
     }
     .brand .logo { width: 28px; height: 28px; }
-    .nav { flex: 1; padding: 12px 10px; overflow-y: auto; }
+    .nav { flex: 1; padding: 12px 10px; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
+    .nav::-webkit-scrollbar { display: none; }
+    .sidebar { scrollbar-width: none; -ms-overflow-style: none; }
+    .sidebar::-webkit-scrollbar { display: none; }
     .nav-group { margin-bottom: 18px; }
     .nav-label {
       padding: 6px 14px;
