@@ -19,11 +19,43 @@ if (-not $env:GH_TOKEN) {
 }
 
 $Token = $env:GH_TOKEN
+$Headers = @{ Authorization = "token $Token"; Accept = "application/vnd.github.v3+json" }
+
+function Invoke-GitHubApiJson {
+    param(
+        [string]$Uri,
+        [string]$Method = "GET",
+        [object]$Body = $null
+    )
+    $Params = @{
+        Uri = $Uri
+        Method = $Method
+        Headers = $Headers
+        ContentType = "application/json"
+        UseBasicParsing = $true
+    }
+    if ($Body) { $Params.Body = $Body }
+    try {
+        $resp = Invoke-WebRequest @Params
+        return @{ StatusCode = $resp.StatusCode; Content = $resp.Content }
+    } catch {
+        $err = $_
+        $status = 0
+        $msg = $err.Exception.Message
+        if ($err.Exception.Response) {
+            $status = [int]$err.Exception.Response.StatusCode
+            $stream = $err.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($stream)
+            $reader.BaseStream.Position = 0
+            $reader.DiscardBufferedData()
+            $msg = $reader.ReadToEnd()
+        }
+        return @{ StatusCode = $status; Content = $msg }
+    }
+}
 
 Write-Host "==> 检查 GitHub 上是否已存在 release $Tag"
-$Existing = Invoke-WebRequest -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" `
-    -Headers @{ Authorization = "token $Token" } `
-    -Method GET -UseBasicParsing -SkipHttpErrorCheck
+$Existing = Invoke-GitHubApiJson -Uri "https://api.github.com/repos/$Repo/releases/tags/$Tag" -Method GET
 if ($Existing.StatusCode -eq 200) {
     Write-Host "错误：GitHub 上已存在 $Tag release，请先删除或更换版本号" -ForegroundColor Red
     exit 1
@@ -45,24 +77,28 @@ foreach ($Line in $Lines) {
         $BodyLines += $Line
     }
 }
-$Body = ($BodyLines -join "`n").Replace('"', '\"')
+$Body = $BodyLines -join "`n"
 if ([string]::IsNullOrWhiteSpace($Body)) {
     Write-Host "警告：未从 CHANGELOG.md 提取到 $Tag 内容，使用默认说明"
     $Body = "eShield $Tag release."
 }
 
 Write-Host "==> 创建 GitHub Release $Tag"
-$ReleaseBody = @{
+$ReleaseData = @{
     tag_name = $Tag
     name = "eShield $Tag"
     body = $Body
     draft = $false
     prerelease = $false
-} | ConvertTo-Json
+}
+$ReleaseBody = $ReleaseData | ConvertTo-Json
 
-$Response = Invoke-WebRequest -Uri "https://api.github.com/repos/$Repo/releases" `
-    -Headers @{ Authorization = "token $Token"; Accept = "application/vnd.github.v3+json" } `
-    -Method POST -Body $ReleaseBody -ContentType "application/json" -UseBasicParsing
+$Response = Invoke-GitHubApiJson -Uri "https://api.github.com/repos/$Repo/releases" -Method POST -Body $ReleaseBody
+if ($Response.StatusCode -ne 201) {
+    Write-Host "创建 release 失败：" -ForegroundColor Red
+    Write-Host $Response.Content
+    exit 1
+}
 
 $Release = $Response.Content | ConvertFrom-Json
 $UploadUrl = $Release.upload_url -replace '\{\?name,label\}$', ''
@@ -71,10 +107,15 @@ Write-Host "==> 上传产物"
 Get-ChildItem -Path $AssetDir -File | ForEach-Object {
     $Name = $_.Name
     Write-Host "  上传 $Name ..."
-    Invoke-WebRequest -Uri "$UploadUrl?name=$Name" `
-        -Headers @{ Authorization = "token $Token"; "Content-Type" = "application/octet-stream" } `
-        -Method POST -InFile $_.FullName -UseBasicParsing | Out-Null
-    Write-Host "  ✓ $Name"
+    try {
+        Invoke-WebRequest -Uri "$UploadUrl?name=$Name" -Method POST `
+            -Headers $Headers -ContentType "application/octet-stream" `
+            -InFile $_.FullName -UseBasicParsing | Out-Null
+        Write-Host "  ✓ $Name" -ForegroundColor Green
+    } catch {
+        Write-Host "  ✗ $Name 上传失败" -ForegroundColor Red
+        Write-Host $_.Exception.Message
+    }
 }
 
 Write-Host ""
