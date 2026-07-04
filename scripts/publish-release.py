@@ -109,10 +109,10 @@ def upload_asset(token: str, upload_url: str, path: Path) -> bool:
     }
     status, resp = api_request(url, method="POST", data=data, headers=headers)
     if status != 201:
-        print(f"  ✗ {path.name} 上传失败 (HTTP {status})")
+        print(f"  [FAIL] {path.name} (HTTP {status})")
         print(resp.decode("utf-8", errors="replace"))
         return False
-    print(f"  ✓ {path.name}")
+    print(f"  [OK] {path.name}")
     return True
 
 
