@@ -6,7 +6,7 @@
 set -e
 
 REPO="eshield/eshield"
-VERSION="${VERSION:-0.3.0}"
+VERSION="${VERSION:-0.3.1}"
 INSTALL_BIN="/usr/local/bin/eshield"
 INSTALL_CFG="/etc/eshield/config.toml"
 
