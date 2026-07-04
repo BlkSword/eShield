@@ -1,70 +1,37 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+## 0.3.0 (2026-06-20)
 
-## [0.3.1] - Unreleased
+### 重大变更
 
-### Added
-- Modern brand-style JS Challenge page (`challenge.html`) with automatic IP display.
-- `tcp_reset_on_drop` runtime option and eBPF TCP RST reply for dropped TCP traffic.
-- Dashboard settings page now shows runtime status, alert webhook, and Challenge config.
-- Dashboard network protection page upgraded to grouped toggle switches with descriptions.
-- Runtime snapshot extended with interface, web bind, logging, alert, adaptive, and challenge metadata.
+- **移除 WAF 与 Challenge 模块**：项目重新聚焦网络层 DDoS 清洗，不再内置 HTTP WAF 与 JS Challenge 能力，以降低 eBPF verifier 压力和代码复杂度。
 
-### Changed
-- Dashboard switches replaced with a unified modern toggle component.
-- `AdaptiveConfig` now derives `Serialize` for runtime snapshot exposure.
+### 新增
 
-### Fixed
-- Test 1.5 (`tcp_reset_on_drop`) now works in veth netns by attaching a dummy XDP pass-through on the peer interface.
-- TCP RST checksum folding corrected to fold high 16 bits before ones-complement.
+- **TCP RST 回包**：丢弃 TCP 连接时可选立即回复 RST，避免客户端持续重传。
+- **RST 诊断计数器**：`tcp_rst_sent` / `tcp_rst_fail` / `tcp_rst_attempt` 统计并同步到 `/api/stats`。
+- **eBPF 全局统计同步**：`total_packets`、`total_dropped`、`total_passed` 以及各分类计数改由 eBPF Per-CPU `GLOBAL_STATS` 每秒同步到用户态，避免 Ring Buffer 事件丢失/重复导致的统计失真。
+- **Ring Buffer 防污染**：启动时 drain 残留事件，并基于 `CLOCK_MONOTONIC` 时间戳过滤 stale 事件。
+- **控制台侧边栏重组**：分为“统计 / 防护项目 / 防护策略 / 攻击日志 / 系统”五个分组。
+- **控制台动态卡片**：总览页指标数字增加计数动画、涨跌箭头、实时呼吸灯和 30 点 Sparkline 趋势图。
+- **认证与令牌管理**：CLI 支持 `reset-token`，控制台登录页支持防暴力破解。
+- **集成测试增强**：新增 `tests/full_attack_test.sh`，覆盖 UDP/ICMP/SYN Flood 完整攻防场景。
 
-## [0.3.0] - 2026-06-27
+### 改进
 
-### Added
-- In-memory time-series metrics window sampled every 10 seconds.
-- New API `GET /api/metrics/series?duration_s=` for traffic trend data.
-- Extended `/api/stats` with `total_packets`, `total_passed`, `current_pps`, `current_dps`.
-- Modern Web Dashboard v3:
-  - Sidebar navigation with hash routing.
-  - Dark / light theme toggle.
-  - Card-based metrics and ECharts traffic trend chart.
-  - IP intelligence drawer for TOP attackers.
-  - Toast notifications and responsive layout.
-- WAF rule editor in Dashboard: add, edit, delete, reorder rules.
-- Port / Protocol ACL editor in Dashboard with persistence.
-- L7 fingerprint editor in Dashboard with persistence.
-- RuleStore persistence extended to WAF rules, Port ACL, and L7 patterns.
-- REST APIs: `/api/waf/rules`, `/api/port-acl`, `/api/l7-patterns`.
+- 优化事件消费器 CPU 占用：批量消费 + 批间 sleep，避免饿死 Web/API。
+- 调整自适应引擎触发逻辑，仅在启用时处理事件并扩大消费批量。
+- 隐藏控制台侧边栏滚动条，保持可滚动但视觉更干净。
+- 同步重写中文/英文 README，移除 WAF/Challenge 描述，补充攻击者成本分析。
 
-### Changed
-- `RuntimeConfigSnapshot` now includes `port_acl` and `l7_scan` for the Dashboard.
-- ROADMAP.md updated to reflect v0.2.0 completion and v0.3.0 plan.
+### 修复
 
-### Fixed
-- Cleaned up all compiler warnings in both eBPF and userspace code.
+- 修复 Port ACL dport 字节序读取问题。
+- 修复 WAF DROP 路径未回 RST 的问题（后续随 WAF 整体移除）。
+- 修复 `GLOBAL_STATS` 从 PerCpuArray 用户态读取丢失 CPU 值的问题。
 
-## [0.2.0] - 2026-06-27
+---
 
-### Added
-- Stateful SYN Proxy with SYN Cookie and TCP MSS option negotiation.
-- HTTP WAF rule engine (method / path_prefix / host / user_agent / body_prefix matching).
-- JS/302 Challenge mode with temporary allowlist.
-- GeoIP / ASN CIDR filtering (custom CSV and MaxMind MMDB).
-- Threat intelligence feed sync (text / CSV / JSON, AbuseIPDB / CINS / custom URLs).
-- Extended Web API and Dashboard for WAF, GeoIP, threat intel, and challenge.
-- Integration tests for WAF, Challenge, GeoIP, and threat intel.
+## 0.2.0
 
-### Changed
-- Rule persistence migrated from SQLite to redb.
-- Persisted store skips historical `BLACKLIST` entries on load to avoid stale dynamic blocks overriding config changes.
-
-## [0.1.2] - Earlier
-
-### Added
-- IPv6 full path support.
-- Port / protocol ACL.
-- UDP / ICMP flood detection.
-- API authentication, audit logging, and rule persistence.
-- Web Dashboard v2, TUI dashboard, Prometheus metrics.
-- SIGHUP config reload and systemd packaging.
+- 初始完整功能版本：eBPF/XDP 数据面、Rust 控制面、Dashboard、CLI、TUI、审计日志、GeoIP、威胁情报、自适应阈值、防护项目分组等。
