@@ -1,6 +1,6 @@
 # eShield
 
-A host-level CC / L3-L4 network defense shield powered by **eBPF/XDP**.
+A host-level L3-L4 network scrubbing shield powered by **eBPF/XDP**, focused on defending against SYN/UDP/ICMP Flood, CC, and network-layer scanning attacks.
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [中文 README](README.md)
@@ -10,7 +10,7 @@ A host-level CC / L3-L4 network defense shield powered by **eBPF/XDP**.
 ## Table of Contents
 
 - [Introduction](#introduction)
-- [Performance & Capabilities](#performance--capabilities)
+- [Core Capabilities](#core-capabilities)
   - [Performance](#performance)
   - [Attacker Resource Cost](#attacker-resource-cost)
 - [Core Features](#core-features)
@@ -31,11 +31,11 @@ A host-level CC / L3-L4 network defense shield powered by **eBPF/XDP**.
 
 eShield runs a Rust/Aya eBPF program on the Linux XDP hook to drop malicious traffic before it enters the kernel networking stack. The userspace control plane is built with Rust, Tokio, and axum, providing a Web Dashboard, REST API, CLI, TUI, audit log, persistence, and alerting.
 
-Compared with traditional solutions such as iptables/nftables, eShield makes filtering decisions at the NIC driver layer, delivering lower latency, higher packet-processing throughput, and more accurate detection of CC / slow-connection-exhaustion attacks.
+Compared with traditional solutions such as iptables/nftables, eShield makes filtering decisions at the NIC driver layer, delivering lower latency, higher packet-processing throughput, and stronger mitigation of SYN/UDP/ICMP Flood and CC attacks.
 
 ---
 
-## Performance & Capabilities
+## Core Capabilities
 
 ### Performance
 
@@ -53,8 +53,8 @@ Because eShield intercepts traffic at the earliest possible point, attackers mus
 
 - **Real bandwidth**: Every dropped packet consumes actual egress bandwidth from the attacker. Rate limiting and blacklisting drop packets instantly, so they never consume backend bandwidth.
 - **Real source IPs**: Blacklists, GeoIP, threat intelligence, and the adaptive threshold engine all accumulate per source IP. Attackers need a large, distributed, and rotatable pool of real IPv4/IPv6 addresses to sustain an attack.
-- **Full protocol-stack interaction**: The SYN Cookie proxy forces every spoofed source to complete a full three-way handshake. The JS Challenge requires a browser to execute JavaScript and return the correct answer. WAF rules only allow traffic that matches legitimate request signatures. Bypassing these mechanisms requires a real TCP/IP stack, a browser environment, or significant compute resources.
-- **Continuous effort and compute**: The adaptive engine automatically escalates block duration for repeat offenders. Attackers must constantly vary signatures, IP ranges, and attack patterns, which is far more expensive than the defense-side cost.
+- **Full protocol-stack interaction**: The SYN Cookie proxy forces every spoofed source to complete a full three-way handshake. Bypassing these mechanisms requires a real TCP/IP stack and compute resources.
+- **Continuous effort and compute**: The adaptive engine automatically escalates block duration for repeat offenders. Attackers must constantly vary signatures, IP ranges, and attack patterns.
 
 In short, eShield tilts the offense/defense cost ratio in favor of the defender: a single eBPF map lookup on the defense side can neutralize a complete network packet, a real source address, and a protocol interaction on the attacker side.
 
@@ -71,11 +71,10 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | UDP / ICMP flood protection | Per-IP rate suppression for UDP and ICMP/ICMPv6 floods. |
 | Protocol/port ACLs | Supports `tcp`/`udp`/`icmp`/`icmpv6`/`any`, ports, ranges, or `any`, with `allow`/`drop` actions. |
 | SYN Cookie proxy | SYN Cookie proxy for IPv4 TCP SYN flood mitigation; legitimate ACKs are allowed after validation. |
-| HTTP WAF rule engine | Inspects the first TCP packet, matching method, path_prefix, host, user_agent, and body_prefix. |
-| JS Challenge | WAF `challenge` action intercepts requests and temporarily allowlists clients that pass `/challenge`. |
+| TCP RST on drop | Immediately reply RST for dropped TCP connections to prevent retransmissions. |
 | GeoIP / ASN filtering | Allow or block by country or ASN via custom CSV CIDR lists. |
 | Threat intel integration | Periodic synchronization of custom URL feeds to automatically block known malicious IPs. |
-| Lightweight L7 fingerprint scan | Inspects the first 64 bytes of TCP payload and drops on pattern match. |
+| Lightweight L7 fingerprint scan | Inspect the first bytes of TCP payload and drop on pattern match. |
 | Adaptive threshold engine | Escalates repeat offenders to longer block durations automatically. |
 | Protection projects | Group policies by protocol + port + target IP; persisted in the control plane and managed via Dashboard/API. |
 | Runtime control | REST API + Web Dashboard + CLI + TUI for real-time toggles and tuning. |
@@ -103,7 +102,7 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 ┌──────────────────────────────▼──────────────────────────────┐
 │ Data Plane — eBPF/XDP kernel-space                          │
 │ Parse → Whitelist → Port ACL → GeoIP → SYN Proxy → UDP/ICMP │
-│ Flood → L7 Scan → WAF → Rate Limit → Blacklist → Decision   │
+│ Flood → L7 Scan → Rate Limit → Blacklist → Decision         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,18 +123,6 @@ See [docs/architecture.md](docs/architecture.md) for detailed design.
 - LLVM / clang (required by Aya for compiling eBPF)
 
 > **Windows developers**: The Aya userspace code relies on Linux-specific APIs, so you **cannot build or run eShield directly on Windows**. Use WSL2, a VM, or a Linux cloud host.
-
-### One-line install
-
-```bash
-curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo bash
-```
-
-Pin a version:
-
-```bash
-VERSION=0.2.0 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.2.0 bash
-```
 
 ### Build from source
 
@@ -258,19 +245,6 @@ threshold = 10              # Hits in window
 window_s = 5
 block_duration_s = 300
 
-[waf]
-enabled = false
-# action: drop / log / challenge
-rules = [
-    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } },
-    { name = "challenge-secret", enabled = true, priority = 2, action = "challenge", match = { method = "GET", path_prefix = "/secret" } },
-]
-
-[challenge]
-enabled = true              # Must be used together with waf challenge action
-mode = "js"                 # js / 302 (only js is implemented currently)
-ttl_s = 3600                # Temporary allowlist TTL
-
 [geoip]
 enabled = false
 country_blocks_csv = "/etc/eshield/geoip_country.csv"
@@ -303,7 +277,7 @@ enabled = false
 # protocol = "tcp"
 # dport = "80"
 # target_ips = ["10.0.0.10"]
-# enabled_modules = ["rate_limit", "waf", "challenge"]
+# enabled_modules = ["rate_limit"]
 # action = "defend"   # pass / drop / defend
 ```
 
@@ -337,7 +311,7 @@ The Dashboard shows real-time packet statistics, defense-module hits, top attack
 - Allowing / removing IPv4/IPv6 CIDR
 - Enabling/disabling modules and tuning rate-limit parameters
 - Toggling eBPF debug logging and TCP RST replies
-- Managing WAF rules, port ACLs, L7 patterns, GeoIP, and threat-intel feeds
+- Managing port ACLs, L7 patterns, GeoIP, and threat-intel feeds
 - Managing protection-project groups
 - Entering the API token (when authentication is enabled)
 - One-click config reload
@@ -359,9 +333,7 @@ Key metrics exposed:
 - `eshield_adaptive_blocked_total`
 - `eshield_udp_flood_blocked_total`
 - `eshield_icmp_flood_blocked_total`
-- `eshield_waf_blocked_total`
 - `eshield_geoip_blocked_total`
-- `eshield_challenge_issued_total`
 - `eshield_dropped_by_protocol_total{protocol="tcp|udp|icmp|other"}`
 - `eshield_dropped_by_port_total{port="..."}`
 - `eshield_source_dropped_total{ip="..."}`
@@ -397,9 +369,7 @@ Displays total drops, rule hits, and top attackers; press `q` to quit.
 | `/healthz` | GET | Health check |
 | `/ready` | GET | Readiness check |
 | `/login` | GET | Console login page |
-| `/challenge` | GET | JS challenge page |
 | `/blocked` | GET | 403 block example page |
-| `/api/challenge/pass` | POST | Submit challenge answer |
 | `/api/auth/login` | POST | Console login verification |
 | `/api/auth/check` | GET | Login status check |
 | `/api/auth/reset-token` | POST | Reset access token (external requests require auth; local CLI can call directly) |
@@ -414,8 +384,6 @@ Displays total drops, rule hits, and top attackers; press `q` to quit.
 | `/api/audit/stream` | GET | Audit log SSE |
 | `/api/metrics/series` | GET | Time-series metrics |
 | `/api/metrics/attacker-series` | GET | Per-IP time series |
-| `/api/waf/rules` | GET, POST | WAF rules CRUD |
-| `/api/waf/rules/reorder` | POST | Reorder WAF rules |
 | `/api/port-acl` | GET, POST | Port ACL |
 | `/api/protection-projects` | GET, POST | Protection projects |
 | `/api/l7-patterns` | GET, POST | L7 patterns |
@@ -441,9 +409,10 @@ Requires root. Creates a veth pair in a network namespace and runs multiple scen
 
 ```bash
 sudo bash ./tests/netns_test.sh
+sudo bash ./tests/full_attack_test.sh
 ```
 
-Covers: blacklist, TCP RST on drop, rate limiting, SYN flood, L7 fingerprint, HTTP WAF, JS challenge, service-stop restoration, SIGHUP reload, adaptive threshold, GeoIP/ASN, and threat intel.
+Covers: blacklist, TCP RST on drop, rate limiting, SYN flood, UDP flood, ICMP flood, L7 fingerprint, service-stop restoration, SIGHUP reload, adaptive threshold, GeoIP/ASN, and threat intel.
 
 ### Benchmarks
 
@@ -472,7 +441,6 @@ See [docs/benchmark.md](docs/benchmark.md) for details.
 │   ├── src/web.rs      # REST API + Web Dashboard
 │   ├── src/dashboard.html
 │   ├── src/login.html
-│   ├── src/challenge.html
 │   ├── src/blocked.html
 │   ├── src/tui.rs      # TUI dashboard
 │   ├── src/config.rs   # Config model and validation
@@ -498,10 +466,10 @@ See [docs/benchmark.md](docs/benchmark.md) for details.
 
 ## Positioning & Limitations
 
-- **Host-level CC defense shield**: Targets CC / slow attacks that exhaust CPU or connections rather than raw bandwidth.
+- **Host-level network scrubbing shield**: Targets SYN/UDP/ICMP Flood and CC attacks that exhaust connections or packet processing rather than raw bandwidth.
 - **Not a DDoS silver bullet**: Terabit-scale bandwidth floods require upstream cloud mitigation; eShield cannot exceed physical network limits.
 - **SYN Cookie proxy**: Currently IPv4 TCP only; all SYNs are challenged when enabled.
-- **WAF & L7 scan**: Inspect only the first TCP packet; TCP reassembly is not supported.
+- **L7 scan**: Inspect only the first TCP packet; TCP reassembly is not supported.
 - **Windows**: Cannot build or run directly; use a Linux environment.
 - **Protection projects**: Currently a control-plane policy grouping; per-packet enforcement in eBPF is not yet enabled.
 

@@ -1,6 +1,6 @@
 # eShield
 
-基于 **eBPF/XDP** 的主机级 CC / L3-L4 网络防御盾。
+基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、扫段等网络层攻击。
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [English README](README_EN.md)
@@ -10,9 +10,9 @@
 ## 目录
 
 - [项目简介](#项目简介)
-- [性能与能力优势](#性能与能力优势)
+- [核心能力](#核心能力)
   - [性能](#性能)
-  - [攻击者需要耗费的资源](#攻击者需要耗费的资源)
+  - [攻击者成本](#攻击者成本)
 - [核心特性](#核心特性)
 - [架构概览](#架构概览)
 - [快速开始](#快速开始)
@@ -29,32 +29,32 @@
 
 ## 项目简介
 
-eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF 程序，将恶意流量在进入内核网络协议栈之前拦截。控制面使用 Rust + Tokio + axum 提供 Web Dashboard、REST API、CLI、TUI、审计日志、持久化与告警能力。
+eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF 程序，将恶意流量在进入内核网络协议栈之前拦截。控制面使用 Rust + Tokio + axum 提供中文 Web Dashboard、REST API、CLI、TUI、审计日志、持久化与告警能力。
 
-与 iptables/nftables 等传统方案相比，eShield 的决策点位于网卡驱动层，具备更低的延迟、更高的包处理吞吐，以及对 CC / 慢速连接耗尽型攻击更精准的识别能力。
+与传统 iptables/nftables 相比，eShield 的决策点位于网卡驱动层，具备更低的延迟、更高的包处理吞吐，以及对 SYN Flood / UDP Flood / ICMP Flood 等网络层攻击更强的压制能力。
 
 ---
 
-## 性能与能力优势
+## 核心能力
 
 ### 性能
 
 - **内核态包处理**：过滤逻辑直接在 eBPF/XDP 中运行，不经过用户态网络栈，无上下文切换、无数据拷贝。
-- **微秒级延迟**：对正常流量仅增加一次 eBPF Map 查表和规则匹配开销，典型延迟增加小于 1 µs。
-- **高吞吐**：在 veth 单核测试环境中，XDP PASS 路径可达约 **24 万 pps**，DROP 路径因提前丢弃、避免协议栈处理而接近甚至低于基线；物理网卡配合多队列/RSS 可扩展至数百万 pps。
-- **低开销**：eBPF 程序为 JIT 编译成本地机器码，CPU 占用随流量线性增长但斜率极低；命中黑名单/ACL 的包可被硬件级早 drop。
+- **微秒级延迟**：正常流量仅增加一次 eBPF Map 查表和规则匹配开销，典型延迟增加小于 1 µs。
+- **高吞吐**：在普通 VM + veth 单核测试环境中，XDP PASS 路径可达约 **24 万 pps**，DROP 路径因提前丢弃而接近甚至优于基线；物理网卡配合多队列/RSS 可扩展至数百万 pps。
+- **低开销**：eBPF 程序 JIT 编译为本地机器码，CPU 占用随流量线性增长但斜率极低；命中黑名单/ACL 的包被硬件级早 drop。
 - **单二进制静态链接**：musl 静态编译，仅需一个 `eshield` 可执行文件，无额外运行时依赖。
 
 > 详细基准测试方法见 [docs/benchmark.md](docs/benchmark.md)。
 
-### 攻击者需要耗费的资源
+### 攻击者成本
 
-由于 eShield 在流量最早期进行拦截，攻击方要产生有效压力必须付出真实成本：
+由于 eShield 在流量最早期拦截，攻击方要产生有效压力必须付出真实成本：
 
 - **真实带宽**：每一个被丢弃的包都会实际占用攻击者的出口带宽；速率限制和黑名单会在命中瞬间丢弃，不会消耗防御方后端带宽。
 - **真实源 IP**：黑名单、GeoIP、威胁情报、自适应阈值均基于源 IP 累计。攻击者需要大量分布式、可轮换的真实 IPv4/IPv6 地址才能维持攻击。
-- **协议栈完整交互**：SYN Cookie 代理要求每个伪造源都必须完成完整的三次握手；JS Challenge 要求浏览器执行 JavaScript 并携带正确答案；WAF 规则会放行仅匹配合法请求特征的流量。绕过这些机制需要真实的 TCP/IP 协议栈、浏览器环境或足够的计算资源。
-- **持续人力与计算**：自适应引擎会自动对重复触发规则的源提升封禁时长，攻击者必须不断变换特征、IP 段和攻击模式，维护成本显著高于防御方。
+- **完整协议交互**：SYN Cookie 代理要求每个伪造源都必须完成完整的三次握手；绕过这些机制需要真实的 TCP/IP 协议栈和计算资源。
+- **持续人力与计算**：自适应引擎会自动对重复触发规则的源提升封禁时长，攻击者必须不断变换特征、IP 段和攻击模式。
 
 简言之，eShield 将“攻防成本比”向防御方倾斜：防御方的一次 map 查表，可抵消攻击方的一个完整网络包、一个真实源地址以及一次协议交互。
 
@@ -71,11 +71,10 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | UDP / ICMP Flood 防护 | 对无连接流量做 per-IP 速率抑制。 |
 | 端口/协议 ACL | 支持 `tcp`/`udp`/`icmp`/`icmpv6`/`any`，端口、范围或 `any`，动作 `allow`/`drop`。 |
 | SYN Cookie 代理 | IPv4 TCP SYN Flood 场景下回复 SYN-ACK Cookie，合法 ACK 验证后放行。 |
-| HTTP WAF 规则引擎 | 解析 TCP 首包，支持 method / path_prefix / host / user_agent / body_prefix 匹配。 |
-| JS Challenge | WAF `challenge` 动作拦截请求，完成 `/challenge` 验证后加入临时白名单。 |
+| TCP RST 回包 | 对丢弃的 TCP 连接立即回复 RST，避免客户端重传堆积。 |
 | GeoIP / ASN 过滤 | 基于自定义 CSV CIDR 列表按国家或 ASN 放行/封禁。 |
 | 威胁情报联动 | 定时同步自定义 URL feed，自动拦截已知恶意 IP。 |
-| L7 轻量指纹扫描 | 检查 TCP 载荷前 64 字节，匹配特征即 DROP。 |
+| L7 轻量指纹扫描 | 检查 TCP 载荷前若干字节，匹配特征即 DROP。 |
 | 自适应阈值引擎 | 重复触发规则的 IP 自动提升为更长时间封禁。 |
 | 防护项目分组 | 按协议 + 端口 + 目标 IP 分组配置策略，控制面持久化并通过 Dashboard/API 管理。 |
 | 运行时控制 | REST API + 中文 Web Dashboard + CLI + TUI，实时开关与调参。 |
@@ -103,7 +102,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 ┌──────────────────────────────▼──────────────────────────────┐
 │ 数据面 — eBPF/XDP 内核态                                     │
 │ 包解析 → 白名单 → 端口 ACL → GeoIP → SYN Proxy → UDP/ICMP   │
-│ Flood → L7 扫描 → WAF → 速率限制 → 黑名单 → 决策             │
+│ Flood → L7 扫描 → 速率限制 → 黑名单 → 决策                   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -124,18 +123,6 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 - LLVM / clang（Aya 编译 eBPF 需要）
 
 > **Windows 开发者注意**：Aya 用户态库依赖 Linux 特有 API，因此**无法在 Windows 上直接编译或运行**。请在 WSL2 / 虚拟机 / 云主机上进行构建和测试。
-
-### 一键安装
-
-```bash
-curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo bash
-```
-
-指定版本：
-
-```bash
-VERSION=0.2.0 curl -sSL https://raw.githubusercontent.com/eshield/eshield/main/scripts/install.sh | sudo VERSION=0.2.0 bash
-```
 
 ### 从源码构建
 
@@ -258,19 +245,6 @@ threshold = 10              # 窗口内触发次数
 window_s = 5
 block_duration_s = 300
 
-[waf]
-enabled = false
-# action: drop / log / challenge
-rules = [
-    { name = "block-admin", enabled = true, priority = 1, action = "drop", match = { method = "GET", path_prefix = "/admin" } },
-    { name = "challenge-secret", enabled = true, priority = 2, action = "challenge", match = { method = "GET", path_prefix = "/secret" } },
-]
-
-[challenge]
-enabled = true              # 需与 waf challenge action 配合
-mode = "js"                 # js / 302（当前仅实现 js）
-ttl_s = 3600                # 临时白名单有效期
-
 [geoip]
 enabled = false
 country_blocks_csv = "/etc/eshield/geoip_country.csv"
@@ -303,7 +277,7 @@ enabled = false
 # protocol = "tcp"
 # dport = "80"
 # target_ips = ["10.0.0.10"]
-# enabled_modules = ["rate_limit", "waf", "challenge"]
+# enabled_modules = ["rate_limit"]
 # action = "defend"   # pass / drop / defend
 ```
 
@@ -337,7 +311,7 @@ http://<host>:8443/
 - 放行 / 移除 IPv4/IPv6 CIDR
 - 启用/禁用各防御模块、调整速率限制参数
 - 实时开关 eBPF 调试日志、TCP RST 回包
-- 管理 WAF 规则、端口 ACL、L7 指纹、GeoIP、威胁情报 feed
+- 管理端口 ACL、L7 指纹、GeoIP、威胁情报 feed
 - 管理防护项目分组
 - 输入 API Token（启用认证时）
 - 一键重载配置文件
@@ -359,9 +333,7 @@ http://<host>:8443/metrics
 - `eshield_adaptive_blocked_total`
 - `eshield_udp_flood_blocked_total`
 - `eshield_icmp_flood_blocked_total`
-- `eshield_waf_blocked_total`
 - `eshield_geoip_blocked_total`
-- `eshield_challenge_issued_total`
 - `eshield_dropped_by_protocol_total{protocol="tcp|udp|icmp|other"}`
 - `eshield_dropped_by_port_total{port="..."}`
 - `eshield_source_dropped_total{ip="..."}`
@@ -397,9 +369,7 @@ eshield tui
 | `/healthz` | GET | 健康检查 |
 | `/ready` | GET | 就绪检查 |
 | `/login` | GET | 控制台登录页 |
-| `/challenge` | GET | JS Challenge 页面 |
 | `/blocked` | GET | 403 封禁示例页 |
-| `/api/challenge/pass` | POST | 提交 challenge 答案 |
 | `/api/auth/login` | POST | 控制台登录验证 |
 | `/api/auth/check` | GET | 登录状态检查 |
 | `/api/auth/reset-token` | POST | 重置访问令牌（外部需认证，本机 CLI 可直接调用） |
@@ -414,8 +384,6 @@ eshield tui
 | `/api/audit/stream` | GET | 审计日志 SSE |
 | `/api/metrics/series` | GET | 时序指标 |
 | `/api/metrics/attacker-series` | GET | 单 IP 时序 |
-| `/api/waf/rules` | GET, POST | WAF 规则 CRUD |
-| `/api/waf/rules/reorder` | POST | WAF 规则排序 |
 | `/api/port-acl` | GET, POST | 端口 ACL |
 | `/api/protection-projects` | GET, POST | 防护项目 |
 | `/api/l7-patterns` | GET, POST | L7 指纹 |
@@ -441,9 +409,10 @@ cargo test --workspace --exclude eshield-ebpf
 
 ```bash
 sudo bash ./tests/netns_test.sh
+sudo bash ./tests/full_attack_test.sh
 ```
 
-覆盖：黑名单、TCP RST 回包、速率限制、SYN Flood、L7 指纹、HTTP WAF、JS Challenge、服务停止后恢复、SIGHUP 热加载、自适应阈值、GeoIP/ASN、威胁情报。
+覆盖：黑名单、TCP RST 回包、速率限制、SYN Flood、UDP Flood、ICMP Flood、L7 指纹、服务停止后恢复、SIGHUP 热加载、自适应阈值、GeoIP/ASN、威胁情报。
 
 ### 基准测试
 
@@ -472,7 +441,6 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 │   ├── src/web.rs      # REST API + Web Dashboard
 │   ├── src/dashboard.html
 │   ├── src/login.html
-│   ├── src/challenge.html
 │   ├── src/blocked.html
 │   ├── src/tui.rs      # TUI 仪表盘
 │   ├── src/config.rs   # 配置模型与校验
@@ -498,10 +466,10 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 
 ## 定位与限制
 
-- **主机级 CC 防御盾**：面向“带宽没满、但 CPU/连接数被耗尽”的 CC / 慢速攻击场景。
+- **主机级网络清洗盾**：面向“带宽没满、但连接/包处理被耗尽”的 SYN/UDP/ICMP Flood 与 CC 场景。
 - **不是 DDoS 银弹**：T 级带宽耗尽型攻击需要云厂商黑洞/清洗，eShield 无法突破物理网络天花板。
 - **SYN Cookie 代理**：当前仅支持 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战。
-- **WAF 与 L7 扫描**：仅检查 TCP 首包，适合首包即携带完整请求头的场景；不支持 TCP 分段重组。
+- **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组。
 - **Windows**：无法直接编译或运行，请使用 Linux 环境。
 - **防护项目**：当前为控制面配置分组，尚未在 eBPF 数据面按项目逐包匹配。
 
