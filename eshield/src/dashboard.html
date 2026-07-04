@@ -220,6 +220,29 @@
     .metric-value { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; line-height: 1; }
     .metric-change { font-size: 12px; color: var(--text-tertiary); margin-top: 8px; font-weight: 500; }
     .metric-spark { height: 34px; margin-top: 14px; }
+    .metric-spark svg { width: 100%; height: 100%; overflow: visible; }
+    .metric-spark path { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+    .metric-spark area { fill-opacity: 0.15; }
+    .metric-change { font-size: 12px; color: var(--text-tertiary); margin-top: 8px; font-weight: 500; display: flex; align-items: center; gap: 4px; }
+    .metric-change.up { color: var(--danger); }
+    .metric-change.down { color: var(--success); }
+    .metric-value { font-size: 28px; font-weight: 700; letter-spacing: -0.5px; line-height: 1; transition: color 0.2s; }
+    .metric-value.pulse { animation: metricPulse 0.4s ease-out; }
+    @keyframes metricPulse {
+      0% { transform: scale(1); color: var(--text); }
+      50% { transform: scale(1.05); color: var(--primary); }
+      100% { transform: scale(1); color: var(--text); }
+    }
+    .live-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--success);
+      box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4);
+      animation: livePulse 1.5s infinite;
+    }
+    @keyframes livePulse {
+      0% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0.4); }
+      70% { box-shadow: 0 0 0 6px rgba(22, 163, 74, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, 0); }
+    }
     .layout-split { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 24px; }
     @media (max-width: 1100px) { .layout-split { grid-template-columns: 1fr; } }
     .chart-container { height: 300px; }
@@ -778,6 +801,8 @@
     let currentConfig = {};
     let trafficChart = null;
     let auditEntries = [];
+    const metricHistory = {};
+    const SPARK_LENGTH = 30;
 
     function icon(name) { return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${name}</svg>`; }
 
@@ -862,10 +887,11 @@
       return text ? JSON.parse(text) : {};
     }
 
-    function metricCard(label, valueId, iconSvg, iconClass) {
+    function metricCard(label, valueId, iconSvg, iconClass, isLive) {
+      const live = isLive ? '<span class="live-dot" title="实时指标"></span>' : '';
       return `<div class="card metric-card">
         <div class="metric-top">
-          <div class="metric-label">${label}</div>
+          <div class="metric-label">${label} ${live}</div>
           <div class="metric-icon ${iconClass}">${iconSvg}</div>
         </div>
         <div class="metric-value" id="${valueId}">-</div>
@@ -876,31 +902,92 @@
     function renderOverviewCards() {
       const c = document.getElementById('overview-cards');
       c.innerHTML =
-        metricCard('总丢弃包数', 'card-dropped', icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), 'red') +
-        metricCard('当前 DPS', 'card-dps', icon('<path d="M10 13l5 5 9-9"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'), 'red') +
-        metricCard('当前 PPS', 'card-pps', icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), 'green') +
-        metricCard('速率限制拦截', 'card-rate', icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), 'yellow') +
-        metricCard('SYN Flood 拦截', 'card-syn', icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), 'blue') +
-        metricCard('GeoIP 拦截', 'card-geoip', icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), 'blue') +
-        metricCard('黑名单拦截', 'card-blacklist', icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), 'red');
+        metricCard('总丢弃包数', 'card-dropped', icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), 'red', false) +
+        metricCard('当前 DPS', 'card-dps', icon('<path d="M10 13l5 5 9-9"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>'), 'red', true) +
+        metricCard('当前 PPS', 'card-pps', icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), 'green', true) +
+        metricCard('速率限制拦截', 'card-rate', icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), 'yellow', false) +
+        metricCard('SYN Flood 拦截', 'card-syn', icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), 'blue', false) +
+        metricCard('GeoIP 拦截', 'card-geoip', icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), 'blue', false) +
+        metricCard('黑名单拦截', 'card-blacklist', icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), 'red', false);
     }
-    function setCard(id, value, delta) {
-      document.getElementById(id).textContent = Number(value).toLocaleString();
+    function animateValue(el, from, to, duration) {
+      if (from === null || from === undefined || from === to) {
+        el.textContent = Number(to).toLocaleString();
+        return;
+      }
+      const start = performance.now();
+      function step(now) {
+        const p = Math.min((now - start) / duration, 1);
+        const v = Math.round(from + (to - from) * p);
+        el.textContent = v.toLocaleString();
+        if (p < 1) requestAnimationFrame(step);
+      }
+      requestAnimationFrame(step);
+    }
+    function renderSparkline(id, values, color) {
+      const wrap = document.getElementById(id + '-spark');
+      if (!wrap || values.length < 2) return;
+      const min = Math.min(...values), max = Math.max(...values);
+      const range = max - min || 1;
+      const w = 100, h = 34;
+      const points = values.map((v, i) => {
+        const x = (i / (values.length - 1)) * w;
+        const y = h - ((v - min) / range) * (h - 4) - 2;
+        return `${x},${y}`;
+      }).join(' ');
+      const area = `${points} 100,${h} 0,${h}`;
+      wrap.innerHTML = `<svg viewBox="0 0 100 34" preserveAspectRatio="none">
+        <polygon points="${area}" fill="${color}" class="spark-area" />
+        <polyline points="${points}" stroke="${color}" />
+      </svg>`;
+    }
+    function setCard(id, value, unit, isRate) {
+      const el = document.getElementById(id);
+      const prev = el ? parseInt(el.getAttribute('data-raw') || '0', 10) : 0;
+      const curr = Number(value) || 0;
+      if (el) {
+        el.setAttribute('data-raw', curr);
+        animateValue(el, prev, curr, 600);
+        el.classList.remove('pulse');
+        void el.offsetWidth;
+        if (prev !== curr) el.classList.add('pulse');
+      }
       const d = document.getElementById(id + '-delta');
-      if (d) d.textContent = delta || '';
+      if (d) {
+        const delta = curr - prev;
+        if (prev === 0 && delta === 0) {
+          d.textContent = unit;
+        } else if (delta === 0) {
+          d.textContent = `持平 · ${unit}`;
+        } else {
+          const sign = delta > 0 ? '↑' : '↓';
+          const abs = Math.abs(delta).toLocaleString();
+          const suffix = isRate ? '/s' : '';
+          d.textContent = `${sign} ${abs}${suffix} · ${unit}`;
+          d.className = 'metric-change ' + (delta > 0 ? 'up' : 'down');
+        }
+      }
+      if (!metricHistory[id]) metricHistory[id] = [];
+      metricHistory[id].push(curr);
+      if (metricHistory[id].length > SPARK_LENGTH) metricHistory[id].shift();
+      const colors = {
+        'card-dropped': '#dc2626', 'card-dps': '#dc2626', 'card-pps': '#16a34a',
+        'card-rate': '#d97706', 'card-syn': '#2563eb', 'card-geoip': '#2563eb', 'card-blacklist': '#dc2626'
+      };
+      renderSparkline(id, metricHistory[id], colors[id] || '#2563eb');
     }
 
     async function refreshStats() {
       try {
         const d = await apiJson('GET', '/api/stats');
         currentStats = d;
-        setCard('card-dropped', d.total_dropped, '累计丢弃');
-        setCard('card-dps', d.current_dps, '每秒');
-        setCard('card-pps', d.current_pps, '每秒');
-        setCard('card-rate', d.rate_limited, '累计');
-        setCard('card-syn', d.syn_flood_blocked, '累计');
-        setCard('card-geoip', d.geoip_blocked, '累计');
-        setCard('card-blacklist', d.blacklist_blocked, '累计');
+        setCard('card-dropped', d.total_dropped, '累计丢弃', false);
+        setCard('card-dps', d.current_dps, '每秒', true);
+        setCard('card-pps', d.current_pps, '每秒', true);
+        setCard('card-rate', d.rate_limited, '累计', false);
+        setCard('card-syn', d.syn_flood_blocked, '累计', false);
+        setCard('card-geoip', d.geoip_blocked, '累计', false);
+        setCard('card-blacklist', d.blacklist_blocked, '累计', false);
         const tbody = document.getElementById('attackers-body');
         tbody.innerHTML = '';
         if (!d.top_attackers || d.top_attackers.length === 0) tbody.innerHTML = '<tr><td colspan="3" class="empty">暂无数据</td></tr>';
