@@ -1,9 +1,10 @@
 # eShield
 
-基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、扫段等网络层攻击。
+[English](README_EN.md) | 中文
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[English README](README_EN.md)
+
+基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、扫段等网络层攻击。
 
 ---
 
@@ -16,13 +17,19 @@
 - [核心特性](#核心特性)
 - [架构概览](#架构概览)
 - [快速开始](#快速开始)
+  - [环境要求](#环境要求)
+  - [构建与安装](#构建与安装)
+  - [服务管理](#服务管理)
 - [配置与使用](#配置与使用)
+  - [CLI 子命令](#cli-子命令)
+  - [认证说明](#认证说明)
+  - [配置文件](#配置文件)
+  - [热加载](#热加载)
 - [观测面](#观测面)
-- [API 概览](#api-概览)
+- [API 与文档](#api-与文档)
 - [测试](#测试)
 - [项目结构](#项目结构)
 - [定位与限制](#定位与限制)
-- [文档](#文档)
 - [License](#license)
 
 ---
@@ -41,8 +48,8 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 
 - **内核态包处理**：过滤逻辑直接在 eBPF/XDP 中运行，不经过用户态网络栈，无上下文切换、无数据拷贝。
 - **微秒级延迟**：正常流量仅增加一次 eBPF Map 查表和规则匹配开销，典型延迟增加小于 1 µs。
-- **高吞吐**：在普通 VM + veth 单核测试环境中，XDP PASS 路径可达约 **24 万 pps**，DROP 路径因提前丢弃而接近甚至优于基线；物理网卡配合多队列/RSS 可扩展至数百万 pps。
-- **低开销**：eBPF 程序 JIT 编译为本地机器码，CPU 占用随流量线性增长但斜率极低；命中黑名单/ACL 的包被硬件级早 drop。
+- **高吞吐**：在普通 VM + veth 单核测试环境中，XDP PASS 路径可达约 **24 万 pps**；物理网卡配合多队列/RSS 可扩展至数百万 pps。
+- **低开销**：eBPF 程序 JIT 编译为本地机器码，命中黑名单/ACL 的包被硬件级早 drop。
 - **单二进制静态链接**：musl 静态编译，仅需一个 `eshield` 可执行文件，无额外运行时依赖。
 
 > 详细基准测试方法见 [docs/benchmark.md](docs/benchmark.md)。
@@ -51,10 +58,10 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 
 由于 eShield 在流量最早期拦截，攻击方要产生有效压力必须付出真实成本：
 
-- **真实带宽**：每一个被丢弃的包都会实际占用攻击者的出口带宽；速率限制和黑名单会在命中瞬间丢弃，不会消耗防御方后端带宽。
-- **真实源 IP**：黑名单、GeoIP、威胁情报、自适应阈值均基于源 IP 累计。攻击者需要大量分布式、可轮换的真实 IPv4/IPv6 地址才能维持攻击。
-- **完整协议交互**：SYN Cookie 代理要求每个伪造源都必须完成完整的三次握手；绕过这些机制需要真实的 TCP/IP 协议栈和计算资源。
-- **持续人力与计算**：自适应引擎会自动对重复触发规则的源提升封禁时长，攻击者必须不断变换特征、IP 段和攻击模式。
+- **真实带宽**：每一个被丢弃的包都会实际占用攻击者的出口带宽。
+- **真实源 IP**：黑名单、GeoIP、威胁情报、自适应阈值均基于源 IP 累计。
+- **完整协议交互**：SYN Cookie 代理要求每个伪造源都必须完成完整的三次握手。
+- **持续人力与计算**：自适应引擎会自动对重复触发规则的源提升封禁时长。
 
 简言之，eShield 将“攻防成本比”向防御方倾斜：防御方的一次 map 查表，可抵消攻击方的一个完整网络包、一个真实源地址以及一次协议交互。
 
@@ -106,7 +113,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 └─────────────────────────────────────────────────────────────┘
 ```
 
-详细设计见 [docs/architecture.md](docs/architecture.md)。
+详细设计、数据包旅程与 BPF Maps 说明见 [docs/architecture.md](docs/architecture.md)。
 
 ---
 
@@ -124,7 +131,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 
 > **Windows 开发者注意**：Aya 用户态库依赖 Linux 特有 API，因此**无法在 Windows 上直接编译或运行**。请在 WSL2 / 虚拟机 / 云主机上进行构建和测试。
 
-### 从源码构建
+### 构建与安装
 
 ```bash
 sudo bash scripts/install.sh --build
@@ -136,6 +143,8 @@ sudo bash scripts/install.sh --build
 3. 将 `eshield` 安装到 `/usr/local/bin`
 4. 创建默认配置 `/etc/eshield/config.toml`
 5. 安装并启用 systemd 服务
+
+也可直接下载预编译二进制，详见 [docs/deployment.md](docs/deployment.md)。
 
 ### 服务管理
 
@@ -191,95 +200,21 @@ eshield reset-token
 
 ### 配置文件
 
-默认路径 `/etc/eshield/config.toml`：
+默认路径 `/etc/eshield/config.toml`，完整示例见 [packaging/config.example.toml](packaging/config.example.toml)。关键段说明：
 
-```toml
-# 要挂载 XDP 的网卡
-interface = "eth0"
-
-log_level = "info"          # trace/debug/info/warn/error
-log_json = false            # 是否以 JSON 格式输出日志
-ebpf_log_enabled = false    # eBPF 内核调试日志开关
-
-udp_flood_enabled = false   # UDP Flood 防护
-icmp_flood_enabled = false  # ICMP/ICMPv6 Flood 防护
-tcp_reset_on_drop = false   # 对丢弃的 TCP 连接回复 RST
-
-web_bind = "0.0.0.0:8443"   # Web / API / Prometheus 监听地址
-# api_token = "changeme"    # 可选 API 认证
-
-store_path = "/var/lib/eshield/rules.redb"  # 动态规则持久化
-
-# 告警 Webhook（可选）
-# alert_webhook_url = "https://hooks.example.com/eshield"
-alert_webhook_type = "generic"   # generic / slack / dingtalk / wecom
-alert_threshold_dps = 1000
-alert_cooldown_s = 60
-
-# 白名单 CIDR
-whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
-
-# 黑名单 IP/CIDR（启动时加载，永久封禁）
-blacklist = ["192.0.2.1"]
-
-[rate_limit]
-enabled = true
-threshold = 200             # 每个 tick 允许的最大包数
-tick_ms = 100               # 计数窗口
-decay_num = 7
-decay_den = 8               # 指数衰减因子
-block_duration_s = 300      # 触发后封禁时长
-
-[syn_proxy]
-enabled = false             # SYN Cookie 代理
-
-[l7_scan]
-enabled = false
-patterns = [
-    { pattern = "ATTACKER" },
-]
-
-[adaptive]
-enabled = true
-threshold = 10              # 窗口内触发次数
-window_s = 5
-block_duration_s = 300
-
-[geoip]
-enabled = false
-country_blocks_csv = "/etc/eshield/geoip_country.csv"
-# asn_blocks_csv = "/etc/eshield/geoip_asn.csv"
-block_countries = ["XX"]
-# allow_countries = ["CN"]
-# block_asns = [12345]
-# allow_asns = []
-default_action = "pass"
-
-[threat_intel]
-enabled = false
-# [[threat_intel.feeds]]
-# name = "abuseipdb"
-# url = "https://api.abuseipdb.com/api/v2/blacklist"
-# interval_s = 3600
-# action = "drop"
-# confidence = 80
-
-# 端口/协议 ACL
-# [[port_acl]]
-# protocol = "tcp"
-# dport = "22"
-# action = "allow"
-
-# 防护项目（控制面分组）
-# [[protection_projects]]
-# name = "web-service"
-# description = "Protect public HTTP service"
-# protocol = "tcp"
-# dport = "80"
-# target_ips = ["10.0.0.10"]
-# enabled_modules = ["rate_limit"]
-# action = "defend"   # pass / drop / defend
-```
+| 配置段 | 作用 |
+|---|---|
+| `interface` / `web_bind` | 挂载 XDP 的网卡与 Web/API 监听地址 |
+| `whitelist` / `blacklist` | 启动时加载的静态 CIDR 白名单与永久黑名单 |
+| `[rate_limit]` | per-IP 速率限制与触封时长 |
+| `[syn_proxy]` | IPv4 SYN Cookie 代理开关 |
+| `[udp_flood]` / `[icmp_flood]` | 无连接 Flood 防护开关 |
+| `[l7_scan]` | TCP 首包指纹匹配 |
+| `[adaptive]` | 重复触发自动提升封禁时长 |
+| `[geoip]` | 基于国家/ASN 的 CIDR 放行/封禁 |
+| `[threat_intel]` | 自定义威胁情报 feed 同步 |
+| `[port_acl]` | 端口/协议级 allow/drop 规则 |
+| `[protection_projects]` | 控制面策略分组 |
 
 ### 热加载
 
@@ -299,22 +234,7 @@ sudo kill -HUP $(pidof eshield)
 
 ### Web Dashboard
 
-启动后访问：
-
-```
-http://<host>:8443/
-```
-
-中文界面展示实时包统计、各防御模块命中数、TOP 攻击源、审计日志，并提供实时控制表单：
-
-- 封禁 / 解封 IPv4/IPv6
-- 放行 / 移除 IPv4/IPv6 CIDR
-- 启用/禁用各防御模块、调整速率限制参数
-- 实时开关 eBPF 调试日志、TCP RST 回包
-- 管理端口 ACL、L7 指纹、GeoIP、威胁情报 feed
-- 管理防护项目分组
-- 输入 API Token（启用认证时）
-- 一键重载配置文件
+启动后访问 `http://<host>:8443/`，中文界面展示实时包统计、各防御模块命中数、TOP 攻击源、审计日志，并提供实时控制表单。
 
 ### Prometheus 指标
 
@@ -322,24 +242,7 @@ http://<host>:8443/
 http://<host>:8443/metrics
 ```
 
-暴露的主要指标：
-
-- `eshield_dropped_total`
-- `eshield_passed_total`
-- `eshield_blacklist_blocked_total`
-- `eshield_rate_limited_total`
-- `eshield_syn_flood_blocked_total`
-- `eshield_l7_blocked_total`
-- `eshield_adaptive_blocked_total`
-- `eshield_udp_flood_blocked_total`
-- `eshield_icmp_flood_blocked_total`
-- `eshield_geoip_blocked_total`
-- `eshield_dropped_by_protocol_total{protocol="tcp|udp|icmp|other"}`
-- `eshield_dropped_by_port_total{port="..."}`
-- `eshield_source_dropped_total{ip="..."}`
-- `eshield_event_consumer_duration_us_*`
-- `eshield_map_max_entries{name="..."}`
-- `eshield_map_entries{name="..."}`
+主要指标包括 `eshield_dropped_total`、`eshield_passed_total`、`eshield_blacklist_blocked_total`、`eshield_rate_limited_total`、`eshield_geoip_blocked_total` 等。
 
 ### JSON 统计接口
 
@@ -353,8 +256,6 @@ curl -H "Authorization: Bearer <token>" http://<host>:8443/api/stats | jq
 eshield tui
 ```
 
-中文界面，显示总丢弃、各规则拦截数、TOP 攻击源；按 `q` 退出。
-
 ### 审计日志
 
 - `GET /api/audit` 查询审计事件，支持 `limit`、`ip`、`action`、`from`、`to` 过滤。
@@ -362,36 +263,19 @@ eshield tui
 
 ---
 
-## API 概览
+## API 与文档
 
-| 端点 | 方法 | 说明 |
-|---|---|---|
-| `/healthz` | GET | 健康检查 |
-| `/ready` | GET | 就绪检查 |
-| `/login` | GET | 控制台登录页 |
-| `/blocked` | GET | 403 封禁示例页 |
-| `/api/auth/login` | POST | 控制台登录验证 |
-| `/api/auth/check` | GET | 登录状态检查 |
-| `/api/auth/reset-token` | POST | 重置访问令牌（外部需认证，本机 CLI 可直接调用） |
-| `/` | GET | Web Dashboard |
-| `/api/stats` | GET | 运行统计 |
-| `/api/config` | GET, PATCH | 读取/修改运行时配置 |
-| `/api/config/reload` | POST | 从文件重新加载配置 |
-| `/api/protection-modules` | GET | 防护模块列表与状态 |
-| `/api/blacklist` | POST, DELETE | 封禁/解封 IP |
-| `/api/whitelist` | POST, DELETE | 添加/移除 CIDR 白名单 |
-| `/api/audit` | GET | 审计日志 |
-| `/api/audit/stream` | GET | 审计日志 SSE |
-| `/api/metrics/series` | GET | 时序指标 |
-| `/api/metrics/attacker-series` | GET | 单 IP 时序 |
-| `/api/port-acl` | GET, POST | 端口 ACL |
-| `/api/protection-projects` | GET, POST | 防护项目 |
-| `/api/l7-patterns` | GET, POST | L7 指纹 |
-| `/api/geoip/reload` | POST | 重新加载 GeoIP CSV |
-| `/api/threat-intel/sync` | POST | 手动触发威胁情报同步 |
-| `/metrics` | GET | Prometheus 指标 |
+REST API 完整端点、请求/响应示例与认证说明见 [docs/api.md](docs/api.md)。
 
-> 外部访问受保护端点时，若设置了 `api_token`，需在请求头携带 `Authorization: Bearer <token>`；本机 CLI 自动跳过认证。
+其他文档索引：
+
+| 文档 | 内容 |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | 系统架构、数据包旅程、BPF Maps |
+| [docs/deployment.md](docs/deployment.md) | 二进制、systemd、容器与 K8s 部署 |
+| [docs/operations.md](docs/operations.md) | 日常操作、日志、告警、备份恢复、故障排查 |
+| [docs/dev-linux.md](docs/dev-linux.md) | 依赖安装、构建、本地测试 |
+| [docs/benchmark.md](docs/benchmark.md) | 基准测试方法与示例报告 |
 
 ---
 
@@ -405,7 +289,7 @@ cargo test --workspace --exclude eshield-ebpf
 
 ### 集成测试
 
-需要 root，会在 network namespace 中创建 veth 对并运行多项场景测试：
+需要 root，在 network namespace 中运行场景测试：
 
 ```bash
 sudo bash ./tests/netns_test.sh
@@ -421,12 +305,6 @@ cargo build --package eshield --target x86_64-unknown-linux-musl --release
 sudo bash scripts/benchmark.sh
 ```
 
-可通过环境变量调整：
-
-```bash
-PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
-```
-
 详见 [docs/benchmark.md](docs/benchmark.md)。
 
 ---
@@ -436,20 +314,6 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 ```text
 .
 ├── eshield/            # 用户态控制面
-│   ├── src/main.rs     # CLI + 守护进程启动
-│   ├── src/control.rs  # eBPF Map 操作 / 运行时策略 / SIGHUP 重载
-│   ├── src/web.rs      # REST API + Web Dashboard
-│   ├── src/dashboard.html
-│   ├── src/login.html
-│   ├── src/blocked.html
-│   ├── src/tui.rs      # TUI 仪表盘
-│   ├── src/config.rs   # 配置模型与校验
-│   ├── src/store.rs    # redb 持久化
-│   ├── src/adaptive.rs # 自适应阈值引擎
-│   ├── src/audit.rs    # 审计日志
-│   ├── src/geoip.rs    # GeoIP/ASN 加载
-│   ├── src/threat_intel.rs
-│   └── ...
 ├── eshield-ebpf/       # 内核态 eBPF/XDP 数据面
 ├── eshield-common/     # 内核/用户态共享结构体
 ├── xtask/              # 构建任务封装
@@ -472,17 +336,6 @@ PACKETS=500000 INTERVAL=u1 sudo -E bash scripts/benchmark.sh
 - **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组。
 - **Windows**：无法直接编译或运行，请使用 Linux 环境。
 - **防护项目**：当前为控制面配置分组，尚未在 eBPF 数据面按项目逐包匹配。
-
----
-
-## 文档
-
-- [架构设计](docs/architecture.md)
-- [部署指南](docs/deployment.md)
-- [开发环境](docs/dev-linux.md)
-- [运维指南](docs/operations.md)
-- [API 文档](docs/api.md)
-- [基准测试](docs/benchmark.md)
 
 ---
 

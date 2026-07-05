@@ -4,15 +4,44 @@
 
 ## 认证
 
-默认启用 API Token 认证。在请求头中携带：
+外部访问受保护端点时，若 `config.toml` 中设置了 `api_token`，需在请求头携带：
 
 ```
 Authorization: Bearer <token>
 ```
 
-Token 在 `config.toml` 的 `[auth]` 段配置。未配置或为空时关闭认证（不推荐用于生产）。
+本机 CLI 来源地址为 `127.0.0.1/::1`，自动跳过 token 校验。
 
-## 端点
+## 端点概览
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/healthz` | GET | 健康检查 |
+| `/ready` | GET | 就绪检查 |
+| `/login` | GET | 控制台登录页 |
+| `/blocked` | GET | 403 封禁示例页 |
+| `/api/auth/login` | POST | 控制台登录验证 |
+| `/api/auth/check` | GET | 登录状态检查 |
+| `/api/auth/reset-token` | POST | 重置访问令牌 |
+| `/` | GET | Web Dashboard |
+| `/api/stats` | GET | 运行统计 |
+| `/api/config` | GET, PATCH | 读取/修改运行时配置 |
+| `/api/config/reload` | POST | 从文件重新加载配置 |
+| `/api/protection-modules` | GET | 防护模块列表与状态 |
+| `/api/blacklist` | POST, DELETE | 封禁/解封 IP |
+| `/api/whitelist` | POST, DELETE | 添加/移除 CIDR 白名单 |
+| `/api/audit` | GET | 审计日志 |
+| `/api/audit/stream` | GET | 审计日志 SSE |
+| `/api/metrics/series` | GET | 时序指标 |
+| `/api/metrics/attacker-series` | GET | 单 IP 时序 |
+| `/api/port-acl` | GET, POST | 端口 ACL |
+| `/api/protection-projects` | GET, POST | 防护项目 |
+| `/api/l7-patterns` | GET, POST | L7 指纹 |
+| `/api/geoip/reload` | POST | 重新加载 GeoIP CSV |
+| `/api/threat-intel/sync` | POST | 手动触发威胁情报同步 |
+| `/metrics` | GET | Prometheus 指标 |
+
+## 详细说明
 
 ### GET /api/stats
 
