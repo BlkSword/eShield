@@ -43,7 +43,34 @@ def load_password() -> str:
     return getpass.getpass("Remote password: ")
 
 
-PASSWORD = load_password()
+def load_private_key() -> paramiko.PKey | None:
+    """Try to load an SSH private key from common locations."""
+    key_paths = []
+    ssh_dir = os.path.expanduser("~/.ssh")
+    for name in ("id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"):
+        key_paths.append(os.path.join(ssh_dir, name))
+    if os.environ.get("ESHIELD_REMOTE_KEY"):
+        key_paths.insert(0, os.path.expanduser(os.environ["ESHIELD_REMOTE_KEY"]))
+
+    for path in key_paths:
+        if not os.path.exists(path):
+            continue
+        for key_cls in (
+            paramiko.Ed25519Key,
+            paramiko.RSAKey,
+            paramiko.ECDSAKey,
+        ):
+            try:
+                return key_cls.from_private_key_file(path)
+            except paramiko.SSHException:
+                continue
+            except OSError:
+                break
+    return None
+
+
+PRIVATE_KEY = load_private_key()
+PASSWORD = load_password() if PRIVATE_KEY is None else ""
 
 EXCLUDES = {".git", "target", ".claude", ".remote_pass"}
 
@@ -262,7 +289,12 @@ def main():
 
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh.connect(HOST, username=USER, password=PASSWORD)
+    connect_kwargs: dict[str, object] = {"username": USER}
+    if PRIVATE_KEY is not None:
+        connect_kwargs["pkey"] = PRIVATE_KEY
+    else:
+        connect_kwargs["password"] = PASSWORD
+    ssh.connect(HOST, **connect_kwargs)
     sftp = ssh.open_sftp()
 
     exit_code = 0

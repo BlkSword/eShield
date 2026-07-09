@@ -1,4 +1,5 @@
 use axum::{
+    body::Body,
     extract::{ConnectInfo, Query, Request, State},
     http::StatusCode,
     middleware::{self, Next},
@@ -232,7 +233,13 @@ async fn login_api_handler(
                 Some(ip.to_string()),
             )
             .await;
-        (StatusCode::OK, "OK").into_response()
+        let cookie = format!("eshield-token={}; Path=/; HttpOnly; SameSite=Lax", req.token);
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Set-Cookie", cookie)
+            .body(Body::from("OK"))
+            .unwrap()
+            .into_response()
     } else {
         state.login_limiter.record_failure(ip);
         state

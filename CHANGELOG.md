@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.2 (2026-07-07)
+
+### 修复
+
+- **Dashboard 登录后仍被重定向**：登录接口现在写入 `eshield-token` Cookie，认证中间件同时支持 `Authorization: Bearer <token>` 和 `Cookie: eshield-token=<token>`，解决控制台输入 Token 后仍停留在登录页的问题。
+- **事件消费高 CPU**：SYN Flood / UDP Flood / ICMP Flood / L7 / BLACKLIST / GEOIP 事件不再进入自适应引擎，避免海量事件反复操作 DashMap 占满 CPU。
+- **启动统计被旧事件污染**：Ring Buffer 残留 stale 事件 drain 上限从 100 万提高到 5000 万，防止前一次测试的巨量事件污染新进程统计。
+
+### 改进
+
+- `.sync_remote.py` 支持 SSH 私钥认证，优先使用 `~/.ssh/id_ed25519` 等常见私钥，不再强制依赖 `.remote_pass`。
+
+---
+
 ## 0.3.1 (2026-06-20)
 
 ### 重大变更

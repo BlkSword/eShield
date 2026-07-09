@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly (for eBPF build-std)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly
+          components: rust-src
+
+      - name: Install Rust stable + musl target
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y llvm clang
+
+      - name: Install bpf-linker
+        run: cargo +nightly install bpf-linker
+
+      - name: Build eBPF
+        run: cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
+
+      - name: Build userspace
+        run: cargo build --package eshield --target x86_64-unknown-linux-musl --release
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/eshield dist/eshield
+          cp target/bpfel-unknown-none/release/eshield dist/eshield.bpf.o
+          chmod +x dist/eshield
+          ls -lh dist/
+
+      - name: Extract changelog section
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BODY=$(awk "/^## ${VERSION}/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="eShield ${GITHUB_REF_NAME} release."
+          fi
+          {
+            echo "body<<EOF"
+            echo "$BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: eShield ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.body }}
+          files: dist/*
+          draft: false
+          prerelease: false

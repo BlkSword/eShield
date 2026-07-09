@@ -79,7 +79,24 @@ pub async fn auth_middleware(
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok());
 
-            let provided = header.and_then(|h| h.strip_prefix("Bearer "));
+            let provided_from_header = header.and_then(|h| h.strip_prefix("Bearer "));
+
+            let provided_from_cookie = request
+                .headers()
+                .get(axum::http::header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|cookies| {
+                    cookies.split(';').find_map(|cookie| {
+                        let mut parts = cookie.trim().splitn(2, '=');
+                        if parts.next()? == "eshield-token" {
+                            parts.next()
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+            let provided = provided_from_header.or(provided_from_cookie);
             if provided.map(|t| constant_time_eq(&token, t)).unwrap_or(false) {
                 next.run(request).await
             } else if is_html_root {

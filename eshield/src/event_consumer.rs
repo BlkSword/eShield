@@ -69,9 +69,16 @@ pub async fn run(
         *by_protocol.entry(event.protocol).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
-        // GeoIP 事件由独立模块处理，不进入通用自适应阈值引擎
+        // GeoIP / SYN Flood / UDP Flood / ICMP Flood / L7 / Blacklist 事件
+        // 已由 eBPF 数据面直接处理（加入黑名单或丢弃），不再进入自适应引擎，
+        // 避免海量事件反复触发 DashMap 操作导致 CPU 占满。
         if adaptive.is_enabled()
             && event.rule_id != eshield_common::rules::GEOIP
+            && event.rule_id != eshield_common::rules::SYN_FLOOD
+            && event.rule_id != eshield_common::rules::UDP_FLOOD
+            && event.rule_id != eshield_common::rules::ICMP_FLOOD
+            && event.rule_id != eshield_common::rules::L7_PATTERN
+            && event.rule_id != eshield_common::rules::BLACKLIST
         {
             if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
                 debug!("adaptive engine error: {}", e);

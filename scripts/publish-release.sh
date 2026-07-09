@@ -1,4 +1,3 @@
-:
 #!/bin/bash
 set -euo pipefail
 
@@ -8,13 +7,19 @@ set -euo pipefail
 #   bash scripts/publish-release.sh
 #
 # 前置条件：
-#   1. 本地已打 tag 并推送到 origin：git push origin v0.3.1
+#   1. 本地已打 tag 并推送到 origin：git push origin <TAG>
 #   2. 已设置 GH_TOKEN（Classic token，需要 repo 权限）
-#   3. 产物已放在 ASSET_DIR 指定的目录中
+#   3. 默认产物为 target/x86_64-unknown-linux-musl/release/eshield 和
+#      target/bpfel-unknown-none/release/eshield；也可通过 ASSET_DIR 环境变量指定目录
 
 REPO="BlkSword/eShield"
-TAG="v0.3.1"
-ASSET_DIR="C:/Users/wfshenm/Downloads/118.193.35.84/202607041646"
+VERSION=$(grep -m1 '^version' eshield/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
+TAG="v${VERSION}"
+DEFAULT_ASSETS=(
+    "target/x86_64-unknown-linux-musl/release/eshield"
+    "target/bpfel-unknown-none/release/eshield"
+)
+ASSET_DIR="${ASSET_DIR:-}"
 
 if [ -z "${GH_TOKEN:-}" ]; then
     echo "错误：请先设置 GH_TOKEN 环境变量"
@@ -37,7 +42,7 @@ if [ "$existing" = "200" ]; then
 fi
 
 echo "==> 从 CHANGELOG.md 提取 $TAG 发布说明"
-BODY=$(awk '/^## 0.3.1/{flag=1;next}/^## /{flag=0}flag' CHANGELOG.md | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
+BODY=$(awk "/^## ${VERSION}/{flag=1;next}/^## /{flag=0}flag" CHANGELOG.md | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}')
 if [ -z "$BODY" ]; then
     echo "警告：未从 CHANGELOG.md 提取到 $TAG 内容，使用默认说明"
     BODY="eShield $TAG release."
@@ -59,8 +64,25 @@ if [ -z "$UPLOAD_URL" ]; then
 fi
 
 echo "==> 上传产物"
-for F in "$ASSET_DIR"/*; do
-    [ -f "$F" ] || continue
+if [ -n "$ASSET_DIR" ] && [ -d "$ASSET_DIR" ]; then
+    for F in "$ASSET_DIR"/*; do
+        [ -f "$F" ] || continue
+        ASSETS+=("$F")
+    done
+else
+    ASSETS=("${DEFAULT_ASSETS[@]}")
+fi
+
+if [ ${#ASSETS[@]} -eq 0 ]; then
+    echo "错误：未找到任何产物"
+    exit 1
+fi
+
+for F in "${ASSETS[@]}"; do
+    if [ ! -f "$F" ]; then
+        echo "警告：产物不存在，跳过 $F"
+        continue
+    fi
     NAME=$(basename "$F")
     echo "  上传 $NAME ..."
     curl -s -X POST \

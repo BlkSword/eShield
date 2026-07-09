@@ -311,8 +311,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                 let mut drained = 0usize;
                 while ring_buf.next().is_some() {
                     drained += 1;
-                    if drained >= 1_000_000 {
-                        warn!("drained more than 1M stale events, stopping to avoid spin");
+                    // 上限提高到 50M，避免旧版本遗留的巨量事件污染新进程统计
+                    if drained >= 50_000_000 {
+                        warn!("drained more than 50M stale events, stopping to avoid spin");
                         break;
                     }
                 }

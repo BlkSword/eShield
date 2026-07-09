@@ -10,9 +10,10 @@
     python scripts/publish-release.py
 
 前置条件：
-    1. 本地已打 tag 并推送到 origin：git push origin v0.3.1
+    1. 本地已打 tag 并推送到 origin：git push origin <TAG>
     2. 已设置 GH_TOKEN（Classic token，需要 repo 权限）
-    3. 产物已放在 ASSET_DIR 指定的目录中
+    3. 默认产物为 target/x86_64-unknown-linux-musl/release/eshield 和
+       target/bpfel-unknown-none/release/eshield；也可通过 ASSET_DIR 环境变量指定目录
 """
 
 import json
@@ -23,8 +24,30 @@ import urllib.request
 from pathlib import Path
 
 REPO = "BlkSword/eShield"
-TAG = "v0.3.1"
-ASSET_DIR = Path("C:/Users/wfshenm/Downloads/118.193.35.84/202607041646")
+
+
+def current_version() -> str:
+    """从 eshield/Cargo.toml 读取当前版本。"""
+    import re
+
+    text = Path("eshield/Cargo.toml").read_text(encoding="utf-8")
+    m = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if not m:
+        print("错误：无法从 eshield/Cargo.toml 读取版本号")
+        sys.exit(1)
+    return m.group(1)
+
+
+VERSION = current_version()
+TAG = f"v{VERSION}"
+
+# 默认产物目录：用户态 musl 二进制 + eBPF object
+# 可通过环境变量 ASSET_DIR 覆盖
+DEFAULT_ASSETS = [
+    Path(f"target/x86_64-unknown-linux-musl/release/eshield"),
+    Path(f"target/bpfel-unknown-none/release/eshield"),
+]
+ASSET_DIR = Path(os.environ.get("ASSET_DIR", ""))
 
 
 def load_token() -> str:
@@ -63,7 +86,7 @@ def extract_changelog_body() -> str:
     body_lines = []
     in_section = False
     for line in lines:
-        if line.startswith("## 0.3.1"):
+        if line.startswith(f"## {VERSION}"):
             in_section = True
             continue
         if line.startswith("## "):
@@ -131,13 +154,21 @@ def main():
     upload_url = create_release(token, body)
 
     print("==> 上传产物")
-    if not ASSET_DIR.exists():
-        print(f"错误：产物目录不存在 {ASSET_DIR}")
+    assets: list[Path] = []
+    if ASSET_DIR and ASSET_DIR.exists():
+        assets = [f for f in sorted(ASSET_DIR.iterdir()) if f.is_file()]
+    else:
+        assets = [p for p in DEFAULT_ASSETS if p.exists()]
+
+    if not assets:
+        print("错误：未找到任何产物。请先生成 release 产物，或设置 ASSET_DIR 环境变量")
+        print("默认产物：")
+        for p in DEFAULT_ASSETS:
+            print(f"  - {p}")
         sys.exit(1)
 
-    for f in sorted(ASSET_DIR.iterdir()):
-        if f.is_file():
-            upload_asset(token, upload_url, f)
+    for f in assets:
+        upload_asset(token, upload_url, f)
 
     print("")
     print(f"==> 发布完成：https://github.com/{REPO}/releases/tag/{TAG}")

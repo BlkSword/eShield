@@ -4,13 +4,24 @@
 #   .\scripts\publish-release.ps1
 #
 # 前置条件：
-#   1. 本地已打 tag 并推送到 origin：git push origin v0.3.1
+#   1. 本地已打 tag 并推送到 origin：git push origin <TAG>
 #   2. 已设置 GH_TOKEN（Classic token，需要 repo 权限）
-#   3. 产物已放在 $AssetDir 指定的目录中
+#   3. 默认产物为 target/x86_64-unknown-linux-musl/release/eshield 和
+#      target/bpfel-unknown-none/release/eshield；也可通过 $env:ASSET_DIR 指定目录
 
 $Repo = "BlkSword/eShield"
-$Tag = "v0.3.1"
-$AssetDir = "C:\Users\wfshenm\Downloads\118.193.35.84\202607041646"
+$VersionLine = Get-Content eshield/Cargo.toml | Select-String -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+if (-not $VersionLine) {
+    Write-Host "错误：无法从 eshield/Cargo.toml 读取版本号" -ForegroundColor Red
+    exit 1
+}
+$Version = $VersionLine.Matches.Groups[1].Value
+$Tag = "v$Version"
+$DefaultAssets = @(
+    "target/x86_64-unknown-linux-musl/release/eshield",
+    "target/bpfel-unknown-none/release/eshield"
+)
+$AssetDir = $env:ASSET_DIR
 
 if (-not $env:GH_TOKEN) {
     Write-Host "错误：请先设置 GH_TOKEN 环境变量" -ForegroundColor Red
@@ -66,7 +77,7 @@ $Lines = Get-Content CHANGELOG.md
 $BodyLines = @()
 $InSection = $false
 foreach ($Line in $Lines) {
-    if ($Line -match '^## 0\.3\.1') {
+    if ($Line -match "^## \$([regex]::Escape($Version))") {
         $InSection = $true
         continue
     }
@@ -104,13 +115,25 @@ $Release = $Response.Content | ConvertFrom-Json
 $UploadUrl = $Release.upload_url -replace '\{\?name,label\}$', ''
 
 Write-Host "==> 上传产物"
-Get-ChildItem -Path $AssetDir -File | ForEach-Object {
-    $Name = $_.Name
+$Assets = @()
+if ($AssetDir -and (Test-Path $AssetDir -PathType Container)) {
+    $Assets = Get-ChildItem -Path $AssetDir -File | ForEach-Object { $_.FullName }
+} else {
+    $Assets = $DefaultAssets | Where-Object { Test-Path $_ }
+}
+
+if ($Assets.Count -eq 0) {
+    Write-Host "错误：未找到任何产物" -ForegroundColor Red
+    exit 1
+}
+
+foreach ($Asset in $Assets) {
+    $Name = Split-Path $Asset -Leaf
     Write-Host "  上传 $Name ..."
     try {
         Invoke-WebRequest -Uri "$UploadUrl?name=$Name" -Method POST `
             -Headers $Headers -ContentType "application/octet-stream" `
-            -InFile $_.FullName -UseBasicParsing | Out-Null
+            -InFile $Asset -UseBasicParsing | Out-Null
         Write-Host "  ✓ $Name" -ForegroundColor Green
     } catch {
         Write-Host "  ✗ $Name 上传失败" -ForegroundColor Red
