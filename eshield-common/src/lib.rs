@@ -155,6 +155,7 @@ pub struct GlobalStats {
     pub udp_flood_blocked: u64,
     pub icmp_flood_blocked: u64,
     pub geoip_blocked: u64,
+    pub blacklist_blocked: u64,
     pub tcp_rst_sent: u64,
     pub tcp_rst_fail: u64,
     pub tcp_rst_attempt: u64,

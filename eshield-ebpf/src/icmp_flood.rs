@@ -1,7 +1,7 @@
 use aya_ebpf::programs::XdpContext;
 
-use crate::maps::{BLACKLIST, CONFIG, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
-use eshield_common::{rules, BlockEntry, DropEvent, IpKey, RateCounter, RateLimitConfig};
+use crate::maps::{BLACKLIST, CONFIG, RATE_LIMIT_CFG, RATE_MAP};
+use eshield_common::{rules, BlockEntry, IpKey, RateCounter, RateLimitConfig};
 
 /// 检测并处理 ICMP/ICMPv6 Flood：对单 IP 的 ICMP Echo Request 做速率限制，超限即 DROP 并加黑名单。
 pub fn handle_icmp_flood(ctx: &XdpContext, src: &IpKey, now_ns: u64, protocol: u8) -> bool {
@@ -54,7 +54,6 @@ pub fn handle_icmp_flood(ctx: &XdpContext, src: &IpKey, now_ns: u64, protocol: u
 
     if counter > cfg.threshold {
         add_to_blacklist(src, now_ns, cfg.block_duration_s);
-        emit_icmp_flood_event(ctx, src, protocol);
         return true;
     }
 
@@ -81,22 +80,4 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     };
 
     let _ = BLACKLIST.insert(src, &entry, 0);
-}
-
-pub fn emit_icmp_flood_event(_ctx: &XdpContext, src: &IpKey, protocol: u8) {
-    unsafe {
-        if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
-            let event = DropEvent {
-                timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip: src.addr,
-                family: src.family,
-                protocol,
-                rule_id: rules::ICMP_FLOOD,
-                dst_port: 0,
-                padding: [0; 2],
-            };
-            entry.write(event);
-            entry.submit(0);
-        }
-    }
 }

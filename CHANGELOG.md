@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.3 (2026-07-07)
+
+### 修复
+
+- **事件消费高 CPU / 统计不一致**：SYN Flood / UDP Flood / ICMP Flood / rate_limit / blacklist 等高频率 DROP 路径不再写入 RingBuf，避免海量事件 backlog 占满单核并导致 `total_dropped` 与 `top_attackers` 量级不一致。
+- **黑名单拦截计数失真**：新增 `GlobalStats.blacklist_blocked`，由 eBPF 数据面直接累加，不再依赖 RingBuf 事件。
+
+### 改进
+
+- **TOP 攻击源实时同步**：用户态新增后台任务，每秒从 eBPF `BLACKLIST` map 读取 `BlockEntry.hit_count` 重建 `top_attackers`，来源统计与全局丢包计数保持同步。
+
+---
+
 ## 0.3.2 (2026-07-07)
 
 ### 修复

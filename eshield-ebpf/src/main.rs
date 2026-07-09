@@ -221,7 +221,6 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 stats.rate_limited += 1;
             }
         }
-        rate_limit::emit_rate_limit_event(ctx, &src_key, protocol, dport);
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
@@ -235,9 +234,9 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
+                stats.blacklist_blocked += 1;
             }
         }
-        blacklist::emit_blacklist_event(ctx, &src_key, protocol, dport);
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 

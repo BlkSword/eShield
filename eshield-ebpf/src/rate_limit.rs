@@ -1,7 +1,5 @@
-use aya_ebpf::programs::XdpContext;
-
-use crate::maps::{BLACKLIST, CONFIG, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
-use eshield_common::{rules, BlockEntry, DropEvent, IpKey, RateCounter, RateLimitConfig};
+use crate::maps::{BLACKLIST, CONFIG, RATE_LIMIT_CFG, RATE_MAP};
+use eshield_common::{rules, BlockEntry, IpKey, RateCounter, RateLimitConfig};
 
 /// 检查并更新 src 的速率计数器；若超限则加入黑名单并返回 true。
 pub fn check_rate_limit(src: &IpKey, now_ns: u64) -> bool {
@@ -86,22 +84,4 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     };
 
     let _ = BLACKLIST.insert(src, &entry, 0);
-}
-
-pub fn emit_rate_limit_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
-    unsafe {
-        if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
-            let event = DropEvent {
-                timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip: src.addr,
-                family: src.family,
-                protocol,
-                rule_id: rules::RATE_LIMIT,
-                dst_port,
-                padding: [0; 2],
-            };
-            entry.write(event);
-            entry.submit(0);
-        }
-    }
 }

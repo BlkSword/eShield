@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "eshield"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -668,14 +668,14 @@ dependencies = [
 
 [[package]]
 name = "eshield-common"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "aya",
 ]
 
 [[package]]
 name = "eshield-ebpf"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",

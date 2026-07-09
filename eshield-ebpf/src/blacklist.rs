@@ -8,6 +8,10 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
         Some(entry) => {
             // blocked_until_ns == 0 表示永久封禁
             if entry.blocked_until_ns == 0 || entry.blocked_until_ns > now_ns {
+                // 命中黑名单时递增 hit_count，供用户态 top_attackers 使用
+                let mut updated = entry;
+                updated.hit_count = updated.hit_count.saturating_add(1);
+                let _ = BLACKLIST.insert(src, &updated, 0);
                 return true;
             }
         }

@@ -20,14 +20,16 @@ mod web;
 use anyhow::Context;
 use aya::{
     include_bytes_aligned,
+    maps::HashMap as LruHashMap,
     programs::Xdp,
     Ebpf,
 };
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
 use rand::Rng;
-use eshield_common::GlobalStats;
-use std::sync::atomic::Ordering;
+use eshield_common::{BlockEntry, GlobalStats, IpKey};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -347,11 +349,20 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     };
 
     // 启动全局统计同步任务：每秒从 eBPF GLOBAL_STATS 同步 total_* / RST 计数 / PPS/DPS
-    let _global_stats_handle = {
+    let global_stats_handle = {
         let stats = state.stats.clone();
         let ebpf = ebpf.clone();
         tokio::spawn(async move {
             sync_global_stats(ebpf, stats).await;
+        })
+    };
+
+    // 启动 TOP 攻击源同步任务：每秒从 BLACKLIST map 读取 hit_count 重建 top_attackers
+    let top_attackers_handle = {
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            sync_top_attackers(ebpf, stats).await;
         })
     };
 
@@ -401,11 +412,15 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     alert_handle.abort();
     threat_intel_handle.abort();
     timeseries_handle.abort();
+    global_stats_handle.abort();
+    top_attackers_handle.abort();
     let _ = event_handle.await;
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
     let _ = threat_intel_handle.await;
     let _ = timeseries_handle.await;
+    let _ = global_stats_handle.await;
+    let _ = top_attackers_handle.await;
 
     Ok(())
 }
@@ -638,13 +653,14 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
                         acc.udp_flood_blocked += v.udp_flood_blocked;
                         acc.icmp_flood_blocked += v.icmp_flood_blocked;
                         acc.geoip_blocked += v.geoip_blocked;
+                        acc.blacklist_blocked += v.blacklist_blocked;
                         acc.tcp_rst_sent += v.tcp_rst_sent;
                         acc.tcp_rst_fail += v.tcp_rst_fail;
                         acc.tcp_rst_attempt += v.tcp_rst_attempt;
                     }
                     info!(
-                        "sync_global_stats total_packets={} total_dropped={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
-                        acc.total_packets, acc.total_dropped, acc.geoip_blocked,
+                        "sync_global_stats total_packets={} total_dropped={} blacklist_blocked={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
+                        acc.total_packets, acc.total_dropped, acc.blacklist_blocked, acc.geoip_blocked,
                         acc.tcp_rst_sent, acc.tcp_rst_fail, acc.tcp_rst_attempt,
                     );
                 }
@@ -663,6 +679,7 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats.udp_flood_blocked.store(acc.udp_flood_blocked, Ordering::Relaxed);
         stats.icmp_flood_blocked.store(acc.icmp_flood_blocked, Ordering::Relaxed);
         stats.geoip_blocked.store(acc.geoip_blocked, Ordering::Relaxed);
+        stats.blacklist_blocked.store(acc.blacklist_blocked, Ordering::Relaxed);
         stats.tcp_rst_sent.store(acc.tcp_rst_sent, Ordering::Relaxed);
         stats.tcp_rst_fail.store(acc.tcp_rst_fail, Ordering::Relaxed);
         stats.tcp_rst_attempt.store(acc.tcp_rst_attempt, Ordering::Relaxed);
@@ -673,5 +690,43 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats.current_dps.store(dps, Ordering::Relaxed);
         last_packets = acc.total_packets;
         last_dropped = acc.total_dropped;
+    }
+}
+
+/// 每秒从 eBPF BLACKLIST map 读取 hit_count，重建用户态 top_attackers。
+/// 高频率 DROP 路径（SYN/UDP/ICMP Flood、rate_limit、blacklist）已不再写入 RingBuf，
+/// 因此不再依赖 event_consumer 聚合来源维度，避免其 backlog 导致 CPU 占满和统计不一致。
+async fn sync_top_attackers(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let mut guard = ebpf.lock().await;
+        let mut next: HashMap<IpKey, u64> = HashMap::new();
+        match LruHashMap::<_, IpKey, BlockEntry>::try_from(
+            guard.map_mut("BLACKLIST").expect("BLACKLIST map not found"),
+        ) {
+            Ok(blacklist) => {
+                for res in blacklist.iter() {
+                    match res {
+                        Ok((key, entry)) => {
+                            if entry.hit_count > 0 {
+                                next.insert(key, entry.hit_count as u64);
+                            }
+                        }
+                        Err(e) => warn!("failed to read BLACKLIST entry: {}", e),
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("failed to open BLACKLIST map: {}", e);
+                continue;
+            }
+        }
+        drop(guard);
+
+        stats.top_attackers.clear();
+        for (key, count) in next {
+            stats.top_attackers.insert(key, AtomicU64::new(count));
+        }
     }
 }

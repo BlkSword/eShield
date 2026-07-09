@@ -1,7 +1,7 @@
 use aya_ebpf::programs::XdpContext;
 
-use crate::maps::{BLACKLIST, EVENTS, RATE_LIMIT_CFG, RATE_MAP};
-use eshield_common::{rules, BlockEntry, DropEvent, IpKey, RateCounter, RateLimitConfig};
+use crate::maps::{BLACKLIST, RATE_LIMIT_CFG, RATE_MAP};
+use eshield_common::{rules, BlockEntry, IpKey, RateCounter, RateLimitConfig};
 
 /// TCP flags
 const TCP_FLAG_SYN: u8 = 0x02;
@@ -52,7 +52,6 @@ pub fn handle_syn_flood(ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u6
 
     if counter > cfg.threshold {
         add_to_blacklist(src, now_ns, cfg.block_duration_s);
-        emit_syn_flood_event(ctx, src, 0);
         return true;
     }
 
@@ -79,22 +78,4 @@ fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64) {
     };
 
     let _ = BLACKLIST.insert(src, &entry, 0);
-}
-
-pub fn emit_syn_flood_event(_ctx: &XdpContext, src: &IpKey, dst_port: u16) {
-    unsafe {
-        if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
-            let event = DropEvent {
-                timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip: src.addr,
-                family: src.family,
-                protocol: 6, // TCP
-                rule_id: rules::SYN_FLOOD,
-                dst_port,
-                padding: [0; 2],
-            };
-            entry.write(event);
-            entry.submit(0);
-        }
-    }
 }
