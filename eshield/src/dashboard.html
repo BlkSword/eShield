@@ -78,6 +78,7 @@
       transition: transform .25s ease;
     }
     .sidebar.collapsed { transform: translateX(-100%); }
+    .sidebar { transition: transform 0.25s ease; }
     .brand {
       height: 60px;
       padding: 0 20px;
@@ -177,6 +178,35 @@
       transition: var(--transition);
     }
     .icon-btn:hover { border-color: var(--border-strong); color: var(--text); background: var(--surface-hover); }
+    .search-box {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 5px 12px;
+      transition: var(--transition);
+    }
+    .search-box:focus-within { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-soft); }
+    .search-box input {
+      border: none;
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+      width: 180px;
+      outline: none;
+    }
+    .search-box input::placeholder { color: var(--text-tertiary); }
+    .search-shortcut {
+      font-size: 10px;
+      color: var(--text-tertiary);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 1px 5px;
+      white-space: nowrap;
+    }
     .content { padding: 24px; flex: 1; max-width: 1440px; }
     .page { display: none; animation: fadeIn .2s ease; }
     .page.active { display: block; }
@@ -384,6 +414,19 @@
     .state-error { color: var(--danger); font-size: 13px; padding: 20px; text-align: center; }
     .state-error button { margin-top: 10px; }
 
+    /* Pagination */
+    .pagination { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 16px 0; font-size: 13px; }
+    .pagination button { padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer; }
+    .pagination .page-info { color: var(--text-secondary); padding: 0 8px; }
+
+    /* Recent events feed */
+    .event-feed { max-height: 400px; overflow-y: auto; }
+    .event-feed-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 13px; animation: fadeIn 0.2s ease; }
+    .event-feed-item:last-child { border-bottom: none; }
+    .event-feed-time { color: var(--text-tertiary); font-size: 11px; white-space: nowrap; min-width: 50px; }
+    .event-feed-ip { font-weight: 600; color: var(--primary); cursor: pointer; }
+    .event-feed-rule { color: var(--text-secondary); font-size: 12px; }
+
     /* Mobile quick block bar */
     .mobile-quick-bar {
       display: none;
@@ -470,6 +513,11 @@
           <h1 class="page-title" id="page-heading">总览</h1>
         </div>
         <div class="header-right">
+          <div class="search-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="global-search" placeholder="搜索 IP 地址..." data-action="globalSearch">
+            <span class="search-shortcut">/</span>
+          </div>
           <span class="status-pill"><span class="status-dot"></span>运行中</span>
           <button class="icon-btn" id="logout-btn" title="退出登录">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
@@ -516,6 +564,15 @@
             <div class="card">
               <div class="card-header"><div class="card-title">TOP 攻击源</div></div>
               <div class="card-body" style="padding:0"><table><thead><tr><th>源 IP</th><th>丢弃包数</th><th>操作</th></tr></thead><tbody id="attackers-body"><tr><td colspan="3" class="empty">加载中...</td></tr></tbody></table></div>
+            </div>
+          </div>
+          <div class="card" style="margin-top:20px">
+            <div class="card-header">
+              <div class="card-title">最近拦截事件</div>
+              <div id="sse-status" class="tag tag-muted" style="font-size:11px">等待连接</div>
+            </div>
+            <div class="card-body" style="padding:0">
+              <div class="event-feed" id="recent-events"><div class="empty" style="padding:16px">暂无事件</div></div>
             </div>
           </div>
         </div>
@@ -640,6 +697,7 @@
                 <input type="datetime-local" id="audit-to" data-action="filterAudit">
               </div>
               <table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>详情</th></tr></thead><tbody id="audit-body"><tr><td colspan="4" class="empty">加载中...</td></tr></tbody></table>
+              <div class="pagination" id="audit-pager"></div>
             </div>
           </div>
         </div>
@@ -769,6 +827,9 @@
     let portChart = null;
     let attackerChart = null;
     let auditEntries = [];
+    let auditTotal = 0;
+    let auditCurrentPage = 0;
+    const AUDIT_PAGE_SIZE = 50;
     const metricHistory = {};
     const SPARK_LENGTH = 30;
     const SERIES_COLORS = ['#ef4444', '#f59e0b', '#3b82f6', '#10b981', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16', '#6366f1'];
@@ -815,6 +876,37 @@
         initProtocolChart();
         initPortChart();
       }
+    }
+
+    // Global IP search: press / to focus, search across audit/blacklist/attackers
+    async function globalSearch() {
+      const q = document.getElementById('global-search').value.trim();
+      if (!q) { toast('请输入 IP 地址', 'error'); return; }
+      // Navigate to audit page with IP filter pre-applied
+      document.getElementById('audit-ip').value = q;
+      document.getElementById('audit-filter').value = '';
+      document.getElementById('audit-action').value = '';
+      document.getElementById('audit-from').value = '';
+      document.getElementById('audit-to').value = '';
+      location.hash = '#/audit';
+      navigate();
+      await refreshAudit();
+      // Also open the IP drawer if IP exists in attackers
+      const attacker = (currentStats.top_attackers || []).find(a => a.ip === q);
+      if (attacker) setTimeout(() => openIpDrawer(q), 500);
+      toast('已搜索 IP: ' + q, 'success');
+    }
+
+    // Card drill-down: click stat card to filter audit by rule type
+    function drillAudit(reason) {
+      document.getElementById('audit-ip').value = '';
+      document.getElementById('audit-filter').value = '';
+      document.getElementById('audit-action').value = reason;
+      document.getElementById('audit-from').value = '';
+      document.getElementById('audit-to').value = '';
+      location.hash = '#/audit';
+      navigate();
+      refreshAudit();
     }
 
     function navigate() {
@@ -883,7 +975,8 @@
 
     function metricCard(opts) {
       const live = opts.live ? '<span class="live-dot" title="实时指标"></span>' : '';
-      return `<div class="card metric-card">
+      const drill = opts.drill ? `data-action="drillAudit" data-reason="${opts.drill}" style="cursor:pointer" title="点击查看详情"` : '';
+      return `<div class="card metric-card" ${drill}>
         <div class="metric-top">
           <div class="metric-label">${opts.label} ${live}</div>
           <div class="metric-icon ${opts.iconClass}">${opts.icon}</div>
@@ -897,14 +990,14 @@
     function renderOverviewCards() {
       const c = document.getElementById('overview-cards');
       const cards = [
-        { label: '总丢弃包数', id: 'card-dropped', icon: icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), iconClass: 'red', live: false, sub: '累计' },
-        { label: '当前 DPS', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: '每秒丢弃' },
+        { label: '总丢弃包数', id: 'card-dropped', icon: icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), iconClass: 'red', live: false, sub: '累计（点击查看）', drill: '' },
+        { label: '当前 DPS', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: '每秒丢弃', drill: '' },
         { label: '当前 PPS', id: 'card-pps', icon: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), iconClass: 'green', live: true, sub: '每秒通过' },
-        { label: '黑名单拦截', id: 'card-blacklist', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: false, sub: '累计' },
-        { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '累计' },
-        { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '基础检测始终运行' },
-        { label: 'UDP / ICMP 拦截', id: 'card-udp-icmp', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>'), iconClass: 'blue', live: false, sub: '累计' },
-        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '累计' }
+        { label: '黑名单拦截', id: 'card-blacklist', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: false, sub: '点击查看', drill: 'BlockIp' },
+        { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '点击查看', drill: 'PatchConfig' },
+        { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'ReloadConfig' },
+        { label: 'UDP / ICMP 拦截', id: 'card-udp-icmp', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'BlockIp' },
+        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'PatchConfig' }
       ];
       c.innerHTML = cards.map(metricCard).join('');
     }
@@ -1484,7 +1577,8 @@
     async function refreshAudit() {
       try {
         const params = new URLSearchParams();
-        params.set('limit', '200');
+        params.set('limit', String(AUDIT_PAGE_SIZE));
+        params.set('offset', String(auditCurrentPage * AUDIT_PAGE_SIZE));
         const ip = document.getElementById('audit-ip').value.trim();
         const action = document.getElementById('audit-action').value;
         const from = document.getElementById('audit-from').value;
@@ -1497,20 +1591,42 @@
         if (to) params.set('to', new Date(to).toISOString());
         const d = await apiJson('GET', '/api/audit?' + params.toString());
         auditEntries = d.entries || [];
+        auditTotal = d.total || 0;
         renderAudit();
       } catch (e) { console.error(e); }
     }
+    function auditPage(page) {
+      auditCurrentPage = page;
+      refreshAudit();
+    }
     function renderAudit() {
       const tbody = document.getElementById('audit-body');
+      const pager = document.getElementById('audit-pager');
       tbody.innerHTML = '';
-      if (auditEntries.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无数据</td></tr>'; return; }
+      if (auditEntries.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="empty">暂无数据</td></tr>'; }
       auditEntries.forEach(e => {
         const tr = document.createElement('tr');
         const detail = JSON.stringify(e.detail);
         tr.innerHTML = `<td>${escHtml(e.timestamp)}</td><td>${escHtml(e.actor)}</td><td><span class="tag tag-info">${escHtml(e.action)}</span></td><td title="${escHtml(detail)}">${escHtml(detail.length > 70 ? detail.slice(0,70)+'...' : detail)}</td>`;
         tbody.appendChild(tr);
       });
+      // Render pagination controls
+      const totalPages = Math.max(1, Math.ceil(auditTotal / AUDIT_PAGE_SIZE));
+      const hasPrev = auditCurrentPage > 0;
+      const hasNext = auditCurrentPage < totalPages - 1;
+      if (pager) {
+        pager.innerHTML = `
+          <button class="btn btn-secondary btn-sm" data-action="auditPrevPage" ${hasPrev ? '' : 'disabled'}>上一页</button>
+          <span class="page-info">第 ${auditCurrentPage + 1} / ${totalPages} 页（共 ${auditTotal} 条）</span>
+          <button class="btn btn-secondary btn-sm" data-action="auditNextPage" ${hasNext ? '' : 'disabled'}>下一页</button>
+        `;
+      }
     }
+
+    // Recent events feed (shown on overview page), capped at 100 entries
+    let recentEvents = [];
+    const MAX_RECENT_EVENTS = 100;
+    let recentFirstItem = null;
 
     function connectAuditStream() {
       const status = document.getElementById('sse-status');
@@ -1521,12 +1637,39 @@
           try {
             const entry = JSON.parse(ev.data);
             auditEntries.push(entry);
+            // Also update recent events feed on overview page
+            recentEvents.unshift(entry);
+            if (recentEvents.length > MAX_RECENT_EVENTS) recentEvents.length = MAX_RECENT_EVENTS;
+            recentFirstItem = entry;
+            renderRecentEvents();
             if (document.getElementById('page-audit').classList.contains('active')) renderAudit();
           } catch (e) { console.error(e); }
         });
-        es.onerror = () => { status.textContent = '实时流断开'; status.className = 'tag tag-muted'; };
-        es.onopen = () => { status.textContent = '实时流已连接'; status.className = 'tag tag-success'; };
+        es.onerror = () => { if (status) { status.textContent = '实时流断开'; status.className = 'tag tag-muted'; } };
+        es.onopen = () => { if (status) { status.textContent = '实时流已连接'; status.className = 'tag tag-success'; } };
       }
+    }
+
+    function renderRecentEvents() {
+      const feed = document.getElementById('recent-events');
+      if (!feed) return;
+      if (recentEvents.length === 0) {
+        feed.innerHTML = '<div class="empty" style="padding:16px">暂无事件</div>';
+        return;
+      }
+      const items = recentEvents.slice(0, 20);
+      feed.innerHTML = items.map(e => {
+        const time = (e.timestamp || '').slice(11, 19) || '-';
+        const ip = escHtml(e.source_ip || e.actor || '-');
+        const action = escHtml(e.action || '');
+        const cls = action.includes('block') || action.includes('Block') ? 'tag-danger' : 'tag-info';
+        return `<div class="event-feed-item">
+          <span class="event-feed-time">${time}</span>
+          <span class="event-feed-ip" data-action="openIpDrawer" data-ip="${ip}">${ip}</span>
+          <span class="tag ${cls}" style="font-size:11px">${action}</span>
+          <span class="event-feed-rule">${escHtml(typeof e.detail === 'object' ? JSON.stringify(e.detail).slice(0,60) : '')}</span>
+        </div>`;
+      }).join('');
     }
 
     // IP Drawer
@@ -1666,6 +1809,10 @@
         case 'reloadConfig': reloadConfig(); break;
         case 'resetToken': resetToken(); break;
         case 'copyToken': copyToken(); break;
+        case 'globalSearch': globalSearch(); break;
+        case 'drillAudit': drillAudit(el.dataset.reason || ''); break;
+        case 'auditPrevPage': auditPage(Math.max(0, auditCurrentPage - 1)); break;
+        case 'auditNextPage': auditPage(auditCurrentPage + 1); break;
       }
     });
 
@@ -1714,6 +1861,17 @@
       window.addEventListener('hashchange', navigate);
       document.getElementById('series-range').addEventListener('change', refreshTrafficChart);
       document.getElementById('series-type').addEventListener('change', refreshTrafficChart);
+      // Keyboard shortcut: press / to focus global search
+      document.addEventListener('keydown', e => {
+        if (e.key === '/' && document.activeElement === document.body) {
+          e.preventDefault();
+          document.getElementById('global-search').focus();
+        }
+      });
+      // Enter key on search box triggers search
+      document.getElementById('global-search').addEventListener('keydown', e => {
+        if (e.key === 'Enter') globalSearch();
+      });
       refreshStats();
       setInterval(refreshStats, 2000);
       setInterval(refreshTrafficChart, 10000);

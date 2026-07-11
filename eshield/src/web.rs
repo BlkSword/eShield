@@ -549,6 +549,8 @@ struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     limit: usize,
     #[serde(default)]
+    offset: usize,
+    #[serde(default)]
     filter: Option<String>,
     #[serde(default)]
     ip: Option<String>,
@@ -750,6 +752,7 @@ async fn audit_handler(
     let paged: Vec<_> = filtered
         .into_iter()
         .rev()
+        .skip(q.offset)
         .take(q.limit)
         .collect();
 

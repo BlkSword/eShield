@@ -46,22 +46,20 @@ pub async fn run(endpoint: String) -> anyhow::Result<()> {
     let mut last_draw = Instant::now();
 
     let stats_url = format!("{}/api/stats", endpoint.trim_end_matches('/'));
-    let mut snapshot = client
-        .get(&stats_url)
-        .send()
-        .await
-        .ok()
-        .and_then(|r| r.json().await.ok());
+    let mut snapshot = if let Ok(resp) = client.get(&stats_url).send().await {
+        resp.json().await.ok()
+    } else {
+        None
+    };
     terminal.draw(|f| draw(f, snapshot.as_ref()))?;
 
     loop {
         if last_draw.elapsed() >= Duration::from_millis(500) {
-            snapshot = client
-                .get(&stats_url)
-                .send()
-                .await
-                .ok()
-                .and_then(|r| r.json().await.ok());
+            snapshot = if let Ok(resp) = client.get(&stats_url).send().await {
+                resp.json().await.ok()
+            } else {
+                None
+            };
             terminal.draw(|f| draw(f, snapshot.as_ref()))?;
             last_draw = Instant::now();
         }
