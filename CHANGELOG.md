@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.3.4 (2026-07-11)
+
+### 修复
+
+- **协议维度丢包统计与全局计数不一致**：在 eBPF `GlobalStats` 中新增 `tcp_dropped` / `udp_dropped` / `icmp_dropped` / `other_dropped` 计数器，所有 DROP 路径按协议直接累加，用户态每秒从 Per-CPU map 同步，避免依赖 RingBuf 事件导致的 `tcp_dropped` / `top_ports` 与 `total_dropped` 量级不匹配。
+- **Ring Buffer stale 事件残留**：将启动 drain 时机提前到 XDP 挂载之前，杜绝挂载瞬间产生的事件被误判为残留事件；同时确保 `program_start_ns` 在数据面启动前已写入。
+
+### 改进
+
+- **eBPF 代码去重**：提取 `rate_counter.rs`（共享速率衰减逻辑）和 `blacklist.rs::add_to_blacklist`（共享黑名单插入），四个 flood 模块不再各自复制相同逻辑。
+- **纯函数提取与单元测试**：新增 `eshield-common/src/pure.rs`，将 `build_cookie`、`checksum`、`tcp_checksum`、`decay_counter`、`match_port_acl_entry`、`mix`、`mss_to_idx` 等无 eBPF 依赖的纯函数提取出来，并编写 20 个单元测试覆盖校验和、Cookie 构造、速率衰减、ACL 匹配逻辑。
+- **优雅退出（XDP 卸载）**：保存 `xdp_link_id`，SIGTERM/SIGINT 时显式 `xdp.detach()` 卸载 XDP 程序，避免遗留悬空钩子。
+- **时间函数统一**：新增 `eshield/src/time.rs`，所有写入 eBPF map 的时间戳统一使用 `CLOCK_MONOTONIC`；告警等 wall-clock 场景保留 `SystemTime` 并添加注释说明。
+- **`BLOCK_PERMANENT` 常量**：消除 `blocked_until_ns == 0` 语义歧义。
+- **审计日志文件持久化**：新增 `FileAuditBackend`，支持 JSON Lines 格式 + 自动轮转；新增 `[audit]` 配置段。
+- **API 错误格式统一**：所有 API 端点错误统一返回 `{"error":"..."}` JSON 格式。
+- **install.sh 改进**：版本号从 `Cargo.toml` 自动解析；service 路径修正为 `packaging/eshield.service`；默认白名单与 `config.example.toml` 对齐。
+- **Token 日志安全**：自动生成的访问令牌仅打印前 8 位前缀且降级为 `warn`。
+- **Dashboard ECharts 离线化**：ECharts 库嵌入二进制，不再依赖外部 CDN。
+- **Dashboard HTML 转义**：所有用户/服务端数据在 `innerHTML` 渲染前经过 `escHtml()` 转义，防止 XSS。
+- **审计日志服务端过滤**：`/api/audit` 新增 `filter` 查询参数，支持服务端全文过滤与分页。
+- **HTTP 请求日志中间件**：记录 method、path、status、耗时、客户端 IP。
+- **请求体大小限制**：超过 1 MiB 的请求返回 413 Payload Too Large。
+- **TUI 异步化**：`reqwest::blocking` 替换为异步 `reqwest::Client`。
+- **`/ready` 端点**：真实检查 eBPF 程序是否已加载，而非空返回。
+- **Dashboard 导航优化**：合并冗余页面，侧边栏从 6 页精简为 4 页分类（监控/防护/安全运营/系统）。
+
 ## 0.3.3 (2026-07-07)
 
 ### 修复

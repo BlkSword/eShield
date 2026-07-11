@@ -14,10 +14,20 @@ pub async fn healthz_handler() -> Response {
     (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
 }
 
-/// `/ready` — 服务就绪检查：eBPF 程序已挂载且接口存在
+/// `/ready` — 服务就绪检查：验证 eBPF 程序已加载。
 pub async fn ready_handler(State(state): axum::extract::State<Arc<WebState>>) -> Response {
-    // 简化实现：只要控制面初始化成功即认为 ready
-    // 未来可进一步检查 XDP 程序是否仍挂载在接口上
-    let _ = state;
-    (StatusCode::OK, Json(json!({ "status": "ready" }))).into_response()
+    let guard = state.control.ebpf.lock().await;
+    // 检查 eBPF 程序是否已加载（load 成功后 program 即存在）。
+    let ready = guard.program("eshield").is_some();
+    drop(guard);
+
+    if ready {
+        (StatusCode::OK, Json(json!({ "status": "ready" }))).into_response()
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "status": "not ready", "error": "eBPF program not loaded" })),
+        )
+            .into_response()
+    }
 }

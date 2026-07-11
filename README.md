@@ -87,9 +87,12 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | 运行时控制 | REST API + 中文 Web Dashboard + CLI + TUI，实时开关与调参。 |
 | 配置热加载 | `SIGHUP` 或 `systemctl reload` 重载配置，无需重启。 |
 | 认证 / 审计 / 持久化 | 可选 Bearer Token；审计日志；动态规则持久化到 redb。 |
-| 可观测性 | Prometheus `/metrics`、JSON 统计、审计 SSE、TOP 攻击源。 |
+| 可观测性 | Prometheus `/metrics`、JSON 统计、审计 SSE、TOP 攻击源/端口、协议分布、24 小时时序趋势。 |
+| 版本管理 | 控制台页脚与设置页自动同步后端运行版本。 |
 
 > **关于防护项目**：当前版本中，防护项目作为控制面策略分组被加载、校验、持久化并展示在 Dashboard/API 中；受 XDP verifier 组合栈 512 字节限制，暂不在 eBPF 数据面对每条连接按项目独立匹配。全局防御模块仍照常生效。
+>
+> **关于 L7 防御**：当前 L7 模块为轻量 TCP 首包指纹扫描，可识别扫描/探测行为，但不具备 HTTP Flood / CC / 慢速攻击的应用层防御能力。
 
 ---
 
@@ -234,7 +237,14 @@ sudo kill -HUP $(pidof eshield)
 
 ### Web Dashboard
 
-启动后访问 `http://<host>:8443/`，中文界面展示实时包统计、各防御模块命中数、TOP 攻击源、审计日志，并提供实时控制表单。
+启动后访问 `http://<host>:8443/`，中文 Web 控制台提供：
+
+- **总览**：实时包统计、DPS/PPS、各防御模块命中数、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源。
+- **防护策略**：统一的全局模块开关、速率限制参数、自适应黑名单参数与按端口的防护项目。
+- **规则中心**：端口 ACL、L7 指纹、GeoIP、威胁情报 feeds。
+- **安全运营**：IP 封禁/解封、CIDR 放行。
+- **审计日志**：操作审计与 SSE 实时流。
+- **设置**：运行时信息、告警配置、令牌管理。
 
 ### Prometheus 指标
 
@@ -333,7 +343,7 @@ sudo bash scripts/benchmark.sh
 - **主机级网络清洗盾**：面向“带宽没满、但连接/包处理被耗尽”的 SYN/UDP/ICMP Flood 与 CC 场景。
 - **不是 DDoS 银弹**：T 级带宽耗尽型攻击需要云厂商黑洞/清洗，eShield 无法突破物理网络天花板。
 - **SYN Cookie 代理**：当前仅支持 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战。
-- **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组。
+- **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
 - **Windows**：无法直接编译或运行，请使用 Linux 环境。
 - **防护项目**：当前为控制面配置分组，尚未在 eBPF 数据面按项目逐包匹配。
 

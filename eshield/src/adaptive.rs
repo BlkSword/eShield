@@ -1,6 +1,6 @@
 use aya::maps::HashMap as LruHashMap;
 use aya::Ebpf;
-use eshield_common::{rules, BlockEntry, IpKey};
+use eshield_common::{rules, BlockEntry, IpKey, BLOCK_PERMANENT};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AdaptiveConfig;
@@ -64,9 +64,9 @@ impl AdaptiveEngine {
 
         if window.len() as u64 >= threshold {
             let blocked_until_ns = if block_duration_s == 0 {
-                0
+                BLOCK_PERMANENT
             } else {
-                let now_ns = now_ns();
+                let now_ns = crate::time::monotonic_ns();
                 let block_ns = block_duration_s.saturating_mul(1_000_000_000);
                 now_ns.saturating_add(block_ns)
             };
@@ -80,7 +80,7 @@ impl AdaptiveEngine {
                 blocked_until_ns,
                 block_reason: rules::ADAPTIVE as u8,
                 hit_count: 0,
-                first_seen_ns: now_ns(),
+                first_seen_ns: crate::time::monotonic_ns(),
             };
             blacklist.insert(src_ip, entry, 0)?;
 
@@ -105,12 +105,5 @@ fn now_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
 }

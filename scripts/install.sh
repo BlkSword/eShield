@@ -6,7 +6,14 @@
 set -e
 
 REPO="eshield/eshield"
-VERSION="${VERSION:-0.3.1}"
+# 优先从环境变量读取版本；未设置时尝试从 Cargo.toml 解析；最后回退到默认版本。
+DEFAULT_VERSION="0.3.4"
+if [ -z "${VERSION:-}" ]; then
+    if [ -f "Cargo.toml" ] && command -v grep >/dev/null 2>&1; then
+        VERSION=$(grep -E '^version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
+    VERSION="${VERSION:-$DEFAULT_VERSION}"
+fi
 INSTALL_BIN="/usr/local/bin/eshield"
 INSTALL_CFG="/etc/eshield/config.toml"
 STORE_PATH="/var/lib/eshield/rules.redb"
@@ -84,7 +91,7 @@ alert_webhook_type = "generic"
 alert_threshold_dps = 1000
 alert_cooldown_s = 60
 
-whitelist = ["127.0.0.1/32"]
+whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
 blacklist = []
 
 [rate_limit]
@@ -121,10 +128,12 @@ EOF
 fi
 
 SERVICE_FILE="/etc/systemd/system/eshield.service"
-if [ -f "systemd/eshield.service" ]; then
+if [ -f "packaging/eshield.service" ]; then
+    cp "packaging/eshield.service" "$SERVICE_FILE"
+elif [ -f "systemd/eshield.service" ]; then
     cp "systemd/eshield.service" "$SERVICE_FILE"
 else
-    curl -sSL "https://raw.githubusercontent.com/${REPO}/v${VERSION}/systemd/eshield.service" -o "$SERVICE_FILE"
+    curl -sSL "https://raw.githubusercontent.com/${REPO}/v${VERSION}/packaging/eshield.service" -o "$SERVICE_FILE"
 fi
 chmod 644 "$SERVICE_FILE"
 

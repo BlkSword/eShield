@@ -54,6 +54,8 @@ pub struct Config {
     pub alert_threshold_dps: u64,
     #[serde(default = "default_alert_cooldown_s")]
     pub alert_cooldown_s: u64,
+    #[serde(default)]
+    pub audit: AuditConfig,
 }
 
 fn default_web_port() -> u16 {
@@ -74,6 +76,35 @@ fn default_alert_threshold_dps() -> u64 {
 
 fn default_alert_cooldown_s() -> u64 {
     60
+}
+
+/// 审计日志持久化配置。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuditConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_audit_path")]
+    pub path: String,
+    #[serde(default = "default_audit_max_size_mb")]
+    pub max_size_mb: u64,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: default_audit_path(),
+            max_size_mb: default_audit_max_size_mb(),
+        }
+    }
+}
+
+fn default_audit_path() -> String {
+    "/var/log/eshield/audit.log".to_string()
+}
+
+fn default_audit_max_size_mb() -> u64 {
+    100
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -572,8 +603,8 @@ impl PortAclItem {
         };
         Ok(PortAclEntry {
             protocol,
-            dport_low: low,
-            dport_high: high,
+            dport_low: u16::to_be(low),
+            dport_high: u16::to_be(high),
             action,
             padding: [0; 11],
         })

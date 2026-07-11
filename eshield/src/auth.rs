@@ -4,6 +4,7 @@ use axum::{
     http::{header::ACCEPT, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
+    Json,
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -107,7 +108,11 @@ pub async fn auth_middleware(
                     .unwrap()
                     .into_response()
             } else {
-                (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(serde_json::json!({ "error": "Unauthorized" })),
+                )
+                    .into_response()
             }
         }
     }

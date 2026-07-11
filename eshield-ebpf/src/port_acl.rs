@@ -1,10 +1,15 @@
 use aya_ebpf::programs::XdpContext;
 
 use crate::maps::{EVENTS, PORT_ACL};
+use eshield_common::pure::{match_port_acl_entry, AclMatch};
 use eshield_common::{rules, DropEvent, IpKey};
 
 /// 检查端口/协议 ACL 规则表。
-/// 返回 true 表示应 DROP，false 表示无匹配规则（交由后续逻辑）。
+///
+/// 规则按数组顺序进行 first-match 评估：
+/// - `action == 2 (drop)` 且匹配时立即 DROP 并返回 true。
+/// - `action == 1 (allow)` 且匹配时立即放行并返回 false，后续规则不再评估。
+/// - 无匹配规则时返回 false，交由后续全局模块处理。
 pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) -> bool {
     for i in 0..128u32 {
         let entry = match PORT_ACL.get(i) {
@@ -35,13 +40,17 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) 
             }
         }
 
-        // action: 1 = allow, 2 = drop
-        if entry.action == 2 {
-            emit_port_acl_event(_ctx, src, protocol, dport);
-            return true;
+        let dport_low = u16::from_be(entry.dport_low);
+        let dport_high = u16::from_be(entry.dport_high);
+
+        match match_port_acl_entry(protocol, dport, entry.protocol, dport_low, dport_high, entry.action) {
+            Some(AclMatch::Drop) => {
+                emit_port_acl_event(_ctx, src, protocol, dport);
+                return true;
+            }
+            Some(AclMatch::Allow) => return false,
+            None => continue,
         }
-        // 显式 allow 不再继续检查
-        return false;
     }
 
     false

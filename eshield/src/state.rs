@@ -71,7 +71,7 @@ impl Default for Stats {
                 AtomicU64::new(0),
             ],
             top_attackers: DashMap::new(),
-            timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(360, 10))),
+            timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(8640, 10))),
         }
     }
 }
@@ -82,7 +82,6 @@ impl Stats {
         &self,
         by_reason: &HashMap<u16, u64>,
         by_source: &HashMap<IpKey, u64>,
-        by_protocol: &HashMap<u8, u64>,
         by_port: &HashMap<u16, u64>,
     ) {
         if by_source.is_empty() {
@@ -106,16 +105,6 @@ impl Stats {
                 .entry(src_ip)
                 .or_insert_with(|| AtomicU64::new(0))
                 .fetch_add(count, Ordering::Relaxed);
-        }
-
-        for (&protocol, &count) in by_protocol {
-            let counter = match protocol {
-                6 => &self.tcp_dropped,
-                17 => &self.udp_dropped,
-                1 | 58 => &self.icmp_dropped,
-                _ => &self.other_dropped,
-            };
-            counter.fetch_add(count, Ordering::Relaxed);
         }
 
         for (&port, &count) in by_port {
@@ -170,7 +159,7 @@ mod tests {
         let mut by_source = HashMap::new();
         by_source.insert(IpKey::from_ipv4([192, 0, 2, 1]), 5);
 
-        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
+        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new());
 
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 2);
@@ -187,7 +176,7 @@ mod tests {
     #[test]
     fn test_add_dropped_batch_empty_is_noop() {
         let stats = Stats::default();
-        stats.add_dropped_batch(&HashMap::new(), &HashMap::new(), &HashMap::new(), &HashMap::new());
+        stats.add_dropped_batch(&HashMap::new(), &HashMap::new(), &HashMap::new());
         assert!(stats.top_attackers.is_empty());
     }
 
@@ -199,7 +188,7 @@ mod tests {
         let mut by_source = HashMap::new();
         by_source.insert(IpKey::from_ipv4([10, 0, 0, 1]), 7);
 
-        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new(), &HashMap::new());
+        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new());
 
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);

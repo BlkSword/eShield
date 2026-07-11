@@ -42,15 +42,16 @@ pub async fn run(endpoint: String) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::Client::new();
     let mut last_draw = Instant::now();
 
     let stats_url = format!("{}/api/stats", endpoint.trim_end_matches('/'));
     let mut snapshot = client
         .get(&stats_url)
         .send()
+        .await
         .ok()
-        .and_then(|r| r.json().ok());
+        .and_then(|r| r.json().await.ok());
     terminal.draw(|f| draw(f, snapshot.as_ref()))?;
 
     loop {
@@ -58,8 +59,9 @@ pub async fn run(endpoint: String) -> anyhow::Result<()> {
             snapshot = client
                 .get(&stats_url)
                 .send()
+                .await
                 .ok()
-                .and_then(|r| r.json().ok());
+                .and_then(|r| r.json().await.ok());
             terminal.draw(|f| draw(f, snapshot.as_ref()))?;
             last_draw = Instant::now();
         }

@@ -35,6 +35,12 @@ alert_webhook_type = "generic"
 alert_threshold_dps = 1000
 alert_cooldown_s = 60
 
+# 审计日志持久化（默认关闭；开启后操作审计会写入 JSON Lines 文件）
+[audit]
+enabled = false
+path = "/var/log/eshield/audit.log"
+max_size_mb = 100
+
 # 白名单 CIDR 列表（永不被拦截）
 whitelist = [
     "127.0.0.1/32",

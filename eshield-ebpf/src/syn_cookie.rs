@@ -1,8 +1,9 @@
 use aya_ebpf::{bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, programs::XdpContext};
 use core::mem;
 
-use crate::maps::COOKIE_SECRETS;
+use crate::maps::{COOKIE_SECRETS, GLOBAL_STATS};
 use crate::parser::{ptr_at, ptr_at_mut, EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN};
+use eshield_common::pure::{build_cookie, checksum, mss_to_idx, tcp_checksum};
 use crate::syn_flood;
 use eshield_common::IpKey;
 
@@ -11,7 +12,6 @@ const TCP_FLAG_ACK: u8 = 0x10;
 const TCP_OPT_MSS: u8 = 2;
 const BUCKET_DURATION_S: u64 = 60;
 const VALID_BUCKETS: u8 = 2;
-const COOKIE_SECRET_LEN: usize = 16;
 
 /// MSS 档位表，高 8 位 cookie 用索引编码。
 const MSS_TABLE: [(u8, u16); 3] = [(0, 536), (1, 1300), (2, 1460)];
@@ -55,6 +55,11 @@ pub fn handle_syn(ctx: &XdpContext, ip: *const IpHdr, ip_hdr_len: usize) -> Opti
     let now_ns = unsafe { bpf_ktime_get_ns() };
     let src_key = IpKey::from_ipv4(saddr.to_ne_bytes());
     if syn_flood::handle_syn_flood(ctx, &src_key, TCP_FLAG_SYN, now_ns) {
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                (*stats).syn_flood_blocked += 1;
+            }
+        }
         return Some(xdp_action::XDP_DROP);
     }
 
@@ -148,49 +153,6 @@ pub fn handle_ack(ctx: &XdpContext, ip: *const IpHdr, ip_hdr_len: usize) -> Opti
     None
 }
 
-#[inline(always)]
-fn build_cookie(
-    saddr: u32,
-    daddr: u32,
-    sport: u16,
-    dport: u16,
-    bucket: u32,
-    mss_idx: u8,
-    secret: &[u8; COOKIE_SECRET_LEN],
-) -> u32 {
-    let mut h: u32 = 0x9e37_79b9;
-    mix(&mut h, u32::from_be(saddr));
-    mix(&mut h, u32::from_be(daddr));
-    mix(&mut h, ((sport as u32) << 16) | (dport as u32));
-    mix(&mut h, bucket);
-    mix(&mut h, mss_idx as u32);
-
-    for &b in secret.iter() {
-        mix(&mut h, b as u32);
-    }
-
-    // 高 8 位存 MSS 索引，低 24 位存 hash
-    ((mss_idx as u32) << 24) | (h & 0x00ff_ffff)
-}
-
-#[inline(always)]
-fn mix(h: &mut u32, v: u32) {
-    *h = h.wrapping_add(v);
-    *h = h.rotate_left(5);
-    *h = (*h) ^ ((*h) >> 16);
-}
-
-/// 从客户端 MSS 选择档位索引。
-#[inline(always)]
-fn mss_to_idx(mss: u16) -> u8 {
-    if mss >= 1460 {
-        2
-    } else if mss >= 1300 {
-        1
-    } else {
-        0
-    }
-}
 
 /// 解析 TCP MSS 选项。当前仅处理 24 字节 TCP 头（含单个 MSS option）的情况。
 #[inline(always)]
@@ -279,52 +241,3 @@ fn send_synack(
     Ok(())
 }
 
-#[inline(always)]
-fn checksum(data: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    let mut i = 0;
-    while i + 1 < data.len() {
-        let word = ((data[i] as u32) << 8) | (data[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-    if i < data.len() {
-        sum += (data[i] as u32) << 8;
-    }
-    for _ in 0..4 {
-        if (sum >> 16) == 0 {
-            break;
-        }
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-#[inline(always)]
-fn tcp_checksum(saddr: u32, daddr: u32, proto: u8, tcp_data: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-    // 伪首部
-    sum += (saddr >> 16) & 0xffff;
-    sum += saddr & 0xffff;
-    sum += (daddr >> 16) & 0xffff;
-    sum += daddr & 0xffff;
-    sum += proto as u32;
-    sum += tcp_data.len() as u32;
-
-    let mut i = 0;
-    while i + 1 < tcp_data.len() {
-        let word = ((tcp_data[i] as u32) << 8) | (tcp_data[i + 1] as u32);
-        sum += word;
-        i += 2;
-    }
-    if i < tcp_data.len() {
-        sum += (tcp_data[i] as u32) << 8;
-    }
-    for _ in 0..4 {
-        if (sum >> 16) == 0 {
-            break;
-        }
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}

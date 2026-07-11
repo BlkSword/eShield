@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::time::monotonic_secs as monotonic_now_secs;
 
 use crate::ip::format_ip_key;
 use crate::state::Stats;
@@ -26,12 +27,15 @@ pub struct MetricPoint {
     pub pps: u64,
     /// Snapshot of top attackers at this point: ip -> count.
     pub top_attackers: std::collections::HashMap<String, u64>,
+    /// Snapshot of top attacked ports at this point: port -> count.
+    pub port_dropped: std::collections::HashMap<u16, u64>,
 }
 
 /// Fixed-size in-memory ring buffer for time-series metrics.
 ///
 /// Designed to be cheap enough to sample every few seconds from a tokio task
 /// without introducing external TSDB dependencies for a single-node tool.
+/// Default capacity 8640 slots at 10s interval retains 24 hours of data.
 #[derive(Debug)]
 pub struct TimeSeriesWindow {
     slots: Vec<MetricPoint>,
@@ -65,10 +69,7 @@ impl TimeSeriesWindow {
 
     /// Record a new point from the current `Stats` snapshot.
     pub fn record(&mut self, stats: &Stats) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = monotonic_now_secs();
 
         // Avoid duplicate points within the same second.
         if now == self.head_timestamp && !self.slots.is_empty() {
@@ -105,6 +106,12 @@ impl TimeSeriesWindow {
             })
             .collect();
 
+        let port_dropped: HashMap<u16, u64> = stats
+            .port_dropped
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().load(Ordering::Relaxed)))
+            .collect();
+
         let point = MetricPoint {
             timestamp: now,
             total_packets,
@@ -121,6 +128,7 @@ impl TimeSeriesWindow {
             dps,
             pps,
             top_attackers,
+            port_dropped,
         };
 
         if self.slots.len() == self.capacity {
@@ -139,11 +147,7 @@ impl TimeSeriesWindow {
     /// If `duration_s` is 0 or larger than the window capacity allows,
     /// returns all retained slots.
     pub fn snapshot(&self, duration_s: u64) -> Vec<MetricPoint> {
-        let cutoff = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-            .saturating_sub(duration_s);
+        let cutoff = monotonic_now_secs().saturating_sub(duration_s);
 
         if duration_s == 0 {
             return self.slots.clone();

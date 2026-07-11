@@ -13,6 +13,7 @@ mod logging;
 mod state;
 mod store;
 mod threat_intel;
+mod time;
 mod timeseries;
 mod tui;
 mod web;
@@ -38,7 +39,7 @@ use tracing::{info, warn};
 
 use crate::{
     alert::{AlertConfig, AlertManager},
-    audit::{AuditAction, Auditor, MemoryAuditBackend},
+    audit::{AuditAction, Auditor, FileAuditBackend, MemoryAuditBackend},
     auth::AuthState,
     config::Config,
     control::ControlState,
@@ -47,20 +48,6 @@ use crate::{
 };
 
 const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
-
-/// 读取 CLOCK_MONOTONIC，返回自系统启动以来的纳秒数。
-fn monotonic_ns() -> u64 {
-    let mut ts = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    unsafe {
-        if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) != 0 {
-            return 0;
-        }
-    }
-    (ts.tv_sec as u64).wrapping_mul(1_000_000_000).wrapping_add(ts.tv_nsec as u64)
-}
 
 #[derive(Debug, Parser)]
 #[command(name = "eshield")]
@@ -171,6 +158,12 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         "../../target/bpfel-unknown-none/release/eshield"
     ))?;
 
+    // 用户态统计状态需要在 XDP 挂载前创建，这样 program_start_ns 才能过滤掉
+    // 任何在 ring buffer 中残留的 stale 事件。
+    let state = Arc::new(AppStateInner::new());
+    let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
+    state.stats.program_start_ns.store(crate::time::monotonic_ns(), Ordering::Relaxed);
+
     if config.ebpf_log_enabled {
         if let Err(e) = EbpfLogger::init(&mut ebpf) {
             warn!("failed to initialize eBPF logger: {}", e);
@@ -182,33 +175,69 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // 初始化 SYN Cookie 密钥
     init_cookie_secrets(&mut ebpf)?;
 
+    // 在 XDP 挂载前清空 Ring Buffer：挂载后数据面会立即开始收包并产生事件，
+    // 若先挂载再 drain，可能把启动瞬间的流量事件误判为残留事件。
+    match aya::maps::RingBuf::try_from(ebpf.map_mut("EVENTS").expect("EVENTS map not found")) {
+        Ok(mut ring_buf) => {
+            let mut drained = 0usize;
+            while ring_buf.next().is_some() {
+                drained += 1;
+                // 上限提高到 50M，避免旧版本遗留的巨量事件污染新进程统计
+                if drained >= 50_000_000 {
+                    warn!("drained more than 50M stale events, stopping to avoid spin");
+                    break;
+                }
+            }
+            if drained > 0 {
+                info!("drained {} stale events from EVENTS ring buffer", drained);
+            }
+        }
+        Err(e) => warn!("failed to open EVENTS map for drain: {}", e),
+    }
+
     let program: &mut Xdp = ebpf
         .program_mut("eshield")
         .context("program 'eshield' not found")?
         .try_into()?;
     program.load()?;
 
-    // 优先原生模式挂载，失败则回退到通用模式
-    match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
-        Ok(_) => info!("attached XDP in DRV (native) mode on {}", config.interface),
+    // 优先原生模式挂载，失败则回退到通用模式；保存 link_id 用于优雅退出时显式卸载。
+    let xdp_link_id = match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
+        Ok(id) => {
+            info!("attached XDP in DRV (native) mode on {}", config.interface);
+            Some(id)
+        }
         Err(e) => {
             warn!("native XDP attach failed ({}), trying generic mode", e);
-            program
+            let id = program
                 .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
                 .context("failed to attach XDP program")?;
             info!("attached XDP in SKB (generic) mode on {}", config.interface);
+            Some(id)
         }
-    }
-
-    let state = Arc::new(AppStateInner::new());
-    state.stats.program_start_ns.store(monotonic_ns(), Ordering::Relaxed);
-    let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
+    };
 
     // Ebpf 状态由控制面、事件消费任务与热加载共享
     let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
 
-    // 可观测性组件
-    let auditor = Auditor::new(MemoryAuditBackend::new(10_000));
+    // 可观测性组件：审计后端根据配置选择内存或文件持久化。
+    let auditor = if config.audit.enabled {
+        match FileAuditBackend::new(&config.audit.path, config.audit.max_size_mb) {
+            Ok(backend) => {
+                info!("using persistent audit log: {}", config.audit.path);
+                Auditor::new(backend)
+            }
+            Err(e) => {
+                warn!(
+                    "failed to initialize file audit backend ({}), falling back to memory",
+                    e
+                );
+                Auditor::new(MemoryAuditBackend::new(10_000))
+            }
+        }
+    } else {
+        Auditor::new(MemoryAuditBackend::new(10_000))
+    };
     let store = RuleStore::new(&config.store_path)
         .context("failed to open rule store")?;
     let alert = AlertManager::new(AlertConfig {
@@ -218,12 +247,13 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         cooldown_s: config.alert_cooldown_s,
         interface: config.interface.clone(),
     });
-    // 若未配置 api_token，则自动生成随机 Token 并打印到日志，避免控制台默认匿名访问。
+    // 若未配置 api_token，则自动生成随机 Token。
+    // 为降低日志泄露风险，仅输出 token 前缀，完整 token 请在控制台设置页查看。
     let api_token = config.api_token.clone().or_else(|| {
         let token = format!("{:032x}", rand::random::<u128>());
-        info!(
-            "api_token not configured; generated random console access token: {}",
-            token
+        warn!(
+            "api_token not configured; generated random console access token (prefix): {}...",
+            &token[..8]
         );
         Some(token)
     });
@@ -302,31 +332,6 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动前清空 Ring Buffer 中可能残留的 stale 事件（如前一次测试未消费完的事件），
-    // 避免它们被新进程的事件消费器重复计数。
-    {
-        let mut guard = ebpf.lock().await;
-        match aya::maps::RingBuf::try_from(
-            guard.map_mut("EVENTS").expect("EVENTS map not found"),
-        ) {
-            Ok(mut ring_buf) => {
-                let mut drained = 0usize;
-                while ring_buf.next().is_some() {
-                    drained += 1;
-                    // 上限提高到 50M，避免旧版本遗留的巨量事件污染新进程统计
-                    if drained >= 50_000_000 {
-                        warn!("drained more than 50M stale events, stopping to avoid spin");
-                        break;
-                    }
-                }
-                if drained > 0 {
-                    info!("drained {} stale events from EVENTS ring buffer", drained);
-                }
-            }
-            Err(e) => warn!("failed to open EVENTS map for drain: {}", e),
-        }
-    }
-
     // 启动事件消费任务：周期性获取 Ebpf 锁消费事件，避免阻塞热加载
     let event_handle = {
         let stats = state.stats.clone();
@@ -382,6 +387,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     };
 
     let mut sighup = unix_signal(SignalKind::hangup())?;
+    let mut sigterm = unix_signal(SignalKind::terminate())?;
 
     info!(
         "eShield is running on {}, press Ctrl-C to stop, send SIGHUP to reload config",
@@ -391,7 +397,14 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => {
-                info!("shutting down eShield");
+                info!("shutting down eShield (SIGINT)");
+                auditor
+                    .log("system", AuditAction::Stop, serde_json::json!({}), None)
+                    .await;
+                break;
+            }
+            _ = sigterm.recv() => {
+                info!("shutting down eShield (SIGTERM)");
                 auditor
                     .log("system", AuditAction::Stop, serde_json::json!({}), None)
                     .await;
@@ -421,6 +434,20 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let _ = timeseries_handle.await;
     let _ = global_stats_handle.await;
     let _ = top_attackers_handle.await;
+
+    // 优雅退出：显式卸载 XDP 程序，避免 systemd stop / SIGTERM 时留下悬空 XDP 钩子。
+    if let Some(link_id) = xdp_link_id {
+        let mut guard = ebpf.lock().await;
+        if let Some(prog) = guard.program_mut("eshield") {
+            if let Ok(xdp) = prog.try_into() as Result<&mut Xdp, _> {
+                if let Err(e) = xdp.detach(link_id) {
+                    warn!("failed to detach XDP program: {}", e);
+                } else {
+                    info!("XDP program detached gracefully");
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -561,10 +588,9 @@ fn init_cookie_secrets(ebpf: &mut Ebpf) -> anyhow::Result<()> {
         .context("COOKIE_SECRETS map not found")?
         .try_into()?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // bucket 必须与 eBPF 数据面 `bpf_ktime_get_ns()` 的秒级 bucket 对齐，
+    // 因此使用 CLOCK_MONOTONIC 而非 UNIX_EPOCH。
+    let now = crate::time::monotonic_secs();
 
     secrets.set(
         0,
@@ -595,10 +621,8 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
         .context("COOKIE_SECRETS map not found")?
         .try_into()?;
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    // bucket 使用 CLOCK_MONOTONIC，与 eBPF 数据面保持一致。
+    let now = crate::time::monotonic_secs();
     let bucket = now / 60;
 
     let mut current = secrets_map
@@ -657,6 +681,10 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
                         acc.tcp_rst_sent += v.tcp_rst_sent;
                         acc.tcp_rst_fail += v.tcp_rst_fail;
                         acc.tcp_rst_attempt += v.tcp_rst_attempt;
+                        acc.tcp_dropped += v.tcp_dropped;
+                        acc.udp_dropped += v.udp_dropped;
+                        acc.icmp_dropped += v.icmp_dropped;
+                        acc.other_dropped += v.other_dropped;
                     }
                     info!(
                         "sync_global_stats total_packets={} total_dropped={} blacklist_blocked={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
@@ -683,6 +711,10 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats.tcp_rst_sent.store(acc.tcp_rst_sent, Ordering::Relaxed);
         stats.tcp_rst_fail.store(acc.tcp_rst_fail, Ordering::Relaxed);
         stats.tcp_rst_attempt.store(acc.tcp_rst_attempt, Ordering::Relaxed);
+        stats.tcp_dropped.store(acc.tcp_dropped, Ordering::Relaxed);
+        stats.udp_dropped.store(acc.udp_dropped, Ordering::Relaxed);
+        stats.icmp_dropped.store(acc.icmp_dropped, Ordering::Relaxed);
+        stats.other_dropped.store(acc.other_dropped, Ordering::Relaxed);
 
         let pps = acc.total_packets.saturating_sub(last_packets);
         let dps = acc.total_dropped.saturating_sub(last_dropped);

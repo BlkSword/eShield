@@ -634,7 +634,7 @@ dependencies = [
 
 [[package]]
 name = "eshield"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -668,14 +668,14 @@ dependencies = [
 
 [[package]]
 name = "eshield-common"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aya",
 ]
 
 [[package]]
 name = "eshield-ebpf"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",
@@ -1926,6 +1926,7 @@ version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",

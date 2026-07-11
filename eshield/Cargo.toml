@@ -1,6 +1,6 @@
 [package]
 name = "eshield"
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 license = "Apache-2.0"
 description = "eBPF/XDP host-level CC defense shield - userspace control plane"
@@ -14,7 +14,7 @@ aya-log = { workspace = true }
 eshield-common = { path = "../eshield-common", features = ["userspace"] }
 anyhow = { workspace = true }
 clap = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 serde = { version = "1", features = ["derive"] }

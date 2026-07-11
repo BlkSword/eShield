@@ -1,7 +1,7 @@
 use axum::{
     body::Body,
     extract::{ConnectInfo, Query, Request, State},
-    http::StatusCode,
+    http::{header, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, Html, IntoResponse, Response, Sse},
     routing::{get, post},
@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio_stream::wrappers::BroadcastStream;
 use chrono::Utc;
 
@@ -23,6 +24,56 @@ use crate::health;
 use crate::ip::format_ip_key;
 use crate::login_limiter::LoginLimiter;
 use crate::state::Stats;
+
+/// Embedded ECharts library for offline dashboard use.
+const ECHARTS_JS: &[u8] = include_bytes!("echarts.min.js");
+
+/// 统一 API 错误响应体：`{ "error": "..." }`。
+type ApiError = (StatusCode, Json<serde_json::Value>);
+
+fn api_err(status: StatusCode, msg: impl Into<String>) -> ApiError {
+    (status, Json(serde_json::json!({ "error": msg.into() })))
+}
+
+fn api_err_response(status: StatusCode, msg: impl Into<String>) -> Response {
+    (status, Json(serde_json::json!({ "error": msg.into() }))).into_response()
+}
+
+/// HTTP request logging middleware: logs method, path, status, and duration.
+async fn request_logger(ConnectInfo(addr): ConnectInfo<SocketAddr>, request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let start = Instant::now();
+    let response = next.run(request).await;
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+    tracing::info!(
+        event_type = "http",
+        client_ip = %addr.ip(),
+        method = %method,
+        path = %path,
+        status = status,
+        elapsed_ms = elapsed_ms,
+        "http request"
+    );
+    response
+}
+
+/// Body size limiting middleware: rejects requests with body > 1 MiB.
+async fn body_size_limit(request: Request, next: Next) -> Response {
+    const MAX_BODY: u64 = 1_048_576; // 1 MiB
+    if let Some(len) = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        if len > MAX_BODY {
+            return api_err_response(StatusCode::PAYLOAD_TOO_LARGE, "request body too large");
+        }
+    }
+    next.run(request).await
+}
 
 fn map_data(map: &aya::maps::Map) -> Option<&aya::maps::MapData> {
     use aya::maps::Map;
@@ -74,7 +125,9 @@ pub async fn run(
         .route("/ready", get(health::ready_handler))
         .route("/login", get(login_handler))
         .route("/blocked", get(blocked_handler))
+        .route("/static/echarts.min.js", get(echarts_handler))
         .route("/api/auth/login", post(login_api_handler))
+        .layer(middleware::from_fn(request_logger))
         .with_state(state.clone());
 
     let protected = Router::new()
@@ -109,6 +162,8 @@ pub async fn run(
         .route("/api/geoip/reload", post(reload_geoip_handler))
         .route("/api/threat-intel/sync", post(sync_threat_intel_handler))
         .route("/metrics", get(metrics_handler))
+        .layer(middleware::from_fn(body_size_limit))
+        .layer(middleware::from_fn(request_logger))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state.clone());
 
@@ -147,12 +202,23 @@ struct StatsResponse {
     tcp_rst_sent: u64,
     tcp_rst_fail: u64,
     tcp_rst_attempt: u64,
+    tcp_dropped: u64,
+    udp_dropped: u64,
+    icmp_dropped: u64,
+    other_dropped: u64,
     top_attackers: Vec<Attacker>,
+    top_ports: Vec<PortDrop>,
 }
 
 #[derive(Serialize)]
 struct Attacker {
     ip: String,
+    count: u64,
+}
+
+#[derive(Serialize)]
+struct PortDrop {
+    port: u16,
     count: u64,
 }
 
@@ -208,6 +274,15 @@ async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<Str
     Html(html)
 }
 
+/// Serve embedded ECharts from binary (no CDN dependency).
+async fn echarts_handler() -> Response {
+    (
+        [("content-type", "application/javascript; charset=utf-8")],
+        ECHARTS_JS,
+    )
+        .into_response()
+}
+
 async fn login_handler() -> Html<String> {
     Html(include_str!("login.html").to_string())
 }
@@ -219,7 +294,7 @@ async fn login_api_handler(
 ) -> Response {
     let ip = addr.ip();
     if let Err(msg) = state.login_limiter.check(ip) {
-        return (StatusCode::TOO_MANY_REQUESTS, msg).into_response();
+        return api_err_response(StatusCode::TOO_MANY_REQUESTS, msg);
     }
 
     if state.auth.verify(&req.token).await {
@@ -251,7 +326,7 @@ async fn login_api_handler(
                 Some(ip.to_string()),
             )
             .await;
-        (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+        api_err_response(StatusCode::UNAUTHORIZED, "Invalid token")
     }
 }
 
@@ -401,71 +476,71 @@ fn field_readonly(id: &str, label: &str, value: serde_json::Value) -> serde_json
 async fn patch_config_handler(
     State(state): State<Arc<WebState>>,
     Json(patch): Json<RuntimeConfigPatch>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .patch_runtime(patch)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok("配置已更新")
 }
 
 async fn reload_config_handler(
     State(state): State<Arc<WebState>>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .reload_config_file()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok("配置已从文件重新加载")
 }
 
 async fn block_ip_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<BlockIpReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .block_ip(&req.ip, req.duration_s)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("已封禁")
 }
 
 async fn unblock_ip_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<UnblockIpReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .unblock_ip(&req.ip)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("已解封")
 }
 
 async fn allow_cidr_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<AllowCidrReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .allow_cidr(&req.cidr)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("已加入白名单")
 }
 
 async fn disallow_cidr_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<DisallowCidrReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .disallow_cidr(&req.cidr)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("已移除白名单")
 }
 
@@ -473,6 +548,8 @@ async fn disallow_cidr_handler(
 struct AuditQuery {
     #[serde(default = "default_audit_limit")]
     limit: usize,
+    #[serde(default)]
+    filter: Option<String>,
     #[serde(default)]
     ip: Option<String>,
     #[serde(default)]
@@ -525,15 +602,15 @@ async fn list_port_acl_handler(State(state): State<Arc<WebState>>) -> Json<serde
 async fn set_port_acl_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SetPortAclReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     if req.items.len() > 128 {
-        return Err((StatusCode::BAD_REQUEST, "too many port_acl entries (max 128)".to_string()));
+        return Err(api_err(StatusCode::BAD_REQUEST, "too many port_acl entries (max 128)"));
     }
     state
         .control
         .set_port_acl(req.items)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("端口 ACL 已更新")
 }
 
@@ -547,18 +624,15 @@ async fn list_protection_projects_handler(
 async fn set_protection_projects_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SetProtectionProjectsReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     if req.projects.len() > 256 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "too many protection projects (max 256)".to_string(),
-        ));
+        return Err(api_err(StatusCode::BAD_REQUEST, "too many protection projects (max 256)"));
     }
     state
         .control
         .set_protection_projects(req.projects)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("防护项目已更新")
 }
 
@@ -570,26 +644,26 @@ async fn list_l7_patterns_handler(State(state): State<Arc<WebState>>) -> Json<se
 async fn set_l7_patterns_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SetL7PatternsReq>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     if req.patterns.len() > 16 {
-        return Err((StatusCode::BAD_REQUEST, "too many L7 patterns (max 16)".to_string()));
+        return Err(api_err(StatusCode::BAD_REQUEST, "too many L7 patterns (max 16)"));
     }
     state
         .control
         .set_l7_patterns(req.patterns)
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok("L7 指纹已更新")
 }
 
 async fn reload_geoip_handler(
     State(state): State<Arc<WebState>>,
-) -> Result<&'static str, (StatusCode, String)> {
+) -> Result<&'static str, ApiError> {
     state
         .control
         .reload_geoip()
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok("GeoIP 已重新加载")
 }
 
@@ -609,19 +683,33 @@ async fn sync_threat_intel_handler(State(state): State<Arc<WebState>>) -> &'stat
 async fn audit_handler(
     State(state): State<Arc<WebState>>,
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let entries = state
         .auditor
         .list(10_000)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    let filter_text = q.filter.as_deref().map(|s| s.to_lowercase());
     let ip_filter = q.ip.as_deref().map(|s| s.to_lowercase());
     let action_filter = q.action.as_deref().map(|s| s.to_lowercase());
 
     let filtered: Vec<_> = entries
         .into_iter()
         .filter(|e| {
+            if let Some(ft) = &filter_text {
+                let hay = format!(
+                    "{} {} {} {}",
+                    e.timestamp,
+                    e.actor,
+                    serde_json::to_string(&e.action).unwrap_or_default(),
+                    serde_json::to_string(&e.detail).unwrap_or_default()
+                )
+                .to_lowercase();
+                if !hay.contains(ft) {
+                    return false;
+                }
+            }
             if let Some(ip) = &ip_filter {
                 let hay = format!(
                     "{} {} {}",
@@ -655,11 +743,17 @@ async fn audit_handler(
             }
             true
         })
+        .collect::<Vec<_>>();
+
+    let total = filtered.len();
+
+    let paged: Vec<_> = filtered
+        .into_iter()
         .rev()
         .take(q.limit)
         .collect();
 
-    Ok(Json(serde_json::json!({ "entries": filtered })))
+    Ok(Json(serde_json::json!({ "entries": paged, "total": total })))
 }
 
 async fn audit_stream_handler(
@@ -720,6 +814,17 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
     top_attackers.sort_by_key(|a| std::cmp::Reverse(a.count));
     top_attackers.truncate(20);
 
+    let mut top_ports: Vec<PortDrop> = stats
+        .port_dropped
+        .iter()
+        .map(|entry| PortDrop {
+            port: *entry.key(),
+            count: entry.value().load(Ordering::Relaxed),
+        })
+        .collect();
+    top_ports.sort_by_key(|p| std::cmp::Reverse(p.count));
+    top_ports.truncate(10);
+
     StatsResponse {
         total_packets: stats.total_packets.load(Ordering::Relaxed),
         total_passed: stats.total_passed.load(Ordering::Relaxed),
@@ -737,7 +842,12 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         tcp_rst_sent: stats.tcp_rst_sent.load(Ordering::Relaxed),
         tcp_rst_fail: stats.tcp_rst_fail.load(Ordering::Relaxed),
         tcp_rst_attempt: stats.tcp_rst_attempt.load(Ordering::Relaxed),
+        tcp_dropped: stats.tcp_dropped.load(Ordering::Relaxed),
+        udp_dropped: stats.udp_dropped.load(Ordering::Relaxed),
+        icmp_dropped: stats.icmp_dropped.load(Ordering::Relaxed),
+        other_dropped: stats.other_dropped.load(Ordering::Relaxed),
         top_attackers,
+        top_ports,
     }
 }
 

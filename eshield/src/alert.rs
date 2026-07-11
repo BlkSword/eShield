@@ -172,6 +172,7 @@ impl AlertManager {
     }
 }
 
+/// 告警使用 wall-clock 时间，便于与外部系统（Slack/钉钉/企业微信）对齐。
 fn now_s() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

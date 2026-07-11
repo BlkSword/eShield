@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Run { iface } => {
             build_ebpf("release")?;
             build_userspace("release")?;
-            run(iface)
+            run(&iface)
         }
         Commands::Test => run_tests(),
     }

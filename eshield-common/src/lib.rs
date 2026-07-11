@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "userspace"), no_std)]
 
+pub mod pure;
+
 /// IP 地址族
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -105,6 +107,9 @@ pub struct BlockEntry {
     pub first_seen_ns: u64,
 }
 
+/// `blocked_until_ns == 0` 表示永久封禁。使用常量避免与 unix epoch 混淆。
+pub const BLOCK_PERMANENT: u64 = 0;
+
 /// Per-IP 指数衰减速率计数器
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug)]
@@ -159,6 +164,11 @@ pub struct GlobalStats {
     pub tcp_rst_sent: u64,
     pub tcp_rst_fail: u64,
     pub tcp_rst_attempt: u64,
+    /// 按协议维度统计的 DROP 数量（由 eBPF 数据面直接维护，避免依赖 RingBuf 事件）。
+    pub tcp_dropped: u64,
+    pub udp_dropped: u64,
+    pub icmp_dropped: u64,
+    pub other_dropped: u64,
 }
 
 
@@ -281,7 +291,6 @@ impl Default for RateLimitConfig {
     }
 }
 
-#[cfg(feature = "userspace")]
 #[cfg(feature = "userspace")]
 mod userspace_impls {
     use super::{

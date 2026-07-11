@@ -5,7 +5,7 @@ use aya::{
 };
 use eshield_common::{
     rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
-    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
+    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6, BLOCK_PERMANENT,
 };
 
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,7 @@ pub struct ControlState {
 /// 运行时可读快照（用于 Web / CLI 展示）。
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RuntimeConfigSnapshot {
+    pub version: String,
     pub interface: String,
     pub web_port: u16,
     pub web_bind: Option<String>,
@@ -171,9 +172,9 @@ impl ControlState {
         self.block_ip_raw(key, duration_s, rules::API_BLOCK as u8).await?;
 
         if let Some(store) = &self.store {
-            let now_ns = now_ns();
+            let now_ns = crate::time::monotonic_ns();
             let blocked_until_ns = if duration_s == 0 {
-                0
+                BLOCK_PERMANENT
             } else {
                 let block_ns = duration_s.saturating_mul(1_000_000_000);
                 now_ns.saturating_add(block_ns)
@@ -198,9 +199,9 @@ impl ControlState {
         self.block_ip_raw(key, duration_s, rules::THREAT_INTEL as u8).await?;
 
         if let Some(store) = &self.store {
-            let now_ns = now_ns();
+            let now_ns = crate::time::monotonic_ns();
             let blocked_until_ns = if duration_s == 0 {
-                0
+                BLOCK_PERMANENT
             } else {
                 let block_ns = duration_s.saturating_mul(1_000_000_000);
                 now_ns.saturating_add(block_ns)
@@ -228,9 +229,9 @@ impl ControlState {
             .try_into()?;
 
         let blocked_until_ns = if duration_s == 0 {
-            0
+            BLOCK_PERMANENT
         } else {
-            let now_ns = now_ns();
+            let now_ns = crate::time::monotonic_ns();
             let block_ns = duration_s.saturating_mul(1_000_000_000);
             now_ns.saturating_add(block_ns)
         };
@@ -241,7 +242,7 @@ impl ControlState {
                 blocked_until_ns,
                 block_reason: reason,
                 hit_count: 0,
-                first_seen_ns: now_ns(),
+                first_seen_ns: crate::time::monotonic_ns(),
             },
             0,
         )?;
@@ -547,17 +548,17 @@ impl ControlState {
     pub async fn load_persisted_rules(&self) -> anyhow::Result<()> {
         let Some(store) = &self.store else { return Ok(()) };
 
-        let now_ns = now_ns();
+        let now_ns = crate::time::monotonic_ns();
         for (key, blocked_until_ns, reason, _first_seen_ns) in store.load_blacklist().await? {
             // 静态黑名单由配置文件管理，不重复从持久化存储加载，避免旧配置残留。
             if reason == rules::BLACKLIST as u8 {
                 continue;
             }
-            // 已过期则跳过
-            if blocked_until_ns != 0 && blocked_until_ns <= now_ns {
+            // 已过期则跳过（BLOCK_PERMANENT 永不过期）
+            if blocked_until_ns != BLOCK_PERMANENT && blocked_until_ns <= now_ns {
                 continue;
             }
-            let duration_s = if blocked_until_ns == 0 {
+            let duration_s = if blocked_until_ns == BLOCK_PERMANENT {
                 0
             } else {
                 blocked_until_ns.saturating_sub(now_ns) / 1_000_000_000
@@ -605,6 +606,7 @@ impl ControlState {
 impl RuntimeConfigSnapshot {
     fn from_config(config: &Config) -> Self {
         Self {
+            version: env!("CARGO_PKG_VERSION").to_string(),
             interface: config.interface.clone(),
             web_port: config.web_port,
             web_bind: config.web_bind.clone(),
@@ -876,7 +878,7 @@ async fn apply_blacklist_map(
     for key in &new {
         if !current.contains(key) {
             let entry = BlockEntry {
-                blocked_until_ns: 0,
+                blocked_until_ns: BLOCK_PERMANENT,
                 block_reason: rules::BLACKLIST as u8,
                 hit_count: 0,
                 first_seen_ns: 0,
@@ -974,13 +976,6 @@ async fn apply_geoip_map(
     }
 
     Ok(())
-}
-
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

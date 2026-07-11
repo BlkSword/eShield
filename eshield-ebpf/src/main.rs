@@ -7,6 +7,7 @@ mod l7_scan;
 mod maps;
 mod parser;
 mod port_acl;
+mod rate_counter;
 mod rate_limit;
 mod syn_cookie;
 mod syn_flood;
@@ -18,7 +19,7 @@ use aya_ebpf::{
     bindings::xdp_action, helpers::gen::bpf_ktime_get_ns, macros::xdp, programs::XdpContext,
 };
 use aya_log_ebpf::debug;
-use eshield_common::{GeoIpKeyV4, GeoIpKeyV6, IpKey, WhitelistKeyV4, WhitelistKeyV6};
+use eshield_common::{GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, WhitelistKeyV4, WhitelistKeyV6};
 use maps::{CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, WHITELIST_V4, WHITELIST_V6};
 use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, UdpHdr, ETH_HDR_LEN};
 
@@ -76,6 +77,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -117,6 +119,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.geoip_blocked += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         emit_geoip_event(ctx, &src_key, protocol, dport);
@@ -142,6 +145,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                         } else {
                             stats.total_dropped += 1;
                         }
+                        inc_protocol_dropped(stats, protocol);
                     }
                 }
                 return Ok(action);
@@ -167,6 +171,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                         let stats = &mut *stats;
                         stats.total_dropped += 1;
                         stats.syn_flood_blocked += 1;
+                        inc_protocol_dropped(stats, protocol);
                     }
                 }
                 return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -181,6 +186,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.udp_flood_blocked += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -195,6 +201,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.icmp_flood_blocked += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -207,6 +214,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.l7_blocked += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -219,6 +227,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.rate_limited += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -235,6 +244,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 let stats = &mut *stats;
                 stats.total_dropped += 1;
                 stats.blacklist_blocked += 1;
+                inc_protocol_dropped(stats, protocol);
             }
         }
         return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
@@ -260,6 +270,16 @@ fn drop_packet(ctx: &XdpContext, protocol: u8, ip_hdr_len: usize, tcp_reset_on_d
         tcp_reset::reply_tcp_rst(ctx, ip_hdr_len)
     } else {
         xdp_action::XDP_DROP
+    }
+}
+
+#[inline(always)]
+fn inc_protocol_dropped(stats: &mut GlobalStats, protocol: u8) {
+    match protocol {
+        parser::IPPROTO_TCP => stats.tcp_dropped += 1,
+        parser::IPPROTO_UDP => stats.udp_dropped += 1,
+        parser::IPPROTO_ICMP | parser::IPPROTO_ICMPV6 => stats.icmp_dropped += 1,
+        _ => stats.other_dropped += 1,
     }
 }
 

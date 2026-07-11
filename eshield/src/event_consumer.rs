@@ -40,7 +40,6 @@ pub async fn run(
     // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争
     let mut by_source: HashMap<IpKey, u64> = HashMap::new();
     let mut by_reason: HashMap<u16, u64> = HashMap::new();
-    let mut by_protocol: HashMap<u8, u64> = HashMap::new();
     let mut by_port: HashMap<u16, u64> = HashMap::new();
 
     let process_start = std::time::Instant::now();
@@ -66,7 +65,6 @@ pub async fn run(
 
         *by_source.entry(src_key).or_insert(0) += 1;
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
-        *by_protocol.entry(event.protocol).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
         // GeoIP / SYN Flood / UDP Flood / ICMP Flood / L7 / Blacklist 事件
@@ -97,10 +95,10 @@ pub async fn run(
         );
     }
 
-    stats.add_dropped_batch(&by_reason, &by_source, &by_protocol, &by_port);
+    stats.add_dropped_batch(&by_reason, &by_source, &by_port);
 
     if !events.is_empty() {
-        tracing::info!(events_len = events.len(), ?by_reason, ?by_protocol, ?by_port, "event_consumer batch");
+        tracing::info!(events_len = events.len(), ?by_reason, ?by_port, "event_consumer batch");
     }
 
     let elapsed_us = process_start.elapsed().as_micros() as u64;
