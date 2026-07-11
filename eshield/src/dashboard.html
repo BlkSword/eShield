@@ -712,6 +712,11 @@
           </div>
 
           <div class="setting-group">
+            <div class="setting-group-title">智能防御 · Trust Score / Danger Signal（v0.4.0）</div>
+            <div class="setting-list" id="trust-info"><div class="setting-item"><div class="empty" style="padding:10px 0">加载中...</div></div></div>
+          </div>
+
+          <div class="setting-group">
             <div class="setting-group-title">告警通知（只读，修改后需重载配置文件）</div>
             <div class="setting-list" id="alert-info"><div class="setting-item"><div class="empty" style="padding:10px 0">加载中...</div></div></div>
           </div>
@@ -1859,6 +1864,15 @@
           <div class="setting-item"><div class="setting-info"><div class="setting-name">日志级别</div><div class="setting-desc">当前 tracing 日志级别</div></div><div class="setting-meta">${c.log_level || 'info'}</div></div>
           <div class="setting-item"><div class="setting-info"><div class="setting-name">JSON 日志</div><div class="setting-desc">是否以结构化 JSON 输出日志</div></div><div class="setting-meta">${c.log_json ? '是' : '否'}</div></div>
           <div class="setting-item"><div class="setting-info"><div class="setting-name">持久化存储</div><div class="setting-desc">规则与黑名单持久化路径</div></div><div class="setting-meta">${c.store_path || '-'}</div></div>
+        `;
+        const trust = document.getElementById('trust-info');
+        const dangerLabels = ['正常 (Normal)', '警戒 (Elevated)', '危险 (Critical)'];
+        const dangerColors = ['var(--success)', 'var(--warning)', 'var(--danger)'];
+        trust.innerHTML = `
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">Trust Score 信誉引擎</div><div class="setting-desc">IP 双向信誉评分，动态调制速率阈值</div></div><div class="setting-meta">${c.trust_enabled ? '已启用' : '未启用'}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">Danger Signal 危险监测</div><div class="setting-desc">实时 CPU / 内存 / DPS 异常检测</div></div><div class="setting-meta" style="color:${dangerColors[c.danger_level||0]}">${dangerLabels[c.danger_level||0]}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">高信誉 IP（Trust > 700）</div><div class="setting-desc">当前在线且信誉良好的源 IP 数量</div></div><div class="setting-meta" style="color:var(--success)">${(currentStats.trust_trusted || 0).toLocaleString()}</div></div>
+          <div class="setting-item"><div class="setting-info"><div class="setting-name">可疑/恶意 IP（Trust < 300）</div><div class="setting-desc">当前在线且信誉较差的源 IP 数量</div></div><div class="setting-meta" style="color:var(--danger)">${((currentStats.trust_suspicious||0)+(currentStats.trust_malicious||0)).toLocaleString()}</div></div>
         `;
         const alert = document.getElementById('alert-info');
         alert.innerHTML = `

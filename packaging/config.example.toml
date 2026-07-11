@@ -102,6 +102,18 @@ enabled = false
 # interval_s = 3600
 # action = "drop"
 
+# Trust Score IP 双向信誉引擎（v0.4.0，默认关闭）
+[trust_score]
+enabled = false
+# add_divisor = 100       # PASS: trust += (1000 - trust) / divisor
+# sub_divisor = 3         # DROP: trust -= trust / divisor
+
+# Danger Signal 系统危险信号监测（v0.4.0，默认关闭）
+[danger_signal]
+enabled = false
+# sample_interval_s = 5
+# anomaly_multiplier = 2.0
+
 # 端口/协议 ACL 规则表（可选）
 # protocol: tcp / udp / icmp / icmpv6 / any
 # dport:    端口号、范围（如 1000-2000）或 any
