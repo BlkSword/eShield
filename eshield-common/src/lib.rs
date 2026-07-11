@@ -110,6 +110,34 @@ pub struct BlockEntry {
 /// `blocked_until_ns == 0` 表示永久封禁。使用常量避免与 unix epoch 混淆。
 pub const BLOCK_PERMANENT: u64 = 0;
 
+// ---------------------------------------------------------------------------
+// Trust Score (v0.4.0) — IP 双向信誉
+// ---------------------------------------------------------------------------
+
+/// IP 信誉条目。trust_score 范围 0..=1000，与许可/丢弃行为双向联动。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TrustEntry {
+    /// 0-1000，1000 = 完全可信，0 = 确认恶意
+    pub trust_score: u32,
+    /// 累计通过包数（供用户态统计展示）
+    pub pass_count: u32,
+    /// 累计丢弃包数
+    pub drop_count: u32,
+    /// 最后一次更新时间（ns，CLOCK_MONOTONIC）
+    pub last_update_ns: u64,
+    /// 信誉等级缓存：0=unknown, 1=trusted, 2=neutral, 3=suspicious, 4=malicious
+    pub level: u8,
+    pub padding: [u8; 3],
+}
+
+/// Trust Score 更新参数
+pub const TRUST_MAX: u32 = 1000;
+pub const TRUST_MIN: u32 = 0;
+pub const TRUST_ADD_DIVISOR: u32 = 100;   // trust += (1000 - trust) / 100  慢慢加分
+pub const TRUST_SUB_DIVISOR: u32 = 3;     // trust -= trust / 3             快速减分
+pub const TRUST_DEFAULT: u32 = 500;       // 新 IP 默认中性
+
 /// Per-IP 指数衰减速率计数器
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug)]
@@ -185,7 +213,11 @@ pub struct RuntimeConfig {
     pub icmp_flood_enabled: u8,
     pub geoip_enabled: u8,
     pub tcp_reset_on_drop: u8,
-    pub padding: [u8; 8],
+    /// 信任评分开关（v0.4.0）
+    pub trust_enabled: u8,
+    /// 全局危险等级：0=normal, 1=elevated, 2=critical
+    pub danger_level: u8,
+    pub padding: [u8; 6],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）
@@ -296,7 +328,7 @@ mod userspace_impls {
     use super::{
         BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
         PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig,
-        WhitelistKeyV4, WhitelistKeyV6,
+        TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -316,4 +348,5 @@ mod userspace_impls {
     unsafe impl Pod for GlobalStats {}
     unsafe impl Pod for RuntimeConfig {}
     unsafe impl Pod for RateLimitConfig {}
+    unsafe impl Pod for TrustEntry {}
 }

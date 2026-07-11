@@ -56,6 +56,10 @@ pub struct Config {
     pub alert_cooldown_s: u64,
     #[serde(default)]
     pub audit: AuditConfig,
+    #[serde(default)]
+    pub trust_score: TrustScoreConfig,
+    #[serde(default)]
+    pub danger_signal: DangerSignalConfig,
 }
 
 fn default_web_port() -> u16 {
@@ -106,6 +110,53 @@ fn default_audit_path() -> String {
 fn default_audit_max_size_mb() -> u64 {
     100
 }
+
+/// Trust Score 配置（v0.4.0）
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct TrustScoreConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_trust_add_divisor")]
+    pub add_divisor: u32,
+    #[serde(default = "default_trust_sub_divisor")]
+    pub sub_divisor: u32,
+}
+
+impl Default for TrustScoreConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            add_divisor: 100,
+            sub_divisor: 3,
+        }
+    }
+}
+fn default_trust_add_divisor() -> u32 { 100 }
+fn default_trust_sub_divisor() -> u32 { 3 }
+
+/// Danger Signal 配置（v0.4.0）
+#[derive(Debug, Clone, Deserialize)]
+pub struct DangerSignalConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_danger_sample_s")]
+    pub sample_interval_s: u64,
+    #[serde(default = "default_danger_anomaly_multiplier")]
+    pub anomaly_multiplier: f64,
+}
+
+impl Default for DangerSignalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sample_interval_s: 5,
+            anomaly_multiplier: 2.0,
+        }
+    }
+}
+fn default_danger_sample_s() -> u64 { 5 }
+fn default_danger_anomaly_multiplier() -> f64 { 2.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortAclItem {

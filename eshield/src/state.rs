@@ -34,6 +34,13 @@ pub struct Stats {
     pub port_dropped: DashMap<u16, AtomicU64>,
     pub process_hist: [AtomicU64; 6],
     pub top_attackers: DashMap<IpKey, AtomicU64>,
+    /// Trust Score 信誉分布（v0.4.0）
+    pub trust_trusted: AtomicU64,
+    pub trust_neutral: AtomicU64,
+    pub trust_suspicious: AtomicU64,
+    pub trust_malicious: AtomicU64,
+    /// 全局危险等级 0/1/2（v0.4.0）
+    pub danger_level: AtomicU64,
     pub timeseries: Arc<RwLock<TimeSeriesWindow>>,
 }
 
@@ -71,6 +78,11 @@ impl Default for Stats {
                 AtomicU64::new(0),
             ],
             top_attackers: DashMap::new(),
+            trust_trusted: AtomicU64::new(0),
+            trust_neutral: AtomicU64::new(0),
+            trust_suspicious: AtomicU64::new(0),
+            trust_malicious: AtomicU64::new(0),
+            danger_level: AtomicU64::new(0),
             timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(8640, 10))),
         }
     }

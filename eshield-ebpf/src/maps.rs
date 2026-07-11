@@ -4,7 +4,7 @@ use aya_ebpf::{
 };
 use eshield_common::{
     BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-    RateCounter, RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6,
+    RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -67,3 +67,7 @@ pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);
 /// value 为过期时间戳（ns）
 #[map]
 pub static SYN_PROXY_CONN: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);
+
+/// IP 信誉 Map（LRU Hash）：双向更新——PASS 加分，DROP 减分（v0.4.0）
+#[map]
+pub static TRUST_MAP: LruHashMap<IpKey, TrustEntry> = LruHashMap::with_max_entries(100000, 0);

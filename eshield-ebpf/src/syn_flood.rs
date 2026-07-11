@@ -17,7 +17,7 @@ pub fn handle_syn_flood(_ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u
         return false;
     };
 
-    if update.counter > update.cfg.threshold {
+    if update.counter > update.threshold {
         add_to_blacklist(
             src,
             now_ns,

@@ -56,6 +56,8 @@ pub struct RuntimeConfigSnapshot {
     pub icmp_flood_enabled: bool,
     pub geoip_enabled: bool,
     pub tcp_reset_on_drop: bool,
+    pub trust_enabled: bool,
+    pub danger_level: u8,
     pub rate_limit: RateLimitParams,
     pub adaptive: crate::config::AdaptiveConfig,
     pub port_acl: Vec<PortAclItem>,
@@ -440,7 +442,9 @@ impl ControlState {
                     icmp_flood_enabled: u8::from(snapshot.icmp_flood_enabled),
                     geoip_enabled: u8::from(snapshot.geoip_enabled),
                     tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
-                    padding: [0; 8],
+                    trust_enabled: u8::from(snapshot.trust_enabled),
+                    danger_level: snapshot.danger_level,
+                    padding: [0; 6],
                 },
                 0,
             )?;
@@ -624,6 +628,8 @@ impl RuntimeConfigSnapshot {
             icmp_flood_enabled: config.icmp_flood_enabled,
             geoip_enabled: config.geoip.enabled,
             tcp_reset_on_drop: config.tcp_reset_on_drop,
+            trust_enabled: config.trust_score.enabled,
+            danger_level: 0,
             adaptive: config.adaptive.clone(),
             rate_limit: RateLimitParams {
                 enabled: config.rate_limit.enabled,
@@ -658,7 +664,9 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
         geoip_enabled: u8::from(config.geoip.enabled),
         tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
-        padding: [0; 8],
+        trust_enabled: u8::from(config.trust_score.enabled),
+        danger_level: 0,
+        padding: [0; 6],
     };
     tracing::info!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",

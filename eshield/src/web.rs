@@ -208,6 +208,13 @@ struct StatsResponse {
     other_dropped: u64,
     top_attackers: Vec<Attacker>,
     top_ports: Vec<PortDrop>,
+    /// Trust Score 信誉分布（v0.4.0）
+    trust_trusted: u64,
+    trust_neutral: u64,
+    trust_suspicious: u64,
+    trust_malicious: u64,
+    /// 全局危险等级 0/1/2（v0.4.0）
+    danger_level: u64,
 }
 
 #[derive(Serialize)]
@@ -851,6 +858,11 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         other_dropped: stats.other_dropped.load(Ordering::Relaxed),
         top_attackers,
         top_ports,
+        trust_trusted: stats.trust_trusted.load(Ordering::Relaxed),
+        trust_neutral: stats.trust_neutral.load(Ordering::Relaxed),
+        trust_suspicious: stats.trust_suspicious.load(Ordering::Relaxed),
+        trust_malicious: stats.trust_malicious.load(Ordering::Relaxed),
+        danger_level: stats.danger_level.load(Ordering::Relaxed),
     }
 }
 

@@ -4,6 +4,7 @@ mod audit;
 mod auth;
 mod config;
 mod control;
+mod danger;
 mod event_consumer;
 mod geoip;
 mod health;
@@ -371,6 +372,47 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动 Trust Score 同步任务：每秒从 eBPF TRUST_MAP 读取信誉数据
+    let trust_sync_handle = {
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            sync_trust_scores(ebpf, stats).await;
+        })
+    };
+
+    // 启动 Danger Signal 监测任务：按配置周期采样并更新全局危险等级
+    let danger_handle = {
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        let danger_cfg = config.danger_signal.clone();
+        tokio::spawn(async move {
+            if danger_cfg.enabled {
+                let monitor = std::sync::Arc::new(danger::DangerMonitor::new(
+                    danger_cfg.anomaly_multiplier,
+                ));
+                let mut tick =
+                    tokio::time::interval(Duration::from_secs(danger_cfg.sample_interval_s));
+                loop {
+                    tick.tick().await;
+                    let dps = stats.current_dps.load(Ordering::Relaxed);
+                    let level = monitor.sample(dps);
+                    let prev = monitor.level.load(Ordering::Relaxed);
+                    if level != prev {
+                        monitor.level.store(level, Ordering::Relaxed);
+                        let mut guard = ebpf.lock().await;
+                        update_danger_level(&mut guard, level);
+                        drop(guard);
+                        info!(
+                            "danger level changed: {} -> {} (dps={})",
+                            prev, level, dps
+                        );
+                    }
+                }
+            }
+        })
+    };
+
     // 启动时序指标采样任务：每 10 秒记录一个数据点
     let timeseries_handle = {
         let stats = state.stats.clone();
@@ -426,7 +468,11 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     threat_intel_handle.abort();
     timeseries_handle.abort();
     global_stats_handle.abort();
+    trust_sync_handle.abort();
+    danger_handle.abort();
     top_attackers_handle.abort();
+    let _ = trust_sync_handle.await;
+    let _ = danger_handle.await;
     let _ = event_handle.await;
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
@@ -644,6 +690,75 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
     secrets_map.set(0, current, 0)?;
     info!("rotated SYN Cookie secret to bucket {}", bucket);
     Ok(())
+}
+
+/// 每秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
+async fn sync_trust_scores(
+    ebpf: Arc<tokio::sync::Mutex<Ebpf>>,
+    stats: Arc<crate::state::Stats>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        interval.tick().await;
+        let mut guard = ebpf.lock().await;
+        let mut trusted = 0u64;
+        let mut neutral = 0u64;
+        let mut suspicious = 0u64;
+        let mut malicious = 0u64;
+        match LruHashMap::<_, IpKey, eshield_common::TrustEntry>::try_from(
+            guard
+                .map_mut("TRUST_MAP")
+                .expect("TRUST_MAP map not found"),
+        ) {
+            Ok(trust_map) => {
+                for res in trust_map.iter() {
+                    if let Ok((_key, entry)) = res {
+                        match entry.level {
+                            1 => trusted += 1,
+                            2 => neutral += 1,
+                            3 => suspicious += 1,
+                            4 => malicious += 1,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("failed to open TRUST_MAP: {}", e);
+            }
+        }
+        drop(guard);
+
+        stats.trust_trusted.store(trusted, Ordering::Relaxed);
+        stats.trust_neutral.store(neutral, Ordering::Relaxed);
+        stats.trust_suspicious.store(suspicious, Ordering::Relaxed);
+        stats.trust_malicious.store(malicious, Ordering::Relaxed);
+        stats
+            .danger_level
+            .store(
+                stats.danger_level.load(Ordering::Relaxed),
+                Ordering::Relaxed,
+            );
+    }
+}
+
+/// 将危险等级写入 eBPF CONFIG map，使 eBPF 侧可以据此进一步收紧阈值。
+fn update_danger_level(ebpf: &mut Ebpf, level: u8) {
+    let mut config_array: aya::maps::Array<_, eshield_common::RuntimeConfig> = match ebpf
+        .map_mut("CONFIG")
+        .expect("CONFIG map not found")
+        .try_into()
+    {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("failed to open CONFIG for danger update: {}", e);
+            return;
+        }
+    };
+    if let Ok(mut cfg) = config_array.get(&0, 0) {
+        cfg.danger_level = level;
+        let _ = config_array.set(0, cfg, 0);
+    }
 }
 
 fn random_bytes() -> [u8; 16] {

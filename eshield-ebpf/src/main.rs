@@ -12,6 +12,7 @@ mod rate_limit;
 mod syn_cookie;
 mod syn_flood;
 mod tcp_reset;
+mod trust;
 mod udp_flood;
 
 use aya_ebpf::maps::lpm_trie::Key as LpmKey;
@@ -62,6 +63,8 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 (*stats).total_passed += 1;
             }
         }
+        // Trust Score: 白名单 PASS 快速加分
+        trust::trust_pass(&src_key, now_ns);
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -80,7 +83,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     if runtime.ebpf_debug != 0 {
@@ -123,7 +126,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             }
         }
         emit_geoip_event(ctx, &src_key, protocol, dport);
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 7. SYN Cookie 代理（仅 IPv4 TCP） / SYN Flood 检测
@@ -160,6 +163,8 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                         (*stats).total_passed += 1;
                     }
                 }
+                // Trust Score: 合法 ACK（已通过 Cookie 验证）加分
+                trust::trust_pass(&src_key, now_ns);
                 return Ok(action);
             }
         } else if let Some(tcp) = unsafe { parser::ptr_at::<TcpHdr>(ctx, ETH_HDR_LEN + ip_hdr_len) }
@@ -174,7 +179,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                         inc_protocol_dropped(stats, protocol);
                     }
                 }
-                return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+                return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
             }
         }
     }
@@ -189,7 +194,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 8. ICMP/ICMPv6 Flood 检测
@@ -204,7 +209,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 9. L7 轻量指纹扫描（TCP 载荷前 64 字节）
@@ -217,7 +222,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 10. 速率限制检查（触发则加入黑名单并 DROP）
@@ -230,7 +235,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 11. 黑名单检查
@@ -247,7 +252,7 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
                 inc_protocol_dropped(stats, protocol);
             }
         }
-        return Ok(drop_packet(ctx, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
+        return Ok(drop_packet(ctx, &src_key, now_ns, protocol, ip_hdr_len, runtime.tcp_reset_on_drop));
     }
 
     // 12. 默认放行
@@ -256,16 +261,27 @@ fn try_eshield(ctx: &XdpContext) -> Result<u32, ()> {
             (*stats).total_passed += 1;
         }
     }
+    // Trust Score: 默认 PASS 缓慢加分
+    trust::trust_pass(&src_key, now_ns);
     Ok(xdp_action::XDP_PASS)
 }
 
 #[inline(always)]
-fn drop_packet(ctx: &XdpContext, protocol: u8, ip_hdr_len: usize, tcp_reset_on_drop: u8) -> u32 {
+fn drop_packet(
+    ctx: &XdpContext,
+    src: &IpKey,
+    now_ns: u64,
+    protocol: u8,
+    ip_hdr_len: usize,
+    tcp_reset_on_drop: u8,
+) -> u32 {
     unsafe {
         if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
             (*stats).tcp_rst_attempt += 1;
         }
     }
+    // Trust Score: DROP 事件快速减分
+    trust::trust_drop(src, now_ns);
     if tcp_reset_on_drop != 0 && protocol == parser::IPPROTO_TCP {
         tcp_reset::reply_tcp_rst(ctx, ip_hdr_len)
     } else {

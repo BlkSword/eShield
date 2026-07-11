@@ -18,7 +18,7 @@ pub fn check_rate_limit(src: &IpKey, now_ns: u64) -> bool {
         return false;
     };
 
-    if update.counter > update.cfg.threshold {
+    if update.counter > update.threshold {
         add_to_blacklist(
             src,
             now_ns,
