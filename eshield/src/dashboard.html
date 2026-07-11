@@ -518,7 +518,7 @@
             <input type="text" id="global-search" placeholder="搜索 IP 地址..." data-action="globalSearch">
             <span class="search-shortcut">/</span>
           </div>
-          <span class="status-pill"><span class="status-dot"></span>运行中</span>
+          <span class="status-pill" id="status-pill"><span class="status-dot"></span>运行中</span>
           <button class="icon-btn" id="logout-btn" title="退出登录">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
           </button>
@@ -898,6 +898,19 @@
     }
 
     // Card drill-down: click stat card to filter audit by rule type
+    // Update danger level indicator in header（v0.4.0）
+    function updateDangerIndicator(level) {
+      const pill = document.getElementById('status-pill');
+      if (!pill) return;
+      const labels = ['运行中 · 正常', '运行中 · 警戒', '运行中 · 危险'];
+      const colors = ['var(--success)', 'var(--warning)', 'var(--danger)'];
+      const bgs = ['var(--success-soft)', 'var(--warning-soft)', 'var(--danger-soft)'];
+      const l = Math.min(level || 0, 2);
+      pill.innerHTML = `<span class="status-dot" style="background:${colors[l]}"></span>${labels[l]}`;
+      pill.style.color = colors[l];
+      pill.style.background = bgs[l];
+    }
+
     function drillAudit(reason) {
       document.getElementById('audit-ip').value = '';
       document.getElementById('audit-filter').value = '';
@@ -997,7 +1010,9 @@
         { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '点击查看', drill: 'PatchConfig' },
         { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'ReloadConfig' },
         { label: 'UDP / ICMP 拦截', id: 'card-udp-icmp', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'BlockIp' },
-        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'PatchConfig' }
+        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'PatchConfig' },
+        { label: '高信誉 IP', id: 'card-trust-trusted', icon: icon('<path d="M20 6L9 17l-5-5"/>'), iconClass: 'green', live: true, sub: 'Trust > 700' },
+        { label: '可疑/恶意 IP', id: 'card-trust-suspicious', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: true, sub: 'Trust < 300' }
       ];
       c.innerHTML = cards.map(metricCard).join('');
     }
@@ -1081,6 +1096,11 @@
         setCard('card-syn', d.syn_flood_blocked, '基础检测始终运行', false);
         setCard('card-udp-icmp', (d.udp_flood_blocked || 0) + (d.icmp_flood_blocked || 0), 'UDP + ICMP 累计', false);
         setCard('card-other', (d.geoip_blocked || 0) + (d.l7_blocked || 0) + (d.adaptive_blocked || 0), 'GeoIP + L7 + 自适应', false);
+        // Trust Score 分布（v0.4.0）
+        setCard('card-trust-trusted', d.trust_trusted || 0, 'Trust > 700', false);
+        setCard('card-trust-suspicious', (d.trust_suspicious || 0) + (d.trust_malicious || 0), 'Trust < 300', false);
+        // Danger Level 状态指示器
+        updateDangerIndicator(d.danger_level || 0);
 
         const tbody = document.getElementById('attackers-body');
         tbody.innerHTML = '';

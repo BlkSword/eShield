@@ -87,8 +87,10 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | 运行时控制 | REST API + 中文 Web Dashboard + CLI + TUI，实时开关与调参。 |
 | 配置热加载 | `SIGHUP` 或 `systemctl reload` 重载配置，无需重启。 |
 | 认证 / 审计 / 持久化 | 可选 Bearer Token；审计日志；动态规则持久化到 redb。 |
-| 可观测性 | Prometheus `/metrics`、JSON 统计、审计 SSE、TOP 攻击源/端口、协议分布、24 小时时序趋势。 |
+| 可观测性 | Prometheus `/metrics`、JSON 统计、审计 SSE、TOP 攻击源/端口、协议分布、IP 信誉分布、24 小时时序趋势。 |
 | 版本管理 | 控制台页脚与设置页自动同步后端运行版本。 |
+| **Trust Score（v0.4.0）** | IP 双向信誉评估——PASS 缓慢加分，DROP 快速减分，信誉分动态调制速率阈值。 |
+| **Danger Signal（v0.4.0）** | 系统级危险信号监测——CPU/内存/DPS 异常时自动提高全局防御等级（正常/警戒/危险）。 |
 
 > **关于防护项目**：当前版本中，防护项目作为控制面策略分组被加载、校验、持久化并展示在 Dashboard/API 中；受 XDP verifier 组合栈 512 字节限制，暂不在 eBPF 数据面对每条连接按项目独立匹配。全局防御模块仍照常生效。
 >
@@ -216,6 +218,8 @@ eshield reset-token
 | `[adaptive]` | 重复触发自动提升封禁时长 |
 | `[geoip]` | 基于国家/ASN 的 CIDR 放行/封禁 |
 | `[threat_intel]` | 自定义威胁情报 feed 同步 |
+| `[trust_score]` | **v0.4.0** IP 双向信誉引擎开关 |
+| `[danger_signal]` | **v0.4.0** 系统危险信号监测 |
 | `[port_acl]` | 端口/协议级 allow/drop 规则 |
 | `[protection_projects]` | 控制面策略分组 |
 
@@ -239,7 +243,7 @@ sudo kill -HUP $(pidof eshield)
 
 启动后访问 `http://<host>:8443/`，中文 Web 控制台提供：
 
-- **总览**：实时包统计、DPS/PPS、各防御模块命中数、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源。
+- **总览**：实时包统计、DPS/PPS、各防御模块命中数、IP 信誉分布、系统危险等级、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源、最近拦截事件实时流。
 - **防护策略**：统一的全局模块开关、速率限制参数、自适应黑名单参数与按端口的防护项目。
 - **规则中心**：端口 ACL、L7 指纹、GeoIP、威胁情报 feeds。
 - **安全运营**：IP 封禁/解封、CIDR 放行。
