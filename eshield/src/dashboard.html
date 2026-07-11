@@ -473,6 +473,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
             总览
           </a>
+          <a class="nav-item" href="#/attacks" data-page="attacks">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+            攻击事件
+          </a>
           <a class="nav-item" href="#/audit" data-page="audit">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             审计日志
@@ -575,6 +579,20 @@
               <div class="event-feed" id="recent-events"><div class="empty" style="padding:16px">暂无事件</div></div>
             </div>
           </div>
+        </div>
+
+        <!-- Attacks -->
+        <div class="page" id="page-attacks">
+          <div class="section-header-row">
+            <div><h2 class="section-title">攻击事件</h2><div class="section-subtitle">实时 DROP 事件流 — 所有被拦截的攻击包</div></div>
+            <button class="btn btn-secondary btn-sm" data-action="refreshAttackEvents">刷新</button>
+          </div>
+          <div class="card">
+            <div class="card-body" style="padding:0">
+              <table><thead><tr><th>时间</th><th>源 IP</th><th>协议</th><th>目的端口</th><th>拦截规则</th></tr></thead><tbody id="attack-events-body"><tr><td colspan="5" class="empty">加载中...</td></tr></tbody></table>
+            </div>
+          </div>
+          <div class="pagination" id="attack-events-pager"></div>
         </div>
 
         <!-- Policy -->
@@ -935,10 +953,11 @@
       if (page) page.classList.add('active');
       const nav = document.querySelector(`.nav-item[data-page="${hash}"]`);
       if (nav) nav.classList.add('active');
-      const titles = { overview: '总览', policy: '防护策略', rules: '规则中心', security: '安全运营', audit: '审计日志', settings: '设置' };
+      const titles = { overview: '总览', attacks: '攻击事件', policy: '防护策略', rules: '规则中心', security: '安全运营', audit: '审计日志', settings: '设置' };
       document.getElementById('page-heading').textContent = titles[hash] || hash;
       if (hash === 'rules') refreshRules();
       if (hash === 'security') refreshLists();
+      if (hash === 'attacks') refreshAttackEvents();
       if (hash === 'audit') refreshAudit();
       if (hash === 'settings') refreshSettings();
       if (hash === 'policy') refreshPolicy();
@@ -1009,8 +1028,8 @@
       const c = document.getElementById('overview-cards');
       const cards = [
         { label: '总丢弃包数', id: 'card-dropped', icon: icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), iconClass: 'red', live: false, sub: '累计（点击查看）', drill: '' },
-        { label: '当前 DPS', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: '每秒丢弃', drill: '' },
-        { label: '当前 PPS', id: 'card-pps', icon: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), iconClass: 'green', live: true, sub: '每秒通过' },
+        { label: 'DPS 丢弃速率', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: 'Drop/s', drill: '' },
+        { label: 'PPS 包速率', id: 'card-pps', icon: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), iconClass: 'green', live: true, sub: 'Pkt/s' },
         { label: '黑名单拦截', id: 'card-blacklist', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: false, sub: '点击查看', drill: 'BlockIp' },
         { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '点击查看', drill: 'PatchConfig' },
         { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'ReloadConfig' },
@@ -1094,8 +1113,8 @@
         const d = await apiJson('GET', '/api/stats');
         currentStats = d;
         setCard('card-dropped', d.total_dropped, '累计丢弃', false);
-        setCard('card-dps', d.current_dps, '每秒丢弃', true);
-        setCard('card-pps', d.current_pps, '每秒通过', true);
+        setCard('card-dps', d.current_dps, 'Drop/s', true);
+        setCard('card-pps', d.current_pps, 'Pkt/s', true);
         setCard('card-blacklist', d.blacklist_blocked, '黑名单累计', false);
         setCard('card-rate', d.rate_limited, '速率限制累计', false);
         setCard('card-syn', d.syn_flood_blocked, '基础检测始终运行', false);
@@ -1600,6 +1619,27 @@
     }
 
     // Audit
+    // Attack events page（v0.4.0）
+    async function refreshAttackEvents() {
+      try {
+        const d = await apiJson('GET', '/api/attack-events?limit=100');
+        const tbody = document.getElementById('attack-events-body');
+        tbody.innerHTML = '';
+        const events = d.events || [];
+        if (events.length === 0) { tbody.innerHTML = '<tr><td colspan="5" class="empty">暂无攻击事件</td></tr>'; return; }
+        const protoNames = {6:'TCP',17:'UDP',1:'ICMP',58:'ICMPv6'};
+        events.forEach(e => {
+          const tr = document.createElement('tr');
+          // 纳秒时间戳 → 可读时间
+          const d = new Date(Number(e.timestamp_ns / 1000000n || 0n));
+          const time = d.toLocaleTimeString('zh-CN', {hour12:false});
+          tr.innerHTML = `<td>${time}</td><td><a href="#" data-action="openIpDrawer" data-ip="${escHtml(e.src_ip)}" style="color:var(--primary);text-decoration:none;font-weight:500">${escHtml(e.src_ip)}</a></td><td>${protoNames[e.protocol]||e.protocol}</td><td>${e.dst_port||'-'}</td><td><span class="tag tag-danger">${escHtml(e.rule_name)}</span></td>`;
+          tbody.appendChild(tr);
+        });
+        document.getElementById('attack-events-pager').innerHTML = `<span class="page-info">最近 ${events.length} 条攻击事件</span>`;
+      } catch (e) { console.error(e); }
+    }
+
     async function refreshAudit() {
       try {
         const params = new URLSearchParams();
@@ -1830,6 +1870,7 @@
         case 'quickUnblock': quickUnblock(); break;
         case 'quickBlockValue': quickBlockValue(ip); break;
         case 'closeDrawer': closeDrawer(); break;
+        case 'refreshAttackEvents': refreshAttackEvents(); break;
         case 'refreshAudit': refreshAudit(); break;
         case 'refreshSettings': refreshSettings(); break;
         case 'reloadConfig': reloadConfig(); break;

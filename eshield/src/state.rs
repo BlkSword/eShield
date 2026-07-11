@@ -1,8 +1,8 @@
 use dashmap::DashMap;
-use eshield_common::{rules, IpKey};
-use std::collections::HashMap;
+use eshield_common::{rules, DropEvent, IpKey};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 use crate::timeseries::TimeSeriesWindow;
@@ -41,6 +41,8 @@ pub struct Stats {
     pub trust_malicious: AtomicU64,
     /// 全局危险等级 0/1/2（v0.4.0）
     pub danger_level: AtomicU64,
+    /// 最近攻击事件环形缓冲（最多 1000 条）
+    pub recent_attacks: Mutex<VecDeque<DropEvent>>,
     pub timeseries: Arc<RwLock<TimeSeriesWindow>>,
 }
 
@@ -83,6 +85,7 @@ impl Default for Stats {
             trust_suspicious: AtomicU64::new(0),
             trust_malicious: AtomicU64::new(0),
             danger_level: AtomicU64::new(0),
+            recent_attacks: Mutex::new(VecDeque::new()),
             timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(8640, 10))),
         }
     }
@@ -141,6 +144,21 @@ impl Stats {
             _ => 5,
         };
         self.process_hist[idx].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// 追加一条攻击事件到环形缓冲（最多保留 1000 条）。
+    pub fn push_attack_event(&self, event: DropEvent) {
+        let mut buf = self.recent_attacks.lock().unwrap();
+        if buf.len() >= 1000 {
+            buf.pop_front();
+        }
+        buf.push_back(event);
+    }
+
+    /// 返回最近的攻击事件快照。
+    pub fn attack_events(&self, limit: usize) -> Vec<DropEvent> {
+        let buf = self.recent_attacks.lock().unwrap();
+        buf.iter().rev().take(limit).copied().collect()
     }
 }
 

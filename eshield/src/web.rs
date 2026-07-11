@@ -153,6 +153,7 @@ pub async fn run(
         .route("/api/audit", get(audit_handler))
         .route("/api/audit/stream", get(audit_stream_handler))
         .route("/api/metrics/attacker-series", get(attacker_series_handler))
+        .route("/api/attack-events", get(attack_events_handler))
         .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
         .route(
             "/api/protection-projects",
@@ -798,6 +799,58 @@ async fn audit_stream_handler(
         }
     });
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+/// 返回最近攻击事件（DROP 事件流）。
+async fn attack_events_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<AuditQuery>,
+) -> Json<serde_json::Value> {
+    let events: Vec<serde_json::Value> = state
+        .stats
+        .attack_events(q.limit.min(200))
+        .into_iter()
+        .map(|e| {
+            let src_ip = match eshield_common::IpFamily::from_u8(e.family) {
+                Some(eshield_common::IpFamily::Ipv4) => {
+                    let octets = [
+                        e.src_ip[12], e.src_ip[13], e.src_ip[14], e.src_ip[15],
+                    ];
+                    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+                }
+                Some(eshield_common::IpFamily::Ipv6) => {
+                    crate::ip::format_ip_key(&eshield_common::IpKey::from_ipv6(e.src_ip))
+                }
+                None => "unknown".to_string(),
+            };
+            let rule_name = match e.rule_id {
+                eshield_common::rules::BLACKLIST => "黑名单",
+                eshield_common::rules::RATE_LIMIT => "速率限制",
+                eshield_common::rules::SYN_FLOOD => "SYN Flood",
+                eshield_common::rules::L7_PATTERN => "L7 指纹",
+                eshield_common::rules::ADAPTIVE => "自适应",
+                eshield_common::rules::PORT_ACL => "端口 ACL",
+                eshield_common::rules::UDP_FLOOD => "UDP Flood",
+                eshield_common::rules::ICMP_FLOOD => "ICMP Flood",
+                eshield_common::rules::GEOIP => "GeoIP",
+                eshield_common::rules::THREAT_INTEL => "威胁情报",
+                _ => "未知",
+            };
+            serde_json::json!({
+                "timestamp_ns": e.timestamp_ns,
+                "src_ip": src_ip,
+                "protocol": e.protocol,
+                "rule_id": e.rule_id,
+                "rule_name": rule_name,
+                "dst_port": e.dst_port,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "events": events,
+        "count": events.len(),
+    }))
 }
 
 async fn attacker_series_handler(

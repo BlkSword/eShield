@@ -52,6 +52,8 @@ pub async fn run(
         if program_start_ns != 0 && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns {
             continue;
         }
+        // 所有有效 DROP 事件写入环形缓冲供控制台「攻击事件」页使用
+        stats.push_attack_event(*event);
         let src_key = match IpFamily::from_u8(event.family) {
             Some(IpFamily::Ipv4) => IpKey::from_ipv4([
                 event.src_ip[12],
