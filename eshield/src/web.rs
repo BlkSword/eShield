@@ -454,6 +454,24 @@ async fn protection_modules_handler(
             "editable_fields": [field_switch("enabled", "启用 RST 回包", rt.tcp_reset_on_drop)]
         }),
         serde_json::json!({
+            "id": "trust_score",
+            "name": "Trust Score 信誉引擎",
+            "category": "智能防御",
+            "description": "IP 双向信誉评估——PASS 加分、DROP 减分，动态调制速率阈值。高信誉 IP 自动放宽限速。",
+            "enabled": rt.trust_enabled,
+            "stats_key": None::<String>,
+            "editable_fields": [field_switch("enabled", "启用 Trust Score", rt.trust_enabled)]
+        }),
+        serde_json::json!({
+            "id": "danger_signal",
+            "name": "Danger Signal 危险监测",
+            "category": "智能防御",
+            "description": "实时监测 CPU/内存/DPS 异常，自动提高全局防御等级（正常→警戒→危险）。",
+            "enabled": rt.danger_level > 0,
+            "stats_key": None::<String>,
+            "editable_fields": [field_readonly("danger_level", "当前等级", serde_json::json!(rt.danger_level))]
+        }),
+        serde_json::json!({
             "id": "port_acl",
             "name": "端口 ACL",
             "category": "访问控制",

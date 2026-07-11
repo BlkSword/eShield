@@ -89,6 +89,7 @@ pub struct RuntimeConfigPatch {
     pub icmp_flood_enabled: Option<bool>,
     pub geoip_enabled: Option<bool>,
     pub tcp_reset_on_drop: Option<bool>,
+    pub trust_enabled: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
     pub adaptive: Option<crate::config::AdaptiveConfig>,
 }
@@ -397,6 +398,9 @@ impl ControlState {
         if let Some(enabled) = patch.tcp_reset_on_drop {
             snapshot.tcp_reset_on_drop = enabled;
         }
+        if let Some(enabled) = patch.trust_enabled {
+            snapshot.trust_enabled = enabled;
+        }
         if let Some(ref adaptive_cfg) = patch.adaptive {
             snapshot.adaptive = adaptive_cfg.clone();
             if let Some(adaptive) = &self.adaptive {
@@ -443,7 +447,7 @@ impl ControlState {
                     geoip_enabled: u8::from(snapshot.geoip_enabled),
                     tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
                     trust_enabled: u8::from(snapshot.trust_enabled),
-                    danger_level: snapshot.danger_level,
+                    danger_level: 0,
                     padding: [0; 6],
                 },
                 0,

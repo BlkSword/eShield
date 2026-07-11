@@ -1328,7 +1328,8 @@
           icmp_flood: 'icmp_flood_enabled',
           l7_scan: 'l7_scan_enabled',
           geoip: 'geoip_enabled',
-          tcp_reset: 'tcp_reset_on_drop'
+          tcp_reset: 'tcp_reset_on_drop',
+          trust_score: 'trust_enabled'
         };
         if (map[m.id]) patch[map[m.id]] = enabled;
         if (m.id === 'rate_limit') patch.rate_limit_enabled = enabled;
