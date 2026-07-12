@@ -19,8 +19,8 @@ udp_flood_enabled = false
 # 是否启用 ICMP/ICMPv6 Flood 检测
 icmp_flood_enabled = false
 
-# Web 控制台监听地址，默认 0.0.0.0:8443
-web_bind = "0.0.0.0:8443"
+# Web 控制台监听地址，默认 0.0.0.0:8720
+web_bind = "0.0.0.0:8720"
 
 # API 访问 Token（未设置则允许匿名访问）
 # api_token = "changeme"

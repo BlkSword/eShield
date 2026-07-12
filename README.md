@@ -191,8 +191,8 @@ eshield check --config /etc/eshield/config.toml
 eshield tui
 
 # 指定远程 API 端点
-eshield status --endpoint http://eshield-host:8443
-eshield block 192.0.2.1 --endpoint http://eshield-host:8443
+eshield status --endpoint http://eshield-host:8720
+eshield block 192.0.2.1 --endpoint http://eshield-host:8720
 
 # 重置控制台访问令牌（本机 CLI 无需旧 token）
 eshield reset-token
@@ -241,7 +241,7 @@ sudo kill -HUP $(pidof eshield)
 
 ### Web Dashboard
 
-启动后访问 `http://<host>:8443/`，中文 Web 控制台提供：
+启动后访问 `http://<host>:8720/`，中文 Web 控制台提供：
 
 - **总览**：实时包统计、DPS/PPS、各防御模块命中数、IP 信誉分布、系统危险等级、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源、最近拦截事件实时流。
 - **防护策略**：统一的全局模块开关、速率限制参数、自适应黑名单参数与按端口的防护项目。
@@ -253,7 +253,7 @@ sudo kill -HUP $(pidof eshield)
 ### Prometheus 指标
 
 ```
-http://<host>:8443/metrics
+http://<host>:8720/metrics
 ```
 
 主要指标包括 `eshield_dropped_total`、`eshield_passed_total`、`eshield_blacklist_blocked_total`、`eshield_rate_limited_total`、`eshield_geoip_blocked_total` 等。
@@ -261,7 +261,7 @@ http://<host>:8443/metrics
 ### JSON 统计接口
 
 ```bash
-curl -H "Authorization: Bearer <token>" http://<host>:8443/api/stats | jq
+curl -H "Authorization: Bearer <token>" http://<host>:8720/api/stats | jq
 ```
 
 ### TUI 仪表盘

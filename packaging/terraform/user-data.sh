@@ -12,7 +12,7 @@ cat >/etc/eshield/config.toml <<'EOF'
 interface = "eth0"
 log_level = "info"
 ebpf_log_enabled = false
-web_port = 8443
+web_port = 8720
 whitelist = ["127.0.0.1/32", "::1/128"]
 blacklist = []
 

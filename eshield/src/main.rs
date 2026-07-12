@@ -48,7 +48,7 @@ use crate::{
     store::RuleStore,
 };
 
-const DEFAULT_ENDPOINT: &str = "http://localhost:8443";
+const DEFAULT_ENDPOINT: &str = "http://localhost:8720";
 
 #[derive(Debug, Parser)]
 #[command(name = "eshield")]

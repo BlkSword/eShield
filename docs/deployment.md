@@ -61,7 +61,7 @@ docker run -d --name eshield \
   --cap-add BPF --cap-add NET_ADMIN --cap-add NET_RAW \
   --cap-add PERFMON --cap-add IPC_LOCK \
   -v /etc/eshield/config.toml:/etc/eshield/config.toml:ro \
-  -p 8443:8443 \
+  -p 8720:8720 \
   ghcr.io/eshield/eshield:v0.1.2
 ```
 

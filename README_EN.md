@@ -186,8 +186,8 @@ eshield check --config /etc/eshield/config.toml
 eshield tui
 
 # Use a remote API endpoint
-eshield status --endpoint http://eshield-host:8443
-eshield block 192.0.2.1 --endpoint http://eshield-host:8443
+eshield status --endpoint http://eshield-host:8720
+eshield block 192.0.2.1 --endpoint http://eshield-host:8720
 
 # Reset the console access token (local CLI does not need the old token)
 eshield reset-token
@@ -234,12 +234,12 @@ When the log shows `config reloaded successfully`, the change is active without 
 
 ### Web Dashboard
 
-After starting the service, open `http://<host>:8443/`. The Dashboard shows real-time packet statistics, defense-module hits, top attackers, audit logs, and live control forms.
+After starting the service, open `http://<host>:8720/`. The Dashboard shows real-time packet statistics, defense-module hits, top attackers, audit logs, and live control forms.
 
 ### Prometheus Metrics
 
 ```
-http://<host>:8443/metrics
+http://<host>:8720/metrics
 ```
 
 Key metrics include `eshield_dropped_total`, `eshield_passed_total`, `eshield_blacklist_blocked_total`, `eshield_rate_limited_total`, `eshield_geoip_blocked_total`, etc.
@@ -247,7 +247,7 @@ Key metrics include `eshield_dropped_total`, `eshield_passed_total`, `eshield_bl
 ### JSON Stats Endpoint
 
 ```bash
-curl -H "Authorization: Bearer <token>" http://<host>:8443/api/stats | jq
+curl -H "Authorization: Bearer <token>" http://<host>:8720/api/stats | jq
 ```
 
 ### TUI Dashboard

@@ -63,7 +63,7 @@ pub struct Config {
 }
 
 fn default_web_port() -> u16 {
-    8443
+    8720
 }
 
 fn default_store_path() -> String {
