@@ -23,8 +23,9 @@ import time
 
 import paramiko
 
-HOST = "115.190.160.181"
-USER = "root"
+# 远程测试机地址，通过环境变量配置，避免把真实 IP/用户名提交到仓库。
+HOST = os.environ.get("ESHIELD_REMOTE_HOST", "127.0.0.1")
+USER = os.environ.get("ESHIELD_REMOTE_USER", "root")
 REMOTE_DIR = "/tmp/eshield-sync"
 LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -224,10 +225,11 @@ def run_command(ssh, cmd: str) -> int:
 
 
 def env_setup() -> str:
+    home = "/root" if USER == "root" else f"/home/{USER}"
     return (
-        "export PATH=/root/.cargo/bin:$PATH "
-        "&& export RUSTUP_HOME=/root/.rustup "
-        "&& export CARGO_HOME=/root/.cargo"
+        f"export PATH={home}/.cargo/bin:$PATH "
+        f"&& export RUSTUP_HOME={home}/.rustup "
+        f"&& export CARGO_HOME={home}/.cargo"
     )
 
 
