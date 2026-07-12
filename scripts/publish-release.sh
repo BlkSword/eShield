@@ -18,6 +18,7 @@ TAG="v${VERSION}"
 DEFAULT_ASSETS=(
     "target/x86_64-unknown-linux-musl/release/eshield"
     "target/bpfel-unknown-none/release/eshield"
+    "target/release/eshield-hub"
 )
 ASSET_DIR="${ASSET_DIR:-}"
 

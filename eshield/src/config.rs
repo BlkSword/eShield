@@ -4,6 +4,31 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+/// 黑名单条目的来源，用于区分本地生成与 Hub 下发，避免策略回环。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockOrigin {
+    Local,
+    #[default]
+    Api,
+    Adaptive,
+    ThreatIntel,
+    Hub,
+}
+
+impl BlockOrigin {
+    /// 是否允许向 Hub 上报该来源的策略。
+    pub fn publishable(&self) -> bool {
+        matches!(
+            self,
+            BlockOrigin::Local
+                | BlockOrigin::Api
+                | BlockOrigin::Adaptive
+                | BlockOrigin::ThreatIntel
+        )
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Config {
     pub interface: String,
@@ -60,6 +85,8 @@ pub struct Config {
     pub trust_score: TrustScoreConfig,
     #[serde(default)]
     pub danger_signal: DangerSignalConfig,
+    #[serde(default)]
+    pub hub: HubConfig,
 }
 
 fn default_web_port() -> u16 {
@@ -132,8 +159,12 @@ impl Default for TrustScoreConfig {
         }
     }
 }
-fn default_trust_add_divisor() -> u32 { 100 }
-fn default_trust_sub_divisor() -> u32 { 3 }
+fn default_trust_add_divisor() -> u32 {
+    100
+}
+fn default_trust_sub_divisor() -> u32 {
+    3
+}
 
 /// Danger Signal 配置（v0.4.0）
 #[derive(Debug, Clone, Deserialize)]
@@ -155,8 +186,102 @@ impl Default for DangerSignalConfig {
         }
     }
 }
-fn default_danger_sample_s() -> u64 { 5 }
-fn default_danger_anomaly_multiplier() -> f64 { 2.0 }
+fn default_danger_sample_s() -> u64 {
+    5
+}
+fn default_danger_anomaly_multiplier() -> f64 {
+    2.0
+}
+
+/// Hub 分布式同步配置（v0.5.0）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct HubConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub node_name: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default = "default_hub_pull_interval_s")]
+    pub sync_pull_interval_s: u64,
+    #[serde(default = "default_hub_push_interval_s")]
+    pub sync_push_interval_s: u64,
+    #[serde(default = "default_hub_push_min_hit_count")]
+    pub push_min_hit_count: u32,
+    #[serde(default = "default_hub_push_min_trust")]
+    pub push_min_trust: u32,
+    #[serde(default = "default_hub_push_max_batch_size")]
+    pub push_max_batch_size: usize,
+    #[serde(default = "default_false")]
+    pub sync_rules_enabled: bool,
+    #[serde(default = "default_hub_sync_rules_interval_s")]
+    pub sync_rules_interval_s: u64,
+    #[serde(default)]
+    pub tls: HubTlsConfig,
+}
+
+impl Default for HubConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            urls: Vec::new(),
+            node_name: String::new(),
+            token: String::new(),
+            sync_pull_interval_s: default_hub_pull_interval_s(),
+            sync_push_interval_s: default_hub_push_interval_s(),
+            push_min_hit_count: default_hub_push_min_hit_count(),
+            push_min_trust: default_hub_push_min_trust(),
+            push_max_batch_size: default_hub_push_max_batch_size(),
+            sync_rules_enabled: false,
+            sync_rules_interval_s: default_hub_sync_rules_interval_s(),
+            tls: HubTlsConfig::default(),
+        }
+    }
+}
+
+fn default_hub_pull_interval_s() -> u64 {
+    10
+}
+fn default_hub_push_interval_s() -> u64 {
+    5
+}
+fn default_hub_push_min_hit_count() -> u32 {
+    10
+}
+fn default_hub_push_min_trust() -> u32 {
+    100
+}
+fn default_hub_push_max_batch_size() -> usize {
+    100
+}
+fn default_hub_sync_rules_interval_s() -> u64 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HubTlsConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub ca_cert: Option<String>,
+    pub client_cert: Option<String>,
+    pub client_key: Option<String>,
+    #[serde(default = "default_true")]
+    pub verify: bool,
+}
+
+impl Default for HubTlsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ca_cert: None,
+            client_cert: None,
+            client_key: None,
+            verify: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortAclItem {
@@ -455,6 +580,7 @@ impl Config {
         validate_geoip(self)?;
         validate_threat_intel(self)?;
         validate_protection_projects(self)?;
+        validate_hub(self)?;
 
         Ok(())
     }
@@ -525,12 +651,18 @@ fn validate_geoip(config: &Config) -> anyhow::Result<()> {
     }
     for code in &config.geoip.block_countries {
         if code.len() != 2 {
-            anyhow::bail!("geoip block country code must be ISO-3166-1 alpha-2: {}", code);
+            anyhow::bail!(
+                "geoip block country code must be ISO-3166-1 alpha-2: {}",
+                code
+            );
         }
     }
     for code in &config.geoip.allow_countries {
         if code.len() != 2 {
-            anyhow::bail!("geoip allow country code must be ISO-3166-1 alpha-2: {}", code);
+            anyhow::bail!(
+                "geoip allow country code must be ISO-3166-1 alpha-2: {}",
+                code
+            );
         }
     }
     Ok(())
@@ -564,6 +696,42 @@ fn validate_threat_intel(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_hub(config: &Config) -> anyhow::Result<()> {
+    if !config.hub.enabled {
+        return Ok(());
+    }
+    if config.hub.node_name.is_empty() {
+        anyhow::bail!("hub.node_name cannot be empty when hub is enabled");
+    }
+    if config.hub.urls.is_empty() {
+        anyhow::bail!("hub.urls cannot be empty when hub is enabled");
+    }
+    if config.hub.token.is_empty() {
+        anyhow::bail!("hub.token cannot be empty when hub is enabled");
+    }
+    for (i, url) in config.hub.urls.iter().enumerate() {
+        if url.is_empty() {
+            anyhow::bail!("hub.urls[{}] cannot be empty", i);
+        }
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            anyhow::bail!("hub.urls[{}] must start with http:// or https://", i);
+        }
+    }
+    if config.hub.sync_pull_interval_s == 0 {
+        anyhow::bail!("hub.sync_pull_interval_s must be > 0");
+    }
+    if config.hub.sync_push_interval_s == 0 {
+        anyhow::bail!("hub.sync_push_interval_s must be > 0");
+    }
+    if config.hub.push_min_hit_count == 0 {
+        anyhow::bail!("hub.push_min_hit_count must be > 0");
+    }
+    if config.hub.sync_rules_interval_s == 0 {
+        anyhow::bail!("hub.sync_rules_interval_s must be > 0");
+    }
+    Ok(())
+}
+
 fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
     let valid_modules: std::collections::HashSet<&str> = [
         "syn_flood",
@@ -582,7 +750,10 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
         if proj.name.is_empty() {
             anyhow::bail!("protection_projects[{}]: name cannot be empty", i);
         }
-        if !matches!(proj.protocol.to_lowercase().as_str(), "tcp" | "udp" | "icmp" | "icmpv6" | "any") {
+        if !matches!(
+            proj.protocol.to_lowercase().as_str(),
+            "tcp" | "udp" | "icmp" | "icmpv6" | "any"
+        ) {
             anyhow::bail!(
                 "protection_projects[{}]: invalid protocol '{}', expected tcp/udp/icmp/icmpv6/any",
                 i,
@@ -598,7 +769,10 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
                 .parse()
                 .with_context(|| format!("protection_projects[{}]: invalid dport", i))?;
         }
-        if !matches!(proj.action.to_lowercase().as_str(), "pass" | "drop" | "defend") {
+        if !matches!(
+            proj.action.to_lowercase().as_str(),
+            "pass" | "drop" | "defend"
+        ) {
             anyhow::bail!(
                 "protection_projects[{}]: invalid action '{}', expected pass/drop/defend",
                 i,
@@ -617,7 +791,10 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
         }
         for (j, ip) in proj.target_ips.iter().enumerate() {
             crate::ip::parse_ip_or_cidr(ip).with_context(|| {
-                format!("protection_projects[{}].target_ips[{}]: invalid IP/CIDR", i, j)
+                format!(
+                    "protection_projects[{}].target_ips[{}]: invalid IP/CIDR",
+                    i, j
+                )
             })?;
         }
     }
@@ -714,8 +891,9 @@ mod tests {
         };
         let entry = item.to_entry().unwrap();
         assert_eq!(entry.protocol, 6);
-        assert_eq!(entry.dport_low, 80);
-        assert_eq!(entry.dport_high, 80);
+        // eBPF Map 中端口按网络字节序存储，因此断言也要用网络字节序。
+        assert_eq!(entry.dport_low, u16::to_be(80));
+        assert_eq!(entry.dport_high, u16::to_be(80));
         assert_eq!(entry.action, 2);
     }
 
@@ -728,8 +906,8 @@ mod tests {
         };
         let entry = item.to_entry().unwrap();
         assert_eq!(entry.protocol, 17);
-        assert_eq!(entry.dport_low, 1000);
-        assert_eq!(entry.dport_high, 2000);
+        assert_eq!(entry.dport_low, u16::to_be(1000));
+        assert_eq!(entry.dport_high, u16::to_be(2000));
         assert_eq!(entry.action, 1);
     }
 

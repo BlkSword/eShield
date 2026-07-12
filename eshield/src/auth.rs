@@ -98,7 +98,10 @@ pub async fn auth_middleware(
                 });
 
             let provided = provided_from_header.or(provided_from_cookie);
-            if provided.map(|t| constant_time_eq(&token, t)).unwrap_or(false) {
+            if provided
+                .map(|t| constant_time_eq(&token, t))
+                .unwrap_or(false)
+            {
                 next.run(request).await
             } else if is_html_root {
                 Response::builder()

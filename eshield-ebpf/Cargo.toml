@@ -1,6 +1,6 @@
 [package]
 name = "eshield-ebpf"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "Apache-2.0"
 
@@ -11,6 +11,7 @@ eshield-common = { path = "../eshield-common" }
 
 [profile.dev]
 overflow-checks = false
+opt-level = 3
 
 [[bin]]
 name = "eshield"

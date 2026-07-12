@@ -91,6 +91,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | 版本管理 | 控制台页脚与设置页自动同步后端运行版本。 |
 | **Trust Score（v0.4.0）** | IP 双向信誉评估——PASS 缓慢加分，DROP 快速减分，信誉分动态调制速率阈值。 |
 | **Danger Signal（v0.4.0）** | 系统级危险信号监测——CPU/内存/DPS 异常时自动提高全局防御等级（正常/警戒/危险）。 |
+| **分布式 Hub（v0.4.2）** | 多节点通过 `eshield-hub` 聚合共享黑名单/信誉/规则；节点自治，Hub 故障时自动降级。 |
 
 > **关于防护项目**：当前版本中，防护项目作为控制面策略分组被加载、校验、持久化并展示在 Dashboard/API 中；受 XDP verifier 组合栈 512 字节限制，暂不在 eBPF 数据面对每条连接按项目独立匹配。全局防御模块仍照常生效。
 >
@@ -222,6 +223,7 @@ eshield reset-token
 | `[danger_signal]` | **v0.4.0** 系统危险信号监测 |
 | `[port_acl]` | 端口/协议级 allow/drop 规则 |
 | `[protection_projects]` | 控制面策略分组 |
+| `[hub]` | **v0.4.2** 分布式 Hub 同步配置 |
 
 ### 热加载
 
@@ -234,6 +236,30 @@ sudo kill -HUP $(pidof eshield)
 ```
 
 日志中出现 `config reloaded successfully` 即表示生效，无需重启。
+
+### 分布式 Hub（v0.4.2）
+
+多节点场景下，可部署独立二进制 `eshield-hub` 作为策略聚合中心：
+
+```bash
+# 启动 Hub（生产建议前面挂 nginx/Caddy 做 TLS）
+eshield-hub --bind 0.0.0.0:9930 --token "your-hub-token"
+```
+
+节点配置开启同步：
+
+```toml
+[hub]
+enabled = true
+urls = ["https://hub.example.com:9930"]
+node_name = "web-tier-01"
+token = "your-hub-token"
+sync_pull_interval_s = 10
+sync_push_interval_s = 5
+sync_rules_enabled = true
+```
+
+节点会把本地高置信封禁上报 Hub，同时拉取其他节点/Hub 威胁情报的策略，实现「一个节点发现，所有节点共享免疫记忆」。详细架构与部署见 [docs/distributed-architecture.md](docs/distributed-architecture.md) 与 [docs/deployment.md](docs/deployment.md)。
 
 ---
 
@@ -286,7 +312,8 @@ REST API 完整端点、请求/响应示例与认证说明见 [docs/api.md](docs
 | 文档 | 内容 |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | 系统架构、数据包旅程、BPF Maps |
-| [docs/deployment.md](docs/deployment.md) | 二进制、systemd、容器与 K8s 部署 |
+| [docs/distributed-architecture.md](docs/distributed-architecture.md) | 分布式 Hub-Node 架构、配置与数据流 |
+| [docs/deployment.md](docs/deployment.md) | 二进制、systemd、容器、K8s 与 Hub 部署 |
 | [docs/operations.md](docs/operations.md) | 日常操作、日志、告警、备份恢复、故障排查 |
 | [docs/dev-linux.md](docs/dev-linux.md) | 依赖安装、构建、本地测试 |
 | [docs/benchmark.md](docs/benchmark.md) | 基准测试方法与示例报告 |
@@ -306,11 +333,12 @@ cargo test --workspace --exclude eshield-ebpf
 需要 root，在 network namespace 中运行场景测试：
 
 ```bash
-sudo bash ./tests/netns_test.sh
-sudo bash ./tests/full_attack_test.sh
+sudo bash ./tests/netns_test.sh       # 单节点防御能力
+sudo bash ./tests/full_attack_test.sh # 完整攻防场景
+sudo bash ./tests/hub_node_test.sh    # 分布式 Hub-Node 端到端
 ```
 
-覆盖：黑名单、TCP RST 回包、速率限制、SYN Flood、UDP Flood、ICMP Flood、L7 指纹、服务停止后恢复、SIGHUP 热加载、自适应阈值、GeoIP/ASN、威胁情报。
+覆盖：黑名单、TCP RST 回包、速率限制、SYN Flood、UDP Flood、ICMP Flood、L7 指纹、服务停止后恢复、SIGHUP 热加载、自适应阈值、GeoIP/ASN、威胁情报、Hub 策略同步/解封/规则下发。
 
 ### 基准测试
 
@@ -330,10 +358,11 @@ sudo bash scripts/benchmark.sh
 ├── eshield/            # 用户态控制面
 ├── eshield-ebpf/       # 内核态 eBPF/XDP 数据面
 ├── eshield-common/     # 内核/用户态共享结构体
+├── eshield-hub/        # 分布式策略聚合 Hub
 ├── xtask/              # 构建任务封装
-├── scripts/            # install.sh / uninstall.sh / benchmark.sh
+├── scripts/            # install.sh / uninstall.sh / benchmark.sh / publish-release.sh
 ├── tests/              # 集成测试脚本
-├── docs/               # 架构、部署、开发环境、API、基准测试文档
+├── docs/               # 架构、部署、开发环境、API、基准测试、分布式文档
 ├── packaging/          # systemd 服务、deb/rpm 配置、示例配置
 ├── README.md
 ├── README_EN.md

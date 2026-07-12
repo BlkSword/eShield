@@ -1,10 +1,14 @@
 #![cfg_attr(not(feature = "userspace"), no_std)]
 
+#[cfg(feature = "userspace")]
+use serde::{Deserialize, Serialize};
+
 pub mod pure;
 
 /// IP 地址族
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "userspace", derive(Serialize, Deserialize))]
 pub enum IpFamily {
     Ipv4 = 4,
     Ipv6 = 6,
@@ -25,6 +29,7 @@ impl IpFamily {
 /// IPv4 映射为 IPv4-mapped IPv6 形式（前 12 字节为 0，后 4 字节为 IPv4 地址）。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "userspace", derive(Serialize, Deserialize))]
 pub struct IpKey {
     pub family: u8,
     pub addr: [u8; 16],
@@ -134,9 +139,9 @@ pub struct TrustEntry {
 /// Trust Score 更新参数
 pub const TRUST_MAX: u32 = 1000;
 pub const TRUST_MIN: u32 = 0;
-pub const TRUST_ADD_DIVISOR: u32 = 100;   // trust += (1000 - trust) / 100  慢慢加分
-pub const TRUST_SUB_DIVISOR: u32 = 3;     // trust -= trust / 3             快速减分
-pub const TRUST_DEFAULT: u32 = 500;       // 新 IP 默认中性
+pub const TRUST_ADD_DIVISOR: u32 = 100; // trust += (1000 - trust) / 100  慢慢加分
+pub const TRUST_SUB_DIVISOR: u32 = 3; // trust -= trust / 3             快速减分
+pub const TRUST_DEFAULT: u32 = 500; // 新 IP 默认中性
 
 /// Per-IP 指数衰减速率计数器
 #[repr(C, align(32))]
@@ -198,8 +203,6 @@ pub struct GlobalStats {
     pub icmp_dropped: u64,
     pub other_dropped: u64,
 }
-
-
 
 /// 配置运行时快照（内嵌到 CONFIG Map）
 #[repr(C)]
@@ -287,7 +290,6 @@ pub struct ProjectPolicy {
     pub action: u8,
     pub padding: [u8; 5],
 }
-
 
 /// 项目策略可用模块位图。
 pub mod project_modules {

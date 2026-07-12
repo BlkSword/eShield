@@ -49,7 +49,9 @@ pub async fn run(
         // 过滤 Ring Buffer 中残留的 stale 事件（来自前一次测试/进程的事件）。
         // eBPF 的 bpf_ktime_get_ns 与用户态 CLOCK_MONOTONIC 都是自系统启动以来的
         // 单调时间，允许 1 秒容差。
-        if program_start_ns != 0 && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns {
+        if program_start_ns != 0
+            && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns
+        {
             continue;
         }
         // 所有有效 DROP 事件写入环形缓冲供控制台「攻击事件」页使用
@@ -77,7 +79,6 @@ pub async fn run(
             && event.rule_id != eshield_common::rules::SYN_FLOOD
             && event.rule_id != eshield_common::rules::UDP_FLOOD
             && event.rule_id != eshield_common::rules::ICMP_FLOOD
-            && event.rule_id != eshield_common::rules::L7_PATTERN
             && event.rule_id != eshield_common::rules::BLACKLIST
         {
             if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
@@ -100,7 +101,12 @@ pub async fn run(
     stats.add_dropped_batch(&by_reason, &by_source, &by_port);
 
     if !events.is_empty() {
-        tracing::info!(events_len = events.len(), ?by_reason, ?by_port, "event_consumer batch");
+        tracing::info!(
+            events_len = events.len(),
+            ?by_reason,
+            ?by_port,
+            "event_consumer batch"
+        );
     }
 
     let elapsed_us = process_start.elapsed().as_micros() as u64;

@@ -23,8 +23,8 @@ import time
 
 import paramiko
 
-HOST = "118.193.35.84"
-USER = "ubuntu"
+HOST = "115.190.160.181"
+USER = "root"
 REMOTE_DIR = "/tmp/eshield-sync"
 LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -225,9 +225,9 @@ def run_command(ssh, cmd: str) -> int:
 
 def env_setup() -> str:
     return (
-        "export PATH=/home/ubuntu/.cargo/bin:$PATH "
-        "&& export RUSTUP_HOME=/home/ubuntu/.rustup "
-        "&& export CARGO_HOME=/home/ubuntu/.cargo"
+        "export PATH=/root/.cargo/bin:$PATH "
+        "&& export RUSTUP_HOME=/root/.rustup "
+        "&& export CARGO_HOME=/root/.cargo"
     )
 
 
@@ -236,6 +236,7 @@ def run_build(ssh, remote_dir: str) -> int:
     cmds = [
         f"cd {remote_dir} && {env} && cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q",
         f"cd {remote_dir} && {env} && cargo build --package eshield --target x86_64-unknown-linux-musl --release -q",
+        f"cd {remote_dir} && {env} && cargo build --package eshield-hub --release -q",
     ]
     for cmd in cmds:
         code = run_command(ssh, cmd)

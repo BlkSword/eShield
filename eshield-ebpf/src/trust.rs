@@ -57,7 +57,8 @@ pub fn trust_factor(src: &IpKey) -> u64 {
         Some(e) => e.trust_score as u64,
         None => TRUST_DEFAULT as u64,
     };
-    (500u64 + trust).saturating_mul(1000) / 1500
+    // 使用 wrapping_mul 避免 eBPF 不支持 128 位 __multi3 调用。
+    (500u64 + trust).wrapping_mul(1000).wrapping_div(1500)
 }
 
 /// 合并全局危险等级的最终阈值调制因子。

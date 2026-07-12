@@ -159,7 +159,6 @@ impl TimeSeriesWindow {
             .cloned()
             .collect()
     }
-
 }
 
 #[cfg(test)]

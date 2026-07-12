@@ -123,7 +123,8 @@ pub fn decay_counter(
     let effective_ticks = ticks.min(64);
     let mut decayed = counter;
     for _ in 0..effective_ticks {
-        decayed = (decayed * decay_num) / decay_den;
+        // 使用 wrapping_mul 避免编译器为 `(u64 * u64) / u64` 生成 128 位 __multi3 调用。
+        decayed = decayed.wrapping_mul(decay_num).wrapping_div(decay_den);
     }
     decayed
 }
@@ -331,7 +332,10 @@ mod tests {
 
     #[test]
     fn test_port_acl_match_protocol_specific() {
-        assert_eq!(match_port_acl_entry(6, 80, 6, 80, 80, 2), Some(AclMatch::Drop));
+        assert_eq!(
+            match_port_acl_entry(6, 80, 6, 80, 80, 2),
+            Some(AclMatch::Drop)
+        );
         assert_eq!(match_port_acl_entry(17, 80, 6, 80, 80, 2), None);
     }
 
@@ -341,7 +345,10 @@ mod tests {
             match_port_acl_entry(6, 443, 6, 1, 1024, 2),
             Some(AclMatch::Drop)
         );
-        assert_eq!(match_port_acl_entry(6, 443, 6, 1, 1024, 1), Some(AclMatch::Allow));
+        assert_eq!(
+            match_port_acl_entry(6, 443, 6, 1, 1024, 1),
+            Some(AclMatch::Allow)
+        );
         assert_eq!(match_port_acl_entry(6, 4433, 6, 1, 1024, 2), None);
     }
 

@@ -42,11 +42,7 @@ pub async fn sync_all_feeds(control: Arc<ControlState>, feeds: Vec<crate::config
             loop {
                 interval.tick().await;
                 if let Err(e) = sync_feed(&control, &feed).await {
-                    tracing::warn!(
-                        "threat intel feed '{}' sync failed: {}",
-                        feed.name,
-                        e
-                    );
+                    tracing::warn!("threat intel feed '{}' sync failed: {}", feed.name, e);
                 }
             }
         });
@@ -54,12 +50,19 @@ pub async fn sync_all_feeds(control: Arc<ControlState>, feeds: Vec<crate::config
 }
 
 /// 立即同步单个 feed（手动触发用）。
-pub async fn sync_feed_now(control: Arc<ControlState>, feed: crate::config::ThreatFeed) -> Result<()> {
+pub async fn sync_feed_now(
+    control: Arc<ControlState>,
+    feed: crate::config::ThreatFeed,
+) -> Result<()> {
     sync_feed(&control, &feed).await
 }
 
 async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> Result<()> {
-    tracing::info!("syncing threat intel feed '{}' from {}", feed.name, feed.url);
+    tracing::info!(
+        "syncing threat intel feed '{}' from {}",
+        feed.name,
+        feed.url
+    );
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -67,16 +70,13 @@ async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> 
         .build()
         .context("build http client")?;
 
-    let resp = client.get(&feed.url).send().await.with_context(|| {
-        format!("fetch threat intel feed '{}' from {}", feed.name, feed.url)
-    })?;
+    let resp =
+        client.get(&feed.url).send().await.with_context(|| {
+            format!("fetch threat intel feed '{}' from {}", feed.name, feed.url)
+        })?;
 
     if !resp.status().is_success() {
-        anyhow::bail!(
-            "feed '{}' returned status {}",
-            feed.name,
-            resp.status()
-        );
+        anyhow::bail!("feed '{}' returned status {}", feed.name, resp.status());
     }
 
     let text = resp.text().await.context("read feed response body")?;
@@ -101,7 +101,12 @@ async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> 
         "allow" => {
             for (key, prefix) in entries_cidr(entries) {
                 if let Err(e) = control.allow_cidr_raw(key, prefix).await {
-                    tracing::debug!("skip threat intel allow for {}/{}: {}", format_ip_key(&key), prefix, e);
+                    tracing::debug!(
+                        "skip threat intel allow for {}/{}: {}",
+                        format_ip_key(&key),
+                        prefix,
+                        e
+                    );
                     skipped += 1;
                 } else {
                     added += 1;
@@ -222,7 +227,8 @@ mod tests {
             category: None,
             action: "drop".to_string(),
         };
-        let text = "192.0.2.0/24,US,malware\n2001:db8::/32,CN\n";
+        // parse_ip_or_cidr 只接受 /32 或 /128 的精确主机 CIDR。
+        let text = "192.0.2.1/32,US,malware\n2001:db8::1/128,CN\n";
         let entries = parse_feed(text, &feed).unwrap();
         assert_eq!(entries.len(), 2);
     }

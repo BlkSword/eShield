@@ -1,3 +1,4 @@
+use crate::config::BlockOrigin;
 use anyhow::Context;
 use eshield_common::IpKey;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -10,7 +11,8 @@ const BLACKLIST: TableDefinition<&[u8], &[u8]> = TableDefinition::new("blacklist
 const WHITELIST: TableDefinition<&[u8], &[u8]> = TableDefinition::new("whitelist");
 const PORT_ACL: TableDefinition<u32, &[u8]> = TableDefinition::new("port_acl");
 const L7_PATTERNS: TableDefinition<u32, &[u8]> = TableDefinition::new("l7_patterns");
-const PROTECTION_PROJECTS: TableDefinition<u32, &[u8]> = TableDefinition::new("protection_projects");
+const PROTECTION_PROJECTS: TableDefinition<u32, &[u8]> =
+    TableDefinition::new("protection_projects");
 
 #[derive(Clone)]
 pub struct RuleStore {
@@ -22,6 +24,10 @@ struct BlacklistRow {
     blocked_until_ns: u64,
     block_reason: u8,
     first_seen_ns: u64,
+    #[serde(default)]
+    origin: BlockOrigin,
+    #[serde(default)]
+    last_updated_ns: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -48,12 +54,15 @@ impl RuleStore {
         blocked_until_ns: u64,
         block_reason: u8,
         first_seen_ns: u64,
+        origin: BlockOrigin,
     ) -> anyhow::Result<()> {
         let db = self.db.clone();
         let row = BlacklistRow {
             blocked_until_ns,
             block_reason,
             first_seen_ns,
+            origin,
+            last_updated_ns: crate::time::monotonic_ns(),
         };
         let value = serde_json::to_vec(&row)?;
         let ip = Self::ip_key_bytes(&key);
@@ -86,7 +95,7 @@ impl RuleStore {
         .context("store task panicked")?
     }
 
-    pub async fn load_blacklist(&self) -> anyhow::Result<Vec<(IpKey, u64, u8, u64)>> {
+    pub async fn load_blacklist(&self) -> anyhow::Result<Vec<(IpKey, u64, u8, u64, BlockOrigin)>> {
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
             let tx = db.begin_read()?;
@@ -100,7 +109,47 @@ impl RuleStore {
                 let (k, v) = item?;
                 let key = Self::bytes_to_ip_key(k.value());
                 let row: BlacklistRow = serde_json::from_slice(v.value())?;
-                out.push((key, row.blocked_until_ns, row.block_reason, row.first_seen_ns));
+                out.push((
+                    key,
+                    row.blocked_until_ns,
+                    row.block_reason,
+                    row.first_seen_ns,
+                    row.origin,
+                ));
+            }
+            Ok(out)
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    /// 加载自指定时间戳以来有变更的黑名单条目（用于 Hub 增量上报）。
+    pub async fn load_blacklist_since(
+        &self,
+        since_ns: u64,
+    ) -> anyhow::Result<Vec<(IpKey, u64, u8, u64, BlockOrigin)>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(BLACKLIST) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let mut out = Vec::new();
+            for item in table.iter()? {
+                let (k, v) = item?;
+                let key = Self::bytes_to_ip_key(k.value());
+                let row: BlacklistRow = serde_json::from_slice(v.value())?;
+                if row.last_updated_ns > since_ns {
+                    out.push((
+                        key,
+                        row.blocked_until_ns,
+                        row.block_reason,
+                        row.first_seen_ns,
+                        row.origin,
+                    ));
+                }
             }
             Ok(out)
         })

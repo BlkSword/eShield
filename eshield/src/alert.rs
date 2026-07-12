@@ -78,14 +78,35 @@ impl AlertManager {
 
         let rule_breakdown = {
             let mut m = HashMap::new();
-            m.insert("blacklist".to_string(), stats.blacklist_blocked.load(Ordering::Relaxed));
-            m.insert("rate_limit".to_string(), stats.rate_limited.load(Ordering::Relaxed));
-            m.insert("syn_flood".to_string(), stats.syn_flood_blocked.load(Ordering::Relaxed));
+            m.insert(
+                "blacklist".to_string(),
+                stats.blacklist_blocked.load(Ordering::Relaxed),
+            );
+            m.insert(
+                "rate_limit".to_string(),
+                stats.rate_limited.load(Ordering::Relaxed),
+            );
+            m.insert(
+                "syn_flood".to_string(),
+                stats.syn_flood_blocked.load(Ordering::Relaxed),
+            );
             m.insert("l7".to_string(), stats.l7_blocked.load(Ordering::Relaxed));
-            m.insert("adaptive".to_string(), stats.adaptive_blocked.load(Ordering::Relaxed));
-            m.insert("udp_flood".to_string(), stats.udp_flood_blocked.load(Ordering::Relaxed));
-            m.insert("icmp_flood".to_string(), stats.icmp_flood_blocked.load(Ordering::Relaxed));
-            m.insert("geoip".to_string(), stats.geoip_blocked.load(Ordering::Relaxed));
+            m.insert(
+                "adaptive".to_string(),
+                stats.adaptive_blocked.load(Ordering::Relaxed),
+            );
+            m.insert(
+                "udp_flood".to_string(),
+                stats.udp_flood_blocked.load(Ordering::Relaxed),
+            );
+            m.insert(
+                "icmp_flood".to_string(),
+                stats.icmp_flood_blocked.load(Ordering::Relaxed),
+            );
+            m.insert(
+                "geoip".to_string(),
+                stats.geoip_blocked.load(Ordering::Relaxed),
+            );
             m
         };
 

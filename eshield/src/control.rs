@@ -5,7 +5,7 @@ use aya::{
 };
 use eshield_common::{
     rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
-    RateLimitConfig, RuntimeConfig, WhitelistKeyV4, WhitelistKeyV6, BLOCK_PERMANENT,
+    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6, BLOCK_PERMANENT,
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ use crate::audit::{AuditAction, Auditor};
 use crate::config::{
     Config, GeoIpConfig, L7ScanConfig, PortAclItem, ProtectionProject, ThreatFeed,
 };
+use crate::hub_client::{NodePolicy, SharedPolicy};
 use crate::ip::{format_ip_key, parse_cidr, parse_ip_or_cidr};
 use crate::store::RuleStore;
 
@@ -32,6 +33,9 @@ pub struct ControlState {
     pub geoip_blocks: Mutex<Vec<(IpKey, u32)>>,
     pub auditor: Option<Auditor>,
     pub store: Option<RuleStore>,
+    pub hub_connected: std::sync::atomic::AtomicBool,
+    pub hub_active_url: std::sync::Mutex<String>,
+    pub hub_config: crate::config::HubConfig,
     adaptive: Option<Arc<AdaptiveEngine>>,
 }
 
@@ -67,6 +71,9 @@ pub struct RuntimeConfigSnapshot {
     pub threat_intel_feeds: Vec<ThreatFeed>,
     pub whitelist_entries: Vec<String>,
     pub blacklist_entries: Vec<String>,
+    pub hub_enabled: bool,
+    pub hub_node_name: String,
+    pub hub_urls: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -112,6 +119,9 @@ impl ControlState {
             geoip_blocks: Mutex::new(Vec::new()),
             auditor,
             store,
+            hub_connected: std::sync::atomic::AtomicBool::new(false),
+            hub_active_url: std::sync::Mutex::new(String::new()),
+            hub_config: config.hub.clone(),
             adaptive,
         };
 
@@ -172,34 +182,43 @@ impl ControlState {
     /// 实时封禁某个 IP（API 控制）。支持 IPv4/IPv6。
     pub async fn block_ip(&self, ip_str: &str, duration_s: u64) -> anyhow::Result<()> {
         let key = parse_ip_or_cidr(ip_str)?;
-        self.block_ip_raw(key, duration_s, rules::API_BLOCK as u8).await?;
-
-        if let Some(store) = &self.store {
-            let now_ns = crate::time::monotonic_ns();
-            let blocked_until_ns = if duration_s == 0 {
-                BLOCK_PERMANENT
-            } else {
-                let block_ns = duration_s.saturating_mul(1_000_000_000);
-                now_ns.saturating_add(block_ns)
-            };
-            store
-                .save_blacklist(key, blocked_until_ns, rules::API_BLOCK as u8, now_ns)
-                .await?;
-        }
-
-        self.audit(
-            "api",
-            AuditAction::BlockIp,
-            serde_json::json!({ "ip": ip_str, "duration_s": duration_s }),
+        self.block_ip_key(
+            key,
+            duration_s,
+            rules::API_BLOCK as u8,
+            crate::config::BlockOrigin::Api,
         )
-        .await;
+        .await?;
         info!("API block: {} duration={}s", ip_str, duration_s);
         Ok(())
     }
 
     /// 通过威胁情报 feed 封禁某个 IP。
     pub async fn block_ip_threat_intel(&self, key: IpKey, duration_s: u64) -> anyhow::Result<()> {
-        self.block_ip_raw(key, duration_s, rules::THREAT_INTEL as u8).await?;
+        self.block_ip_key(
+            key,
+            duration_s,
+            rules::THREAT_INTEL as u8,
+            crate::config::BlockOrigin::ThreatIntel,
+        )
+        .await?;
+        info!(
+            "threat intel block: {} duration={}s",
+            format_ip_key(&key),
+            duration_s
+        );
+        Ok(())
+    }
+
+    /// 通用封禁接口，供 API / 自适应 / 威胁情报 / Hub 下发使用。
+    pub async fn block_ip_key(
+        &self,
+        key: IpKey,
+        duration_s: u64,
+        reason: u8,
+        origin: crate::config::BlockOrigin,
+    ) -> anyhow::Result<()> {
+        self.block_ip_raw(key, duration_s, reason).await?;
 
         if let Some(store) = &self.store {
             let now_ns = crate::time::monotonic_ns();
@@ -210,17 +229,23 @@ impl ControlState {
                 now_ns.saturating_add(block_ns)
             };
             store
-                .save_blacklist(key, blocked_until_ns, rules::THREAT_INTEL as u8, now_ns)
+                .save_blacklist(key, blocked_until_ns, reason, now_ns, origin)
                 .await?;
         }
 
+        let actor = match origin {
+            crate::config::BlockOrigin::Api => "api",
+            crate::config::BlockOrigin::Adaptive => "adaptive",
+            crate::config::BlockOrigin::ThreatIntel => "threat_intel",
+            crate::config::BlockOrigin::Hub => "hub",
+            crate::config::BlockOrigin::Local => "local",
+        };
         self.audit(
-            "threat_intel",
+            actor,
             AuditAction::BlockIp,
-            serde_json::json!({ "ip": format_ip_key(&key), "duration_s": duration_s }),
+            serde_json::json!({ "ip": format_ip_key(&key), "duration_s": duration_s, "origin": origin }),
         )
         .await;
-        info!("threat intel block: {} duration={}s", format_ip_key(&key), duration_s);
         Ok(())
     }
 
@@ -255,6 +280,13 @@ impl ControlState {
     /// 实时解封某个 IP。
     pub async fn unblock_ip(&self, ip_str: &str) -> anyhow::Result<()> {
         let key = parse_ip_or_cidr(ip_str)?;
+        self.unblock_ip_key(key, "api").await?;
+        info!("API unblock: {}", ip_str);
+        Ok(())
+    }
+
+    /// 按 IpKey 解封，供 Hub 删除同步等内部路径使用。
+    pub async fn unblock_ip_key(&self, key: IpKey, actor: &str) -> anyhow::Result<()> {
         let mut guard = self.ebpf.lock().await;
         let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
             .map_mut("BLACKLIST")
@@ -270,12 +302,11 @@ impl ControlState {
         }
 
         self.audit(
-            "api",
+            actor,
             AuditAction::UnblockIp,
-            serde_json::json!({ "ip": ip_str }),
+            serde_json::json!({ "ip": format_ip_key(&key) }),
         )
         .await;
-        info!("API unblock: {}", ip_str);
         Ok(())
     }
 
@@ -308,7 +339,12 @@ impl ControlState {
                     .context("WHITELIST_V4 map not found")?
                     .try_into()?;
                 whitelist.insert(
-                    &LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4().to_be() }),
+                    &LpmKey::new(
+                        prefix,
+                        WhitelistKeyV4 {
+                            addr: key.ipv4().to_be(),
+                        },
+                    ),
                     1,
                     0,
                 )?;
@@ -340,7 +376,12 @@ impl ControlState {
                     .map_mut("WHITELIST_V4")
                     .context("WHITELIST_V4 map not found")?
                     .try_into()?;
-                whitelist.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: key.ipv4().to_be() }))?;
+                whitelist.remove(&LpmKey::new(
+                    prefix,
+                    WhitelistKeyV4 {
+                        addr: key.ipv4().to_be(),
+                    },
+                ))?;
             }
             Some(IpFamily::Ipv6) => {
                 let mut whitelist: LpmTrie<_, WhitelistKeyV6, u8> = guard
@@ -472,7 +513,12 @@ impl ControlState {
         let mut geoip_blocks = self.geoip_blocks.lock().await;
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
         self.runtime.write().await.geoip = config.geoip.clone();
-        self.audit("api", AuditAction::PatchConfig, serde_json::json!({"geoip": config.geoip})).await;
+        self.audit(
+            "api",
+            AuditAction::PatchConfig,
+            serde_json::json!({"geoip": config.geoip}),
+        )
+        .await;
         info!("GeoIP reloaded");
         Ok(())
     }
@@ -554,10 +600,14 @@ impl ControlState {
 
     /// 从持久化存储加载动态规则并应用（不记录审计，避免启动/重载时产生大量日志）。
     pub async fn load_persisted_rules(&self) -> anyhow::Result<()> {
-        let Some(store) = &self.store else { return Ok(()) };
+        let Some(store) = &self.store else {
+            return Ok(());
+        };
 
         let now_ns = crate::time::monotonic_ns();
-        for (key, blocked_until_ns, reason, _first_seen_ns) in store.load_blacklist().await? {
+        for (key, blocked_until_ns, reason, _first_seen_ns, _origin) in
+            store.load_blacklist().await?
+        {
             // 静态黑名单由配置文件管理，不重复从持久化存储加载，避免旧配置残留。
             if reason == rules::BLACKLIST as u8 {
                 continue;
@@ -597,6 +647,240 @@ impl ControlState {
         }
 
         Ok(())
+    }
+
+    /// 收集可上报给 Hub 的本地策略。
+    pub async fn collect_hub_publishable_policies(
+        &self,
+        since_ns: u64,
+        min_hits: u32,
+        min_trust: u32,
+        limit: usize,
+    ) -> anyhow::Result<Vec<NodePolicy>> {
+        let store = match &self.store {
+            Some(s) => s,
+            None => return Ok(Vec::new()),
+        };
+
+        let candidates = store.load_blacklist_since(since_ns).await?;
+        if candidates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 一次性读取 BLACKLIST 命中次数，然后释放该 map 的借用，再去读 TRUST_MAP。
+        let mut hits = Vec::with_capacity(candidates.len());
+        {
+            let mut guard = self.ebpf.lock().await;
+            let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                .map_mut("BLACKLIST")
+                .context("BLACKLIST map not found")?
+                .try_into()?;
+            for (key, blocked_until_ns, reason, first_seen_ns, origin) in candidates {
+                if !origin.publishable() {
+                    continue;
+                }
+                let hit_count = match blacklist.get(&key, 0) {
+                    Ok(entry) => entry.hit_count,
+                    Err(_) => continue,
+                };
+                hits.push((key, blocked_until_ns, reason, first_seen_ns, origin, hit_count));
+            }
+        }
+
+        let mut out = Vec::new();
+        let now_ns = crate::time::monotonic_ns();
+
+        for (key, blocked_until_ns, reason, _first_seen_ns, _origin, hit_count) in hits {
+            // 命中次数不足且不是永久/长期封禁则跳过
+            if hit_count < min_hits && blocked_until_ns <= now_ns {
+                continue;
+            }
+            let trust_score = self.lookup_trust_score(&key).await;
+            if trust_score > min_trust {
+                continue;
+            }
+            let ttl_s = if blocked_until_ns == BLOCK_PERMANENT {
+                0
+            } else {
+                blocked_until_ns.saturating_sub(now_ns) / 1_000_000_000
+            };
+            out.push(NodePolicy {
+                ip: key,
+                reason,
+                hit_count,
+                trust_score,
+                blocked_until_ns,
+                ttl_s,
+            });
+            if out.len() >= limit {
+                break;
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// 从 eBPF TRUST_MAP 读取指定 IP 的信誉分，缩放为 0-100（与 Hub 协议一致）。
+    async fn lookup_trust_score(&self, key: &IpKey) -> u32 {
+        let mut guard = self.ebpf.lock().await;
+        let m = match guard.map_mut("TRUST_MAP") {
+            Some(m) => m,
+            None => return 0,
+        };
+        let trust_map = match LruHashMap::<_, IpKey, TrustEntry>::try_from(m) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!("failed to open TRUST_MAP: {}", e);
+                return 0;
+            }
+        };
+        match trust_map.get(key, 0) {
+            Ok(entry) => (entry.trust_score / 10).min(100),
+            Err(_) => 0,
+        }
+    }
+
+    /// 应用从 Hub 拉取下来的共享策略。
+    pub async fn apply_hub_policies(&self, policies: &[SharedPolicy]) -> anyhow::Result<usize> {
+        if policies.is_empty() {
+            return Ok(0);
+        }
+
+        // 一次性读取本地已有黑名单，避免后续重复加锁
+        let existing: HashSet<IpKey> = {
+            let mut guard = self.ebpf.lock().await;
+            let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                .map_mut("BLACKLIST")
+                .context("BLACKLIST map not found")?
+                .try_into()?;
+            let mut set = HashSet::new();
+            for (key, _) in blacklist.iter().flatten() {
+                set.insert(key);
+            }
+            set
+        };
+
+        let mut applied = 0usize;
+
+        let node_name = &self.hub_config.node_name;
+        for policy in policies {
+            if existing.contains(&policy.ip) {
+                continue;
+            }
+
+            // 跳过源自本节点的策略，避免本地封禁被 Hub 回传后永远无法自动解封。
+            if !node_name.is_empty() && policy.source_nodes.iter().any(|n| n == node_name) {
+                tracing::debug!(
+                    ip = ?policy.ip,
+                    "skip hub policy originating from this node"
+                );
+                continue;
+            }
+
+            // Hub 下发的共享策略使用 ttl_s 描述希望封禁的时长。
+            let duration_s = policy.ttl_s.max(60); // 至少封禁 60s，避免过期
+
+            self.block_ip_key(
+                policy.ip,
+                duration_s,
+                policy.reason,
+                crate::config::BlockOrigin::Hub,
+            )
+            .await?;
+
+            // 将 Hub 聚合后的信誉分同步到本地 TRUST_MAP，供数据面调制阈值。
+            if policy.trust_score > 0 {
+                self.set_trust_score(policy.ip, policy.trust_score * 10)
+                    .await;
+            }
+
+            applied += 1;
+        }
+
+        Ok(applied)
+    }
+
+    /// 将指定 IP 的信誉分写入 eBPF TRUST_MAP。
+    async fn set_trust_score(&self, key: IpKey, trust_score: u32) {
+        let trust_enabled = self.runtime.read().await.trust_enabled;
+        if !trust_enabled {
+            return;
+        }
+        let mut guard = self.ebpf.lock().await;
+        let m = match guard.map_mut("TRUST_MAP") {
+            Some(m) => m,
+            None => {
+                tracing::debug!("TRUST_MAP not found");
+                return;
+            }
+        };
+        let mut trust_map = match LruHashMap::<_, IpKey, TrustEntry>::try_from(m) {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::debug!("failed to open TRUST_MAP: {}", e);
+                return;
+            }
+        };
+        let entry = TrustEntry {
+            trust_score: trust_score.min(1000),
+            pass_count: 0,
+            drop_count: 0,
+            last_update_ns: crate::time::monotonic_ns(),
+            level: 0,
+            padding: [0; 3],
+        };
+        let _ = trust_map.insert(key, entry, 0);
+    }
+
+    /// 解封由 Hub 下发且已被 Hub 删除的 IP，避免误删本地策略。
+    pub async fn unblock_hub_policies(&self, ips: &[IpKey]) -> anyhow::Result<usize> {
+        let store = match &self.store {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let rows = store.load_blacklist().await?;
+        let hub_set: HashSet<IpKey> = rows
+            .into_iter()
+            .filter(|(_, _, _, _, origin)| *origin == crate::config::BlockOrigin::Hub)
+            .map(|(key, _, _, _, _)| key)
+            .collect();
+
+        let mut unblocked = 0usize;
+        for ip in ips {
+            if hub_set.contains(ip) {
+                self.unblock_ip_key(*ip, "hub").await?;
+                unblocked += 1;
+            }
+        }
+        Ok(unblocked)
+    }
+
+    /// 应用从 Hub 统一下发的规则包（ACL / L7 / 防护项目）。
+    pub async fn apply_hub_rules(&self, bundle: &crate::hub_client::RuleBundle) -> anyhow::Result<()> {
+        self.set_port_acl(bundle.port_acl.clone()).await?;
+        self.set_l7_patterns(bundle.l7_patterns.clone()).await?;
+        self.set_protection_projects(bundle.protection_projects.clone())
+            .await?;
+        self.audit(
+            "hub",
+            AuditAction::PatchConfig,
+            serde_json::json!({ "source": "hub_rules" }),
+        )
+        .await;
+        Ok(())
+    }
+
+    /// 返回用于 Hub 心跳的运行时统计摘要 JSON。
+    pub async fn stats_snapshot_json(&self) -> serde_json::Value {
+        let rt = self.runtime.read().await.clone();
+        serde_json::json!({
+            "interface": rt.interface,
+            "rate_limit_enabled": rt.rate_limit_enabled,
+            "adaptive_enabled": rt.adaptive.enabled,
+            "trust_enabled": rt.trust_enabled,
+            "danger_level": rt.danger_level,
+        })
     }
 
     async fn audit(
@@ -650,6 +934,9 @@ impl RuntimeConfigSnapshot {
             threat_intel_feeds: config.threat_intel.feeds.clone(),
             whitelist_entries: config.whitelist.clone(),
             blacklist_entries: config.blacklist.clone(),
+            hub_enabled: config.hub.enabled,
+            hub_node_name: config.hub.node_name.clone(),
+            hub_urls: config.hub.urls.clone(),
         }
     }
 }
@@ -700,7 +987,10 @@ fn init_rate_limit_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn init_l7_patterns_map(ebpf: &mut Ebpf, pattern_cfgs: &[crate::config::L7PatternConfig]) -> anyhow::Result<()> {
+fn init_l7_patterns_map(
+    ebpf: &mut Ebpf,
+    pattern_cfgs: &[crate::config::L7PatternConfig],
+) -> anyhow::Result<()> {
     let mut patterns: Array<_, L7Pattern> = ebpf
         .map_mut("L7_PATTERNS")
         .context("L7_PATTERNS map not found")?
@@ -809,7 +1099,11 @@ async fn apply_whitelist_map(
                 Some(IpFamily::Ipv6) => remove_v6.push((key.addr, prefix)),
                 _ => {}
             }
-            info!("removed whitelist entry: {}/{}", format_ip_key(&key), prefix);
+            info!(
+                "removed whitelist entry: {}/{}",
+                format_ip_key(&key),
+                prefix
+            );
         }
     }
 
@@ -835,7 +1129,11 @@ async fn apply_whitelist_map(
             whitelist_v4.remove(&LpmKey::new(prefix, WhitelistKeyV4 { addr: addr.to_be() }))?;
         }
         for (addr, prefix) in add_v4 {
-            whitelist_v4.insert(&LpmKey::new(prefix, WhitelistKeyV4 { addr: addr.to_be() }), 1, 0)?;
+            whitelist_v4.insert(
+                &LpmKey::new(prefix, WhitelistKeyV4 { addr: addr.to_be() }),
+                1,
+                0,
+            )?;
         }
     }
 
@@ -848,7 +1146,7 @@ async fn apply_whitelist_map(
             whitelist_v6.remove(&LpmKey::new(prefix, WhitelistKeyV6 { addr }))?;
         }
         for (addr, prefix) in add_v6 {
-            whitelist_v6.insert(&LpmKey::new(prefix, WhitelistKeyV6 { addr: addr }), 1, 0)?;
+            whitelist_v6.insert(&LpmKey::new(prefix, WhitelistKeyV6 { addr }), 1, 0)?;
         }
     }
 
@@ -974,7 +1272,11 @@ async fn apply_geoip_map(
             .context("GEOIP_BLOCKED_V4 map not found")?
             .try_into()?;
         for (addr, prefix) in new_v4 {
-            geoip_v4.insert(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }), 1, 0)?;
+            geoip_v4.insert(
+                &LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }),
+                1,
+                0,
+            )?;
         }
     }
     {

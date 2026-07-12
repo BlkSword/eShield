@@ -1,0 +1,30 @@
+[package]
+name = "eshield-hub"
+version = "0.4.2"
+edition = "2021"
+license = "Apache-2.0"
+description = "eShield distributed policy hub"
+
+[dependencies]
+eshield-common = { path = "../eshield-common", features = ["userspace"] }
+axum = "0.7"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+redb = "1.5"
+dashmap = "6"
+subtle = "2"
+clap = { workspace = true }
+rustls = "0.23"
+rustls-pemfile = "2"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["limit"] }
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"

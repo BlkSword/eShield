@@ -1,7 +1,7 @@
 use aya_ebpf::programs::XdpContext;
 
 use crate::blacklist::add_to_blacklist;
-use crate::rate_counter::update_rate_counter;
+use crate::rate_counter::{update_rate_counter, RateUpdate};
 use eshield_common::{rules, IpKey};
 
 /// TCP flags
@@ -13,17 +13,17 @@ pub fn handle_syn_flood(_ctx: &XdpContext, src: &IpKey, tcp_flags: u8, now_ns: u
         return false;
     }
 
-    let Some(update) = update_rate_counter(src, now_ns) else {
-        return false;
+    let mut update = RateUpdate {
+        counter: 0,
+        threshold: 0,
+        block_duration_s: 0,
     };
+    if !update_rate_counter(src, now_ns, &mut update) {
+        return false;
+    }
 
     if update.counter > update.threshold {
-        add_to_blacklist(
-            src,
-            now_ns,
-            update.cfg.block_duration_s,
-            rules::SYN_FLOOD as u8,
-        );
+        add_to_blacklist(src, now_ns, update.block_duration_s, rules::SYN_FLOOD as u8);
         return true;
     }
 

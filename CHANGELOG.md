@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.2 (2026-07-12)
+
+### 新增
+
+- **分布式 Hub-Node 协同免疫**：新增 `eshield-hub` 二进制，作为策略聚合中心。
+  - 节点通过 `[hub]` 配置上报本地黑名单/Trust Score 到 Hub。
+  - 节点从 Hub 拉取其他节点策略与 Hub 威胁情报，实现跨节点共享免疫记忆。
+  - Hub 端点：`/api/v1/policies`、`/api/v1/policies/deleted`、`/api/v1/rules`、`/api/v1/nodes`、`/api/v1/stats`。
+  - 节点端代理：`/api/hub/status`、`/api/hub/proxy/*`。
+- **规则包统一下发**：Hub 可统一下发端口 ACL、L7 指纹、防护项目到所有节点。
+- **tombstone 删除同步**：Hub DELETE 策略后生成墓碑记录，节点拉取后自动解封。
+- **多 Hub URL 故障转移**：节点 `urls` 支持配置多个 Hub 地址，失败自动轮询切换。
+- **Hub Dashboard**：独立 Web 页面展示在线节点、聚合策略、全局统计。
+- **节点集群页面**：节点 Dashboard 新增「集群节点」卡片，展示本节点到 Hub 的连接状态与在线节点列表。
+- **Hub TLS 支持**：Hub 可自带 rustls；节点侧 reqwest 支持 CA、客户端证书、跳过校验。
+- **Hub 威胁情报 feed**：Hub 可统一拉取外部 feed 后分发给各节点。
+- **集成测试**：新增 `tests/hub_node_test.sh`，覆盖节点上线、心跳、策略上报、peer 策略拉取/封锁、Hub 删除解封、规则同步、Dashboard。
+
+### 修复
+
+- 修复 BlacklistSync 覆盖 Hub 策略来源的问题，确保 Hub DELETE 后能正确解封。
+- 修复节点应用 Hub 策略时回传本节点策略导致的永久封禁问题：现在会跳过 `source_nodes` 包含本节点名的策略。
+- 修复 `tests/hub_node_test.sh` 跨测试 store 污染问题，启动时清理上次失败的持久化数据。
+
+### 改进
+
+- `packaging/config.example.toml` 补充完整 `[hub]` 配置示例（含 `sync_rules_enabled`、`sync_rules_interval_s`、`tls`）。
+- 文档更新：`README.md`、`README_EN.md`、`docs/distributed-architecture.md`、`docs/deployment.md`、`docs/operations.md`、`docs/api.md`、`docs/development-plan.md`、`ROADMAP.md` 同步反映 v0.4.2 分布式能力。
+
 ## 0.3.4 (2026-07-11)
 
 ### 修复

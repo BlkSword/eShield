@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["eshield", "eshield-common", "eshield-ebpf", "xtask"]
+members = ["eshield", "eshield-common", "eshield-ebpf", "eshield-hub", "xtask"]
 
 [workspace.dependencies]
 aya = { version = "0.13.1", default-features = false }
@@ -12,6 +12,11 @@ clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "signal", "sync", "time", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+[profile.dev]
+# eBPF 在 -O0 下会产生大量未内联函数 / 格式化代码，导致 BPF 后端报错。
+overflow-checks = false
+opt-level = 3
 
 [profile.release]
 # 静态链接、最小体积

@@ -127,3 +127,24 @@ enabled = false
 # protocol = "tcp"
 # dport = "23"
 # action = "drop"
+
+# Hub 分布式多节点同步（v0.4.2，默认关闭）
+# [hub]
+# enabled = false
+# urls = ["https://hub.example.com:9930"]      # 支持配置多个 URL 做故障转移
+# node_name = "web-tier-01"                    # 本节点唯一标识
+# token = "change-me-to-a-long-random-string"  # 与 Hub 共享的 Bearer token
+# sync_pull_interval_s = 10                    # 从 Hub 拉取策略间隔
+# sync_push_interval_s = 5                     # 向 Hub 上报本地策略间隔
+# push_min_hit_count = 10                      # 最少命中次数才上报
+# push_min_trust = 100                         # Trust Score 低于此值才上报（0-100）
+# push_max_batch_size = 100                    # 单次上报最大条数
+# sync_rules_enabled = false                   # 是否同步 Hub 统一下发的规则包
+# sync_rules_interval_s = 30                   # 规则包同步间隔
+#
+# [hub.tls]
+# enabled = true
+# ca_cert = "/etc/eshield/hub-ca.pem"          # 自定义 CA（可选）
+# client_cert = "/etc/eshield/hub-client.pem"  # 客户端证书（可选）
+# client_key = "/etc/eshield/hub-client.key"   # 客户端私钥（可选）
+# verify = true                                # 是否校验服务端证书

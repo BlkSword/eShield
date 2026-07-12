@@ -83,6 +83,7 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | Threat intel integration | Periodic synchronization of custom URL feeds to automatically block known malicious IPs. |
 | Lightweight L7 fingerprint scan | Inspect the first bytes of TCP payload and drop on pattern match. |
 | Adaptive threshold engine | Escalates repeat offenders to longer block durations automatically. |
+| Distributed Hub (v0.4.2) | Aggregate and share blacklists/trust scores/rules across nodes via `eshield-hub`; nodes degrade gracefully when Hub is unreachable. |
 | Protection projects | Group policies by protocol + port + target IP; persisted in the control plane and managed via Dashboard/API. |
 | Runtime control | REST API + Web Dashboard + CLI + TUI for real-time toggles and tuning. |
 | Config hot reload | Reload configuration via `SIGHUP` or `systemctl reload` without restart. |
@@ -215,6 +216,7 @@ Default path `/etc/eshield/config.toml`; a full example is available at [packagi
 | `[threat_intel]` | Custom threat-intel feed synchronization |
 | `[port_acl]` | Protocol/port level allow/drop rules |
 | `[protection_projects]` | Control-plane policy grouping |
+| `[hub]` | **v0.4.2** Distributed Hub synchronization config |
 
 ### Hot Reload
 
@@ -227,6 +229,30 @@ sudo kill -HUP $(pidof eshield)
 ```
 
 When the log shows `config reloaded successfully`, the change is active without restart.
+
+### Distributed Hub (v0.4.2)
+
+In multi-node scenarios, deploy the standalone `eshield-hub` binary as the policy aggregation center:
+
+```bash
+# Start Hub (use nginx/Caddy in front for TLS in production)
+eshield-hub --bind 0.0.0.0:9930 --token "your-hub-token"
+```
+
+Enable synchronization on each node:
+
+```toml
+[hub]
+enabled = true
+urls = ["https://hub.example.com:9930"]
+node_name = "web-tier-01"
+token = "your-hub-token"
+sync_pull_interval_s = 10
+sync_push_interval_s = 5
+sync_rules_enabled = true
+```
+
+Nodes push high-confidence local blocks to the Hub and pull policies from peers or Hub threat intel, achieving "one node discovers, all nodes share immune memory". See [docs/distributed-architecture.md](docs/distributed-architecture.md) and [docs/deployment.md](docs/deployment.md) for details.
 
 ---
 
@@ -272,7 +298,8 @@ Other documentation:
 | Document | Contents |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | System architecture, packet journey, BPF maps |
-| [docs/deployment.md](docs/deployment.md) | Binary, systemd, container, and K8s deployment |
+| [docs/distributed-architecture.md](docs/distributed-architecture.md) | Distributed Hub-Node architecture, config, and data flow |
+| [docs/deployment.md](docs/deployment.md) | Binary, systemd, container, K8s, and Hub deployment |
 | [docs/operations.md](docs/operations.md) | Day-to-day commands, logs, alerting, backup/restore, troubleshooting |
 | [docs/dev-linux.md](docs/dev-linux.md) | Dependencies, build, local testing |
 | [docs/benchmark.md](docs/benchmark.md) | Test methodology and sample reports |
@@ -292,11 +319,12 @@ cargo test --workspace --exclude eshield-ebpf
 Requires root. Creates a veth pair in a network namespace and runs multiple scenarios:
 
 ```bash
-sudo bash ./tests/netns_test.sh
-sudo bash ./tests/full_attack_test.sh
+sudo bash ./tests/netns_test.sh       # Single-node defense capabilities
+sudo bash ./tests/full_attack_test.sh # Full attack/defense scenarios
+sudo bash ./tests/hub_node_test.sh    # Distributed Hub-Node end-to-end
 ```
 
-Covers: blacklist, TCP RST on drop, rate limiting, SYN flood, UDP flood, ICMP flood, L7 fingerprint, service-stop restoration, SIGHUP reload, adaptive threshold, GeoIP/ASN, and threat intel.
+Covers: blacklist, TCP RST on drop, rate limiting, SYN flood, UDP flood, ICMP flood, L7 fingerprint, service-stop restoration, SIGHUP reload, adaptive threshold, GeoIP/ASN, threat intel, and Hub policy sync/unblock/rule distribution.
 
 ### Benchmarks
 
@@ -316,10 +344,11 @@ See [docs/benchmark.md](docs/benchmark.md) for details.
 ├── eshield/            # Userspace control plane
 ├── eshield-ebpf/       # Kernel eBPF/XDP data plane
 ├── eshield-common/     # Shared kernel/userspace types
+├── eshield-hub/        # Distributed policy hub
 ├── xtask/              # Build task helpers
-├── scripts/            # install.sh / uninstall.sh / benchmark.sh
+├── scripts/            # install.sh / uninstall.sh / benchmark.sh / publish-release.sh
 ├── tests/              # Integration test scripts
-├── docs/               # Architecture, deployment, dev env, API, benchmark docs
+├── docs/               # Architecture, deployment, dev env, API, benchmark, distributed docs
 ├── packaging/          # systemd service, deb/rpm configs, sample configs
 ├── README.md
 ├── README_EN.md

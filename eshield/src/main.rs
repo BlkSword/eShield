@@ -2,15 +2,17 @@ mod adaptive;
 mod alert;
 mod audit;
 mod auth;
+mod blacklist_sync;
 mod config;
 mod control;
 mod danger;
 mod event_consumer;
 mod geoip;
 mod health;
+mod hub_client;
 mod ip;
-mod login_limiter;
 mod logging;
+mod login_limiter;
 mod state;
 mod store;
 mod threat_intel;
@@ -20,16 +22,11 @@ mod tui;
 mod web;
 
 use anyhow::Context;
-use aya::{
-    include_bytes_aligned,
-    maps::HashMap as LruHashMap,
-    programs::Xdp,
-    Ebpf,
-};
+use aya::{include_bytes_aligned, maps::HashMap as LruHashMap, programs::Xdp, Ebpf};
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
-use rand::Rng;
 use eshield_common::{BlockEntry, GlobalStats, IpKey};
+use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -163,7 +160,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // 任何在 ring buffer 中残留的 stale 事件。
     let state = Arc::new(AppStateInner::new());
     let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
-    state.stats.program_start_ns.store(crate::time::monotonic_ns(), Ordering::Relaxed);
+    state
+        .stats
+        .program_start_ns
+        .store(crate::time::monotonic_ns(), Ordering::Relaxed);
 
     if config.ebpf_log_enabled {
         if let Err(e) = EbpfLogger::init(&mut ebpf) {
@@ -239,8 +239,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     } else {
         Auditor::new(MemoryAuditBackend::new(10_000))
     };
-    let store = RuleStore::new(&config.store_path)
-        .context("failed to open rule store")?;
+    let store = RuleStore::new(&config.store_path).context("failed to open rule store")?;
     let alert = AlertManager::new(AlertConfig {
         webhook_url: config.alert_webhook_url.clone(),
         webhook_type: config.alert_webhook_type.clone(),
@@ -308,7 +307,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let total = stats.total_dropped.load(std::sync::atomic::Ordering::Relaxed);
+                let total = stats
+                    .total_dropped
+                    .load(std::sync::atomic::Ordering::Relaxed);
                 let delta = total.saturating_sub(last_total);
                 last_total = total;
                 alert.check(&stats, delta, 60).await;
@@ -329,7 +330,37 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let control = control.clone();
         let ti_config = config.threat_intel.clone();
         tokio::spawn(async move {
-            threat_intel::ThreatIntelSync::new(control).run(ti_config).await;
+            threat_intel::ThreatIntelSync::new(control)
+                .run(ti_config)
+                .await;
+        })
+    };
+
+    // 启动 Hub 分布式同步任务（若启用）
+    let hub_client_handle = {
+        let control = control.clone();
+        let hub_config = config.hub.clone();
+        tokio::spawn(async move {
+            if hub_config.enabled {
+                match hub_client::HubClient::new(hub_config, control) {
+                    Ok(client) => client.run().await,
+                    Err(e) => tracing::warn!("failed to initialize hub client: {}", e),
+                }
+            }
+        })
+    };
+
+    // 启动 BLACKLIST map → store 后台同步，使数据面检测产生的动态黑名单可被 Hub 上报
+    let _blacklist_sync_handle = {
+        let ebpf = ebpf.clone();
+        let store = store.clone();
+        tokio::spawn(async move {
+            let syncer = blacklist_sync::BlacklistSync::new(
+                ebpf,
+                store,
+                Duration::from_secs(5),
+            );
+            syncer.run().await;
         })
     };
 
@@ -388,9 +419,8 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let danger_cfg = config.danger_signal.clone();
         tokio::spawn(async move {
             if danger_cfg.enabled {
-                let monitor = std::sync::Arc::new(danger::DangerMonitor::new(
-                    danger_cfg.anomaly_multiplier,
-                ));
+                let monitor =
+                    std::sync::Arc::new(danger::DangerMonitor::new(danger_cfg.anomaly_multiplier));
                 let mut tick =
                     tokio::time::interval(Duration::from_secs(danger_cfg.sample_interval_s));
                 loop {
@@ -403,10 +433,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                         let mut guard = ebpf.lock().await;
                         update_danger_level(&mut guard, level);
                         drop(guard);
-                        info!(
-                            "danger level changed: {} -> {} (dps={})",
-                            prev, level, dps
-                        );
+                        info!("danger level changed: {} -> {} (dps={})", prev, level, dps);
                     }
                 }
             }
@@ -466,6 +493,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     rotator_handle.abort();
     alert_handle.abort();
     threat_intel_handle.abort();
+    hub_client_handle.abort();
     timeseries_handle.abort();
     global_stats_handle.abort();
     trust_sync_handle.abort();
@@ -477,6 +505,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
     let _ = threat_intel_handle.await;
+    let _ = hub_client_handle.await;
     let _ = timeseries_handle.await;
     let _ = global_stats_handle.await;
     let _ = top_attackers_handle.await;
@@ -618,7 +647,10 @@ async fn send_reset_token(endpoint: &str) -> anyhow::Result<()> {
     if resp.status().is_success() {
         let body: serde_json::Value = resp.json().await.context("解析 API 响应失败")?;
         if let Some(new_token) = body["token"].as_str() {
-            println!("访问令牌已重置：{}\n请妥善保存，旧令牌已立即失效。", new_token);
+            println!(
+                "访问令牌已重置：{}\n请妥善保存，旧令牌已立即失效。",
+                new_token
+            );
         } else {
             anyhow::bail!("响应中未包含新令牌");
         }
@@ -693,10 +725,7 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
 }
 
 /// 每秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
-async fn sync_trust_scores(
-    ebpf: Arc<tokio::sync::Mutex<Ebpf>>,
-    stats: Arc<crate::state::Stats>,
-) {
+async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
@@ -706,20 +735,16 @@ async fn sync_trust_scores(
         let mut suspicious = 0u64;
         let mut malicious = 0u64;
         match LruHashMap::<_, IpKey, eshield_common::TrustEntry>::try_from(
-            guard
-                .map_mut("TRUST_MAP")
-                .expect("TRUST_MAP map not found"),
+            guard.map_mut("TRUST_MAP").expect("TRUST_MAP map not found"),
         ) {
             Ok(trust_map) => {
-                for res in trust_map.iter() {
-                    if let Ok((_key, entry)) = res {
-                        match entry.level {
-                            1 => trusted += 1,
-                            2 => neutral += 1,
-                            3 => suspicious += 1,
-                            4 => malicious += 1,
-                            _ => {}
-                        }
+                for (_key, entry) in trust_map.iter().flatten() {
+                    match entry.level {
+                        1 => trusted += 1,
+                        2 => neutral += 1,
+                        3 => suspicious += 1,
+                        4 => malicious += 1,
+                        _ => {}
                     }
                 }
             }
@@ -733,12 +758,10 @@ async fn sync_trust_scores(
         stats.trust_neutral.store(neutral, Ordering::Relaxed);
         stats.trust_suspicious.store(suspicious, Ordering::Relaxed);
         stats.trust_malicious.store(malicious, Ordering::Relaxed);
-        stats
-            .danger_level
-            .store(
-                stats.danger_level.load(Ordering::Relaxed),
-                Ordering::Relaxed,
-            );
+        stats.danger_level.store(
+            stats.danger_level.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -778,7 +801,9 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         let mut guard = ebpf.lock().await;
         let mut acc = GlobalStats::default();
         match aya::maps::PerCpuArray::<_, GlobalStats>::try_from(
-            guard.map_mut("GLOBAL_STATS").expect("GLOBAL_STATS map not found"),
+            guard
+                .map_mut("GLOBAL_STATS")
+                .expect("GLOBAL_STATS map not found"),
         ) {
             Ok(global) => match global.get(&0, 0) {
                 Ok(values) => {
@@ -813,23 +838,51 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         }
         drop(guard);
 
-        stats.total_packets.store(acc.total_packets, Ordering::Relaxed);
-        stats.total_dropped.store(acc.total_dropped, Ordering::Relaxed);
-        stats.total_passed.store(acc.total_passed, Ordering::Relaxed);
-        stats.syn_flood_blocked.store(acc.syn_flood_blocked, Ordering::Relaxed);
-        stats.rate_limited.store(acc.rate_limited, Ordering::Relaxed);
+        stats
+            .total_packets
+            .store(acc.total_packets, Ordering::Relaxed);
+        stats
+            .total_dropped
+            .store(acc.total_dropped, Ordering::Relaxed);
+        stats
+            .total_passed
+            .store(acc.total_passed, Ordering::Relaxed);
+        stats
+            .syn_flood_blocked
+            .store(acc.syn_flood_blocked, Ordering::Relaxed);
+        stats
+            .rate_limited
+            .store(acc.rate_limited, Ordering::Relaxed);
         stats.l7_blocked.store(acc.l7_blocked, Ordering::Relaxed);
-        stats.udp_flood_blocked.store(acc.udp_flood_blocked, Ordering::Relaxed);
-        stats.icmp_flood_blocked.store(acc.icmp_flood_blocked, Ordering::Relaxed);
-        stats.geoip_blocked.store(acc.geoip_blocked, Ordering::Relaxed);
-        stats.blacklist_blocked.store(acc.blacklist_blocked, Ordering::Relaxed);
-        stats.tcp_rst_sent.store(acc.tcp_rst_sent, Ordering::Relaxed);
-        stats.tcp_rst_fail.store(acc.tcp_rst_fail, Ordering::Relaxed);
-        stats.tcp_rst_attempt.store(acc.tcp_rst_attempt, Ordering::Relaxed);
+        stats
+            .udp_flood_blocked
+            .store(acc.udp_flood_blocked, Ordering::Relaxed);
+        stats
+            .icmp_flood_blocked
+            .store(acc.icmp_flood_blocked, Ordering::Relaxed);
+        stats
+            .geoip_blocked
+            .store(acc.geoip_blocked, Ordering::Relaxed);
+        stats
+            .blacklist_blocked
+            .store(acc.blacklist_blocked, Ordering::Relaxed);
+        stats
+            .tcp_rst_sent
+            .store(acc.tcp_rst_sent, Ordering::Relaxed);
+        stats
+            .tcp_rst_fail
+            .store(acc.tcp_rst_fail, Ordering::Relaxed);
+        stats
+            .tcp_rst_attempt
+            .store(acc.tcp_rst_attempt, Ordering::Relaxed);
         stats.tcp_dropped.store(acc.tcp_dropped, Ordering::Relaxed);
         stats.udp_dropped.store(acc.udp_dropped, Ordering::Relaxed);
-        stats.icmp_dropped.store(acc.icmp_dropped, Ordering::Relaxed);
-        stats.other_dropped.store(acc.other_dropped, Ordering::Relaxed);
+        stats
+            .icmp_dropped
+            .store(acc.icmp_dropped, Ordering::Relaxed);
+        stats
+            .other_dropped
+            .store(acc.other_dropped, Ordering::Relaxed);
 
         let pps = acc.total_packets.saturating_sub(last_packets);
         let dps = acc.total_dropped.saturating_sub(last_dropped);

@@ -7,18 +7,18 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::Utc;
 use futures::{Stream, StreamExt};
+use serde::{Deserialize, Serialize};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_stream::wrappers::BroadcastStream;
-use chrono::Utc;
 
-use crate::auth::{self, AuthState};
 use crate::audit::{AuditAction, Auditor};
+use crate::auth::{self, AuthState};
 use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::health;
 use crate::ip::format_ip_key;
@@ -40,7 +40,11 @@ fn api_err_response(status: StatusCode, msg: impl Into<String>) -> Response {
 }
 
 /// HTTP request logging middleware: logs method, path, status, and duration.
-async fn request_logger(ConnectInfo(addr): ConnectInfo<SocketAddr>, request: Request, next: Next) -> Response {
+async fn request_logger(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
     let start = Instant::now();
@@ -154,25 +158,42 @@ pub async fn run(
         .route("/api/audit/stream", get(audit_stream_handler))
         .route("/api/metrics/attacker-series", get(attacker_series_handler))
         .route("/api/attack-events", get(attack_events_handler))
-        .route("/api/port-acl", get(list_port_acl_handler).post(set_port_acl_handler))
+        .route(
+            "/api/port-acl",
+            get(list_port_acl_handler).post(set_port_acl_handler),
+        )
         .route(
             "/api/protection-projects",
             get(list_protection_projects_handler).post(set_protection_projects_handler),
         )
-        .route("/api/l7-patterns", get(list_l7_patterns_handler).post(set_l7_patterns_handler))
+        .route(
+            "/api/l7-patterns",
+            get(list_l7_patterns_handler).post(set_l7_patterns_handler),
+        )
         .route("/api/geoip/reload", post(reload_geoip_handler))
         .route("/api/threat-intel/sync", post(sync_threat_intel_handler))
+        .route("/api/hub/status", get(hub_status_handler))
+        .route("/api/hub/proxy/stats", get(hub_proxy_stats_handler))
+        .route("/api/hub/proxy/nodes", get(hub_proxy_nodes_handler))
+        .route("/api/hub/proxy/policies", get(hub_proxy_policies_handler))
         .route("/metrics", get(metrics_handler))
         .layer(middleware::from_fn(body_size_limit))
         .layer(middleware::from_fn(request_logger))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state.clone());
 
     let app = public.merge(protected);
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("web dashboard listening on http://{}", bind);
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -316,7 +337,10 @@ async fn login_api_handler(
                 Some(ip.to_string()),
             )
             .await;
-        let cookie = format!("eshield-token={}; Path=/; HttpOnly; SameSite=Lax", req.token);
+        let cookie = format!(
+            "eshield-token={}; Path=/; HttpOnly; SameSite=Lax",
+            req.token
+        );
         Response::builder()
             .status(StatusCode::OK)
             .header("Set-Cookie", cookie)
@@ -365,9 +389,7 @@ async fn config_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::
     Json(serde_json::to_value(rt).unwrap_or_default())
 }
 
-async fn protection_modules_handler(
-    State(state): State<Arc<WebState>>,
-) -> Json<serde_json::Value> {
+async fn protection_modules_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
     let rt = state.control.runtime.read().await.clone();
     let modules = vec![
         serde_json::json!({
@@ -613,12 +635,7 @@ async fn metrics_series_handler(
     State(state): State<Arc<WebState>>,
     Query(q): Query<SeriesQuery>,
 ) -> Json<serde_json::Value> {
-    let series = state
-        .stats
-        .timeseries
-        .read()
-        .await
-        .snapshot(q.duration_s);
+    let series = state.stats.timeseries.read().await.snapshot(q.duration_s);
     Json(serde_json::json!({ "series": series }))
 }
 
@@ -632,7 +649,10 @@ async fn set_port_acl_handler(
     Json(req): Json<SetPortAclReq>,
 ) -> Result<&'static str, ApiError> {
     if req.items.len() > 128 {
-        return Err(api_err(StatusCode::BAD_REQUEST, "too many port_acl entries (max 128)"));
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "too many port_acl entries (max 128)",
+        ));
     }
     state
         .control
@@ -654,7 +674,10 @@ async fn set_protection_projects_handler(
     Json(req): Json<SetProtectionProjectsReq>,
 ) -> Result<&'static str, ApiError> {
     if req.projects.len() > 256 {
-        return Err(api_err(StatusCode::BAD_REQUEST, "too many protection projects (max 256)"));
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "too many protection projects (max 256)",
+        ));
     }
     state
         .control
@@ -674,7 +697,10 @@ async fn set_l7_patterns_handler(
     Json(req): Json<SetL7PatternsReq>,
 ) -> Result<&'static str, ApiError> {
     if req.patterns.len() > 16 {
-        return Err(api_err(StatusCode::BAD_REQUEST, "too many L7 patterns (max 16)"));
+        return Err(api_err(
+            StatusCode::BAD_REQUEST,
+            "too many L7 patterns (max 16)",
+        ));
     }
     state
         .control
@@ -696,7 +722,13 @@ async fn reload_geoip_handler(
 }
 
 async fn sync_threat_intel_handler(State(state): State<Arc<WebState>>) -> &'static str {
-    let feeds = state.control.runtime.read().await.threat_intel_feeds.clone();
+    let feeds = state
+        .control
+        .runtime
+        .read()
+        .await
+        .threat_intel_feeds
+        .clone();
     for feed in feeds {
         let control = state.control.clone();
         tokio::spawn(async move {
@@ -706,6 +738,89 @@ async fn sync_threat_intel_handler(State(state): State<Arc<WebState>>) -> &'stat
         });
     }
     "威胁情报同步已触发"
+}
+
+async fn hub_status_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let cfg = &state.control.hub_config;
+    let connected = state
+        .control
+        .hub_connected
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let active_url = state
+        .control
+        .hub_active_url
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or_default();
+    Json(serde_json::json!({
+        "enabled": cfg.enabled,
+        "connected": connected,
+        "active_url": active_url,
+        "node_name": cfg.node_name,
+        "urls": cfg.urls,
+    }))
+}
+
+fn hub_active_url(cfg: &crate::config::HubConfig) -> String {
+    cfg.urls
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "http://localhost:9930".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
+async fn hub_proxy(
+    state: &WebState,
+    path: &str,
+    query: Option<&str>,
+) -> Result<Response, ApiError> {
+    let cfg = &state.control.hub_config;
+    if !cfg.enabled || cfg.token.is_empty() {
+        return Err(api_err(StatusCode::SERVICE_UNAVAILABLE, "hub not configured"));
+    }
+    let mut url = format!("{}{}", hub_active_url(cfg), path);
+    if let Some(q) = query {
+        url.push('?');
+        url.push_str(q);
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", cfg.token))
+        .send()
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let status = resp.status();
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| api_err(StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok((status, body).into_response())
+}
+
+async fn hub_proxy_stats_handler(
+    State(state): State<Arc<WebState>>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    hub_proxy(&state, "/api/v1/stats", request.uri().query()).await
+}
+
+async fn hub_proxy_nodes_handler(
+    State(state): State<Arc<WebState>>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    hub_proxy(&state, "/api/v1/nodes", request.uri().query()).await
+}
+
+async fn hub_proxy_policies_handler(
+    State(state): State<Arc<WebState>>,
+    request: Request,
+) -> Result<Response, ApiError> {
+    hub_proxy(&state, "/api/v1/policies", request.uri().query()).await
 }
 
 async fn audit_handler(
@@ -782,21 +897,21 @@ async fn audit_handler(
         .take(q.limit)
         .collect();
 
-    Ok(Json(serde_json::json!({ "entries": paged, "total": total })))
+    Ok(Json(
+        serde_json::json!({ "entries": paged, "total": total }),
+    ))
 }
 
 async fn audit_stream_handler(
     State(state): State<Arc<WebState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.auditor.subscribe();
-    let stream = BroadcastStream::new(rx).map(|result| {
-        match result {
-            Ok(entry) => {
-                let data = serde_json::to_string(&entry).unwrap_or_default();
-                Ok(Event::default().event("audit").data(data))
-            }
-            Err(_) => Ok(Event::default().event("ping").data("")),
+    let stream = BroadcastStream::new(rx).map(|result| match result {
+        Ok(entry) => {
+            let data = serde_json::to_string(&entry).unwrap_or_default();
+            Ok(Event::default().event("audit").data(data))
         }
+        Err(_) => Ok(Event::default().event("ping").data("")),
     });
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
 }
@@ -813,9 +928,7 @@ async fn attack_events_handler(
         .map(|e| {
             let src_ip = match eshield_common::IpFamily::from_u8(e.family) {
                 Some(eshield_common::IpFamily::Ipv4) => {
-                    let octets = [
-                        e.src_ip[12], e.src_ip[13], e.src_ip[14], e.src_ip[15],
-                    ];
+                    let octets = [e.src_ip[12], e.src_ip[13], e.src_ip[14], e.src_ip[15]];
                     format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
                 }
                 Some(eshield_common::IpFamily::Ipv6) => {
@@ -857,12 +970,7 @@ async fn attacker_series_handler(
     State(state): State<Arc<WebState>>,
     axum::extract::Query(q): axum::extract::Query<AttackerSeriesQuery>,
 ) -> Json<serde_json::Value> {
-    let series = state
-        .stats
-        .timeseries
-        .read()
-        .await
-        .snapshot(q.duration_s);
+    let series = state.stats.timeseries.read().await.snapshot(q.duration_s);
     let points: Vec<serde_json::Value> = series
         .iter()
         .map(|p| {
@@ -983,17 +1091,34 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
          eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"udp\"}} {}\n\
          eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"icmp\"}} {}\n\
          eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"other\"}} {}\n",
-        interface, stats.total_dropped,
-        interface, stats.total_passed,
-        interface, stats.blacklist_blocked,
-        interface, stats.rate_limited,
-        interface, stats.syn_flood_blocked,
-        interface, stats.l7_blocked,
-        interface, stats.adaptive_blocked,
-        interface, stats.udp_flood_blocked,
-        interface, stats.icmp_flood_blocked,
-        interface, stats.geoip_blocked,
-        interface, tcp, interface, udp, interface, icmp, interface, other,
+        interface,
+        stats.total_dropped,
+        interface,
+        stats.total_passed,
+        interface,
+        stats.blacklist_blocked,
+        interface,
+        stats.rate_limited,
+        interface,
+        stats.syn_flood_blocked,
+        interface,
+        stats.l7_blocked,
+        interface,
+        stats.adaptive_blocked,
+        interface,
+        stats.udp_flood_blocked,
+        interface,
+        stats.icmp_flood_blocked,
+        interface,
+        stats.geoip_blocked,
+        interface,
+        tcp,
+        interface,
+        udp,
+        interface,
+        icmp,
+        interface,
+        other,
     );
 
     for attacker in &stats.top_attackers {

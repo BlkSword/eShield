@@ -7,11 +7,11 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # 在 sudo 环境下 $HOME 可能变成 /root，因此显式指向 ubuntu 用户的 Rust 环境
-CARGO="${CARGO:-/home/ubuntu/.cargo/bin/cargo}"
-RUSTUP="${RUSTUP:-/home/ubuntu/.cargo/bin/rustup}"
-export PATH="/home/ubuntu/.cargo/bin:$PATH"
-export RUSTUP_HOME="${RUSTUP_HOME:-/home/ubuntu/.rustup}"
-export CARGO_HOME="${CARGO_HOME:-/home/ubuntu/.cargo}"
+CARGO="${CARGO:-/root/.cargo/bin/cargo}"
+RUSTUP="${RUSTUP:-/root/.cargo/bin/rustup}"
+export PATH="/root/.cargo/bin:$PATH"
+export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
+export CARGO_HOME="${CARGO_HOME:-/root/.cargo}"
 
 cd "$(dirname "$0")/.."
 
@@ -87,6 +87,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 echo "=== Test 1.5: tcp_reset_on_drop should reply TCP RST for dropped traffic ==="
 cat > "$mktemp_cfg" <<'TOML'
@@ -122,6 +123,7 @@ kill $SVR_DUMP $CLI_DUMP 2>/dev/null || true
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 # RST causes immediate connection refused; silent drop causes nc to wait the full timeout.
 if [ "$NC_EXIT" -ne 0 ] && [ "$elapsed_ms" -lt 1500 ]; then
@@ -178,6 +180,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 echo "=== Test 3: SYN flood detection should drop SYN flood source ==="
 cat > "$mktemp_cfg" <<'TOML'
@@ -222,6 +225,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 echo "=== Test 4: L7 lightweight fingerprint scan should drop matching payload ==="
 cat > "$mktemp_cfg" <<'TOML'
@@ -280,6 +284,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 
 echo "=== Test 5: after stopping eShield, ping should succeed ==="
@@ -349,6 +354,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 echo "=== Test 7: adaptive threshold should block repeat offenders ==="
 cat > "$mktemp_cfg" <<'TOML'
@@ -412,6 +418,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 
 rm -f "$mktemp_cfg" /tmp/l7_server_recv /tmp/l7_server_recv2
 
@@ -457,6 +464,7 @@ fi
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
+rm -f /var/lib/eshield/rules.redb
 rm -f /tmp/geoip_country.csv
 
 echo "=== Test 9: Threat intel feed should block listed IP ==="

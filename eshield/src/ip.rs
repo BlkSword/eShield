@@ -35,10 +35,7 @@ pub fn parse_ip_or_cidr(s: &str) -> anyhow::Result<IpKey> {
         None => anyhow::bail!("unknown IP family"),
     };
     if prefix != expected {
-        anyhow::bail!(
-            "exact host address required; use plain IP or /{}",
-            expected
-        );
+        anyhow::bail!("exact host address required; use plain IP or /{}", expected);
     }
     Ok(key)
 }

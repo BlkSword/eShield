@@ -108,9 +108,15 @@ impl Stats {
         // 黑名单、速率限制、自适应以及协议/端口/来源维度。
         for (&reason, &count) in by_reason {
             match reason {
-                r if r == rules::BLACKLIST => self.blacklist_blocked.fetch_add(count, Ordering::Relaxed),
-                r if r == rules::RATE_LIMIT => self.rate_limited.fetch_add(count, Ordering::Relaxed),
-                r if r == rules::ADAPTIVE => self.adaptive_blocked.fetch_add(count, Ordering::Relaxed),
+                r if r == rules::BLACKLIST => {
+                    self.blacklist_blocked.fetch_add(count, Ordering::Relaxed)
+                }
+                r if r == rules::RATE_LIMIT => {
+                    self.rate_limited.fetch_add(count, Ordering::Relaxed)
+                }
+                r if r == rules::ADAPTIVE => {
+                    self.adaptive_blocked.fetch_add(count, Ordering::Relaxed)
+                }
                 _ => continue,
             };
         }
@@ -223,5 +229,4 @@ mod tests {
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);
     }
-
 }

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eShield Hub 控制台</title>
+  <style>
+    :root { --bg:#f6f7f9; --surface:#fff; --border:#e8eaed; --text:#1f2329; --muted:#5c6670; --primary:#2563eb; --success:#10b981; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",Arial,sans-serif; background:var(--bg); color:var(--text); }
+    header { background:var(--surface); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+    h1 { margin:0; font-size:18px; }
+    .container { max-width:1200px; margin:0 auto; padding:24px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-bottom:24px; }
+    .card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:18px; }
+    .card h3 { margin:0 0 8px; font-size:13px; color:var(--muted); text-transform:uppercase; }
+    .value { font-size:28px; font-weight:700; }
+    table { width:100%; border-collapse:collapse; background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    th,td { padding:12px 16px; text-align:left; border-bottom:1px solid var(--border); font-size:13px; }
+    th { background:#f8f9fb; color:var(--muted); font-weight:600; }
+    .tag { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+    .online { background:#ecfdf5; color:#047857; }
+    .offline { background:#fef2f2; color:#b91c1c; }
+    .empty { color:var(--muted); text-align:center; padding:24px; }
+    .toolbar { display:flex; gap:10px; margin-bottom:12px; align-items:center; flex-wrap:wrap; }
+    input,button { padding:8px 12px; border:1px solid var(--border); border-radius:6px; font-size:13px; }
+    button { background:var(--primary); color:#fff; border-color:var(--primary); cursor:pointer; }
+    button.secondary { background:var(--surface); color:var(--text); }
+    button.danger { background:var(--danger); border-color:var(--danger); }
+    .section { margin-bottom:32px; }
+    .section h2 { font-size:16px; margin:0 0 12px; }
+    #toast { position:fixed; top:16px; right:16px; background:var(--surface); border:1px solid var(--border); padding:12px 16px; border-radius:8px; box-shadow:0 4px 12px rgba(0,0,0,.1); display:none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>eShield Hub 控制台</h1>
+    <div>
+      <input type="text" id="token" placeholder="Hub Token" style="min-width:220px">
+      <button onclick="loadAll()">刷新</button>
+    </div>
+  </header>
+  <div class="container">
+    <div id="toast"></div>
+    <div class="grid">
+      <div class="card"><h3>共享策略数</h3><div class="value" id="stat-policies">-</div></div>
+      <div class="card"><h3>注册节点</h3><div class="value" id="stat-nodes">-</div></div>
+      <div class="card"><h3>在线节点</h3><div class="value" id="stat-online">-</div></div>
+    </div>
+
+    <div class="section">
+      <h2>节点列表</h2>
+      <table><thead><tr><th>节点名</th><th>最后心跳</th><th>状态</th></tr></thead><tbody id="nodes-body"><tr><td colspan="3" class="empty">点击刷新加载</td></tr></tbody></table>
+    </div>
+
+    <div class="section">
+      <div class="toolbar">
+        <h2 style="margin:0">共享策略</h2>
+        <button class="secondary" onclick="loadPolicies()">刷新策略</button>
+      </div>
+      <table>
+        <thead><tr><th>IP</th><th>来源节点</th><th>命中次数</th><th>信誉分</th><th>原因</th><th>操作</th></tr></thead>
+        <tbody id="policies-body"><tr><td colspan="6" class="empty">点击刷新加载</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const api = (path) => `/api/v1${path}`;
+    const token = () => document.getElementById('token').value.trim();
+    const headers = () => ({ 'Authorization': `Bearer ${token()}`, 'Content-Type': 'application/json' });
+    function show(msg, isErr) {
+      const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; t.style.borderLeft = `3px solid ${isErr?'var(--danger)':'var(--success)'}`;
+      setTimeout(() => t.style.display = 'none', 3000);
+    }
+    async function get(path) {
+      const r = await fetch(api(path), { headers: { 'Authorization': `Bearer ${token()}` } });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+      return r.json();
+    }
+    async function loadAll() {
+      try { await Promise.all([loadStats(), loadNodes(), loadPolicies()]); show('加载完成'); }
+      catch (e) { show(e.message, true); }
+    }
+    async function loadStats() {
+      const s = await get('/stats');
+      document.getElementById('stat-policies').textContent = s.policy_count;
+      document.getElementById('stat-nodes').textContent = s.node_count;
+      document.getElementById('stat-online').textContent = s.online_node_count;
+    }
+    async function loadNodes() {
+      const data = await get('/nodes');
+      const body = document.getElementById('nodes-body');
+      if (!data.nodes.length) { body.innerHTML = '<tr><td colspan="3" class="empty">暂无节点</td></tr>'; return; }
+      const now = Date.now() * 1e6;
+      body.innerHTML = data.nodes.map(n => {
+        const ago = Math.max(0, Math.floor((now - n.last_seen_ns) / 1e9));
+        const cls = n.online ? 'online' : 'offline';
+        return `<tr><td>${escapeHtml(n.name)}</td><td>${ago}s 前</td><td><span class="tag ${cls}">${n.online ? '在线' : '离线'}</span></td></tr>`;
+      }).join('');
+    }
+    async function loadPolicies() {
+      const data = await get('/policies?since=0&limit=200');
+      const body = document.getElementById('policies-body');
+      if (!data.policies.length) { body.innerHTML = '<tr><td colspan="6" class="empty">暂无策略</td></tr>'; return; }
+      body.innerHTML = data.policies.map(p => {
+        const ip = formatIp(p.ip);
+        return `<tr><td>${ip}</td><td>${p.source_nodes.map(escapeHtml).join(', ')}</td><td>${p.hit_count}</td><td>${p.trust_score}</td><td>${p.reason}</td><td><button class="danger" onclick="deletePolicy('${ip}')">解封</button></td></tr>`;
+      }).join('');
+    }
+    async function deletePolicy(ip) {
+      if (!confirm(`确认从集群解封 ${ip}？`)) return;
+      try {
+        const r = await fetch(api('/policies'), { method:'DELETE', headers: headers(), body: JSON.stringify({ node_name: 'hub-dashboard', ips: [parseIp(ip)] }) });
+        if (!r.ok) throw new Error(await r.text());
+        show('解封已下发'); loadPolicies();
+      } catch (e) { show(e.message, true); }
+    }
+    function formatIp(ip) {
+      if (ip.family === 4) {
+        const a = ip.addr;
+        return `${a[12]}.${a[13]}.${a[14]}.${a[15]}`;
+      }
+      // IPv6 简化显示
+      const hex = [];
+      for (let i = 0; i < 16; i += 2) hex.push(((ip.addr[i] << 8) | ip.addr[i+1]).toString(16));
+      return hex.join(':');
+    }
+    function parseIp(s) {
+      if (s.includes(':')) {
+        const parts = s.split(':'); const addr = new Array(16).fill(0);
+        // 简化解析，仅支持完整格式
+        for (let i = 0; i < 8; i++) { const v = parseInt(parts[i] || '0', 16); addr[i*2] = v >> 8; addr[i*2+1] = v & 0xff; }
+        return { family: 6, addr, padding: new Array(15).fill(0) };
+      }
+      const parts = s.split('.'); const addr = new Array(16).fill(0);
+      for (let i = 0; i < 4; i++) addr[12+i] = parseInt(parts[i], 10);
+      return { family: 4, addr, padding: new Array(15).fill(0) };
+    }
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    loadAll();
+  </script>
+</body>
+</html>

@@ -452,6 +452,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
             总览
           </a>
+          <a class="nav-item" href="#/cluster" data-page="cluster">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l7 4v8l-7 4-7-4V6l7-4z"/><path d="M12 22l7-4"/><path d="M12 22V14"/><path d="M5 18V10"/></svg>
+            集群节点
+          </a>
           <a class="nav-item" href="#/attacks" data-page="attacks">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             攻击事件
@@ -550,6 +554,32 @@
             </div>
             <div class="card-body" style="padding:0">
               <div class="event-feed" id="recent-events"><div class="empty" style="padding:16px">暂无事件</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cluster -->
+        <div class="page" id="page-cluster">
+          <div class="section-header-row">
+            <div>
+              <h2 class="section-title">集群节点</h2>
+              <div class="section-subtitle">Hub 聚合状态与共享策略</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" data-action="refreshCluster">刷新</button>
+          </div>
+          <div class="metrics-grid" id="cluster-cards">
+            <div class="card metric-card"><div class="metric-top"><span class="metric-label">Hub 连接</span><span class="metric-icon green" id="cluster-status-dot">●</span></div><div class="metric-value" id="cluster-status">-</div></div>
+            <div class="card metric-card"><div class="metric-top"><span class="metric-label">共享策略</span><span class="metric-icon blue">●</span></div><div class="metric-value" id="cluster-policies">-</div></div>
+            <div class="card metric-card"><div class="metric-top"><span class="metric-label">在线节点</span><span class="metric-icon yellow">●</span></div><div class="metric-value" id="cluster-online">-</div></div>
+          </div>
+          <div class="layout-split">
+            <div class="card">
+              <div class="card-header"><div class="card-title">节点列表</div></div>
+              <div class="card-body" style="padding:0"><table><thead><tr><th>节点名</th><th>状态</th></tr></thead><tbody id="cluster-nodes-body"><tr><td colspan="2" class="empty">加载中...</td></tr></tbody></table></div>
+            </div>
+            <div class="card">
+              <div class="card-header"><div class="card-title">共享策略</div></div>
+              <div class="card-body" style="padding:0"><table><thead><tr><th>IP</th><th>来源</th></tr></thead><tbody id="cluster-policies-body"><tr><td colspan="2" class="empty">加载中...</td></tr></tbody></table></div>
             </div>
           </div>
         </div>
@@ -1786,6 +1816,39 @@
       setTimeout(() => el.remove(), 4000);
     }
 
+    async function refreshCluster() {
+      try {
+        const status = await apiJson('GET', '/api/hub/status');
+        document.getElementById('cluster-status').textContent = status.enabled ? (status.connected ? '已连接' : '未连接') : '未启用';
+        document.getElementById('cluster-status-dot').style.color = status.enabled && status.connected ? 'var(--success)' : 'var(--danger)';
+
+        if (!status.enabled || !status.connected) {
+          document.getElementById('cluster-nodes-body').innerHTML = '<tr><td colspan="2" class="empty">Hub 未连接</td></tr>';
+          document.getElementById('cluster-policies-body').innerHTML = '<tr><td colspan="2" class="empty">Hub 未连接</td></tr>';
+          document.getElementById('cluster-policies').textContent = '-';
+          document.getElementById('cluster-online').textContent = '-';
+          return;
+        }
+
+        const [stats, nodes, policies] = await Promise.all([
+          apiJson('GET', '/api/hub/proxy/stats').catch(() => ({})),
+          apiJson('GET', '/api/hub/proxy/nodes').catch(() => ({nodes:[]})),
+          apiJson('GET', '/api/hub/proxy/policies?since=0&limit=50').catch(() => ({policies:[]}))
+        ]);
+
+        document.getElementById('cluster-policies').textContent = stats.policy_count ?? '-';
+        document.getElementById('cluster-online').textContent = stats.online_node_count ?? '-';
+
+        const nbody = document.getElementById('cluster-nodes-body');
+        if (!nodes.nodes.length) nbody.innerHTML = '<tr><td colspan="2" class="empty">暂无节点</td></tr>';
+        else nbody.innerHTML = nodes.nodes.map(n => `<tr><td>${escHtml(n.name)}</td><td><span class="tag ${n.online?'online':'offline'}">${n.online?'在线':'离线'}</span></td></tr>`).join('');
+
+        const pbody = document.getElementById('cluster-policies-body');
+        if (!policies.policies.length) pbody.innerHTML = '<tr><td colspan="2" class="empty">暂无共享策略</td></tr>';
+        else pbody.innerHTML = policies.policies.map(p => `<tr><td>${escHtml(p.ip.family===4 ? [p.ip.addr[12],p.ip.addr[13],p.ip.addr[14],p.ip.addr[15]].join('.') : 'IPv6')}</td><td>${escHtml((p.source_nodes||[]).join(', '))}</td></tr>`).join('');
+      } catch (e) { toast(e.message, 'error'); }
+    }
+
     // Global event delegation
     document.addEventListener('click', e => {
       const el = e.target.closest('[data-action]');
@@ -1826,6 +1889,7 @@
         case 'closeDrawer': closeDrawer(); break;
         case 'refreshAttackEvents': refreshAttackEvents(); break;
         case 'refreshAudit': refreshAudit(); break;
+        case 'refreshCluster': refreshCluster(); break;
         case 'refreshSettings': refreshSettings(); break;
         case 'reloadConfig': reloadConfig(); break;
         case 'resetToken': resetToken(); break;

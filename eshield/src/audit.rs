@@ -91,8 +91,9 @@ impl FileAuditBackend {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
             if !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("cannot create audit log directory: {}", parent.display()))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("cannot create audit log directory: {}", parent.display())
+                })?;
             }
         }
         Ok(Self {
@@ -130,7 +131,13 @@ impl FileAuditBackend {
         let first_backup = self.path.with_extension("log.1");
         fs::rename(&self.path, &first_backup)
             .await
-            .with_context(|| format!("rotate {} -> {}", self.path.display(), first_backup.display()))?;
+            .with_context(|| {
+                format!(
+                    "rotate {} -> {}",
+                    self.path.display(),
+                    first_backup.display()
+                )
+            })?;
         Ok(())
     }
 }

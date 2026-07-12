@@ -1,6 +1,6 @@
 > # eShield REST API 参考
 
-> 版本：v0.1.2
+> 版本：v0.4.2
 
 ## 认证
 
@@ -39,6 +39,10 @@ Authorization: Bearer <token>
 | `/api/l7-patterns` | GET, POST | L7 指纹 |
 | `/api/geoip/reload` | POST | 重新加载 GeoIP CSV |
 | `/api/threat-intel/sync` | POST | 手动触发威胁情报同步 |
+| `/api/hub/status` | GET | 节点到 Hub 的连接状态 |
+| `/api/hub/proxy/policies` | GET/POST/DELETE | 通过节点代理访问 Hub 策略接口 |
+| `/api/hub/proxy/rules` | GET/POST | 通过节点代理访问 Hub 规则接口 |
+| `/api/hub/proxy/nodes` | GET | 通过节点代理访问 Hub 节点列表 |
 | `/metrics` | GET | Prometheus 指标 |
 
 ## 详细说明
@@ -148,3 +152,80 @@ Prometheus 指标。
 ### GET /ready
 
 服务就绪检查（eBPF 已挂载、接口正常）。
+
+---
+
+## Hub API（v0.4.2）
+
+Hub 独立运行在 `:9930`，所有接口都需要 `Authorization: Bearer <hub_token>`。
+
+| 端点 | 方法 | 说明 |
+|---|---|---|
+| `/api/v1/policies` | GET | 拉取增量策略（`since`、`limit`） |
+| `/api/v1/policies` | POST | 节点上报本地策略 |
+| `/api/v1/policies` | DELETE | 撤回共享策略（生成 tombstone） |
+| `/api/v1/policies/deleted` | GET | 拉取已删除策略（tombstone） |
+| `/api/v1/rules` | GET | 获取当前规则包 |
+| `/api/v1/rules` | POST | 统一下发规则包（ACL/L7/防护项目） |
+| `/api/v1/nodes` | GET | 在线节点列表 |
+| `/api/v1/nodes/heartbeat` | POST | 节点心跳 |
+| `/api/v1/stats` | GET | 全局聚合统计 |
+
+### POST /api/v1/policies
+
+节点上报：
+
+```json
+{
+  "node_name": "web-tier-01",
+  "policies": [
+    {
+      "ip": { "family": 4, "addr": [0,0,0,0,0,0,0,0,0,0,0,0,10,0,0,2], "padding": [0,...] },
+      "reason": 2,
+      "hit_count": 150,
+      "trust_score": 0,
+      "blocked_until_ns": 1750819200000000000,
+      "ttl_s": 300
+    }
+  ]
+}
+```
+
+### GET /api/v1/policies?since=...
+
+Hub 返回：
+
+```json
+{
+  "policies": [
+    {
+      "ip": { "family": 4, "addr": [...], "padding": [...] },
+      "reason": 2,
+      "hit_count": 150,
+      "trust_score": 0,
+      "first_seen_ns": 1750819100000000000,
+      "last_seen_ns": 1750819200000000000,
+      "source_nodes": ["web-tier-01"],
+      "ttl_s": 300
+    }
+  ],
+  "cursor": "1750819200000000000",
+  "deleted": [],
+  "deleted_cursor": "0"
+}
+```
+
+### POST /api/v1/rules
+
+统一下发规则包：
+
+```json
+{
+  "port_acl": [{"protocol": "tcp", "dport": "9999", "action": "drop"}],
+  "l7_patterns": [{"pattern": "EVIL"}],
+  "protection_projects": [
+    {"name": "hub-test", "protocol": "tcp", "dport": "9999", "target_ips": [], "enabled_modules": ["syn_flood"], "action": "defend"}
+  ],
+  "updated_at_ns": 1750819200000000000
+}
+```

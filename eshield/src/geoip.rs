@@ -55,10 +55,7 @@ pub fn load_geoip_blocks(config: &crate::config::GeoIpConfig) -> Result<Vec<GeoI
     Ok(blocks)
 }
 
-fn parse_country_csv(
-    path: &Path,
-    block_countries: &HashSet<String>,
-) -> Result<Vec<GeoIpBlock>> {
+fn parse_country_csv(path: &Path, block_countries: &HashSet<String>) -> Result<Vec<GeoIpBlock>> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_path(path)
@@ -130,7 +127,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let csv = dir.path().join("country.csv");
         let mut f = std::fs::File::create(&csv).unwrap();
-        f.write_all(b"network,country_iso\n10.0.0.0/8,US\n192.168.1.0/24,CN\n").unwrap();
+        f.write_all(b"network,country_iso\n10.0.0.0/8,US\n192.168.1.0/24,CN\n")
+            .unwrap();
 
         let mut cfg = GeoIpConfig::default();
         cfg.country_blocks_csv = Some(csv.to_string_lossy().to_string());
@@ -147,7 +145,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let csv = dir.path().join("asn.csv");
         let mut f = std::fs::File::create(&csv).unwrap();
-        f.write_all(b"network,asn,asn_org\n10.1.0.0/16,12345,Example\n").unwrap();
+        f.write_all(b"network,asn,asn_org\n10.1.0.0/16,12345,Example\n")
+            .unwrap();
 
         let mut cfg = GeoIpConfig::default();
         cfg.asn_blocks_csv = Some(csv.to_string_lossy().to_string());
