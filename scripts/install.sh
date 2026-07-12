@@ -13,7 +13,7 @@ err()   { echo -e "${RED}[FAIL]${NC} $1"; }
 
 REPO="eshield/eshield"
 # 优先从环境变量读取版本；未设置时尝试从 Cargo.toml 解析；最后回退到默认版本。
-DEFAULT_VERSION="0.3.4"
+DEFAULT_VERSION="0.4.1"
 if [ -z "${VERSION:-}" ]; then
     if [ -f "Cargo.toml" ] && command -v grep >/dev/null 2>&1; then
         VERSION=$(grep -E '^version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
