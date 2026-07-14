@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "eshield"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -766,14 +766,15 @@ dependencies = [
 
 [[package]]
 name = "eshield-common"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aya",
+ "serde",
 ]
 
 [[package]]
 name = "eshield-ebpf"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "aya-ebpf",
  "aya-log-ebpf",
@@ -782,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "eshield-hub"
-version = "0.1.0"
+version = "0.4.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -792,6 +793,7 @@ dependencies = [
  "dashmap",
  "eshield-common",
  "redb",
+ "reqwest",
  "rustls",
  "rustls-pemfile",
  "serde",

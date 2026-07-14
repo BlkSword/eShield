@@ -31,6 +31,12 @@ pub static BLACKLIST: LruHashMap<IpKey, BlockEntry> = LruHashMap::with_max_entri
 #[map]
 pub static GLOBAL_STATS: PerCpuArray<GlobalStats> = PerCpuArray::with_max_entries(1, 0);
 
+/// 高频攻击源热榜（LRU Hash）：eBPF 数据面在命中黑名单时直接维护，
+/// 用户态无需每秒全量扫描 BLACKLIST Map，降低控制面开销。
+/// 容量大于展示 Top-N（20）以留出 LRU 抖动余量。
+#[map]
+pub static TOP_ATTACKERS: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(256, 0);
+
 /// 规则命中计数
 #[map]
 pub static RULE_HITS: PerCpuArray<u64> = PerCpuArray::with_max_entries(16, 0);
@@ -38,6 +44,10 @@ pub static RULE_HITS: PerCpuArray<u64> = PerCpuArray::with_max_entries(16, 0);
 /// 事件 Ring Buffer
 #[map]
 pub static EVENTS: RingBuf = RingBuf::with_byte_size(4 * 1024 * 1024, 0);
+
+/// 采样包日志 Ring Buffer（默认关闭，开启后按采样率写入）
+#[map]
+pub static PACKET_SAMPLES: RingBuf = RingBuf::with_byte_size(16 * 1024 * 1024, 0);
 
 /// 运行时配置快照
 #[map]

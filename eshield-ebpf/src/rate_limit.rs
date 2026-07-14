@@ -24,7 +24,12 @@ pub fn check_rate_limit(src: &IpKey, now_ns: u64) -> bool {
     }
 
     if update.counter > update.threshold {
-        add_to_blacklist(src, now_ns, update.block_duration_s, rules::RATE_LIMIT as u8);
+        add_to_blacklist(
+            src,
+            now_ns,
+            update.block_duration_s,
+            rules::RATE_LIMIT as u8,
+        );
         return true;
     }
 

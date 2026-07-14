@@ -28,6 +28,9 @@ web_bind = "0.0.0.0:8720"
 # 动态规则持久化路径（redb）
 store_path = "/var/lib/eshield/rules.redb"
 
+# 时序指标在 redb 中的保留天数（默认 30 天）
+timeseries_retention_days = 30
+
 # 告警 Webhook 配置（可选）
 # alert_webhook_url = "https://hooks.example.com/eshield"
 # 告警通道类型：generic / slack / dingtalk / wecom
@@ -127,6 +130,13 @@ enabled = false
 # protocol = "tcp"
 # dport = "23"
 # action = "drop"
+
+# 采样包日志（v0.4.2，默认关闭）
+# [packet_log]
+# enabled = false              # 是否启用数据面采样
+# sample_rate = 10000          # 采样率 1/N，默认 1/10000
+# memory_max_entries = 50000   # 内存中保留的最大条数
+# payload_hex = true           # 是否附带 payload 十六进制预览
 
 # Hub 分布式多节点同步（v0.4.2，默认关闭）
 # [hub]

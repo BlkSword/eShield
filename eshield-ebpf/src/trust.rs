@@ -38,7 +38,9 @@ pub fn trust_drop(src: &IpKey, now_ns: u64) {
         },
     };
     entry.drop_count = entry.drop_count.saturating_add(1);
-    entry.trust_score = entry.trust_score.saturating_sub(entry.trust_score / TRUST_SUB_DIVISOR);
+    entry.trust_score = entry
+        .trust_score
+        .saturating_sub(entry.trust_score / TRUST_SUB_DIVISOR);
     entry.trust_score = entry.trust_score.max(TRUST_MIN);
     entry.last_update_ns = now_ns;
     entry.level = trust_level(entry.trust_score);

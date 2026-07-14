@@ -71,6 +71,8 @@ pub struct Config {
     pub log_json: bool,
     #[serde(default = "default_store_path")]
     pub store_path: String,
+    #[serde(default = "default_timeseries_retention_days")]
+    pub timeseries_retention_days: u64,
     #[serde(default)]
     pub alert_webhook_url: Option<String>,
     #[serde(default = "default_alert_webhook_type")]
@@ -87,6 +89,8 @@ pub struct Config {
     pub danger_signal: DangerSignalConfig,
     #[serde(default)]
     pub hub: HubConfig,
+    #[serde(default)]
+    pub packet_log: PacketLogConfig,
 }
 
 fn default_web_port() -> u16 {
@@ -95,6 +99,10 @@ fn default_web_port() -> u16 {
 
 fn default_store_path() -> String {
     "/var/lib/eshield/rules.redb".to_string()
+}
+
+fn default_timeseries_retention_days() -> u64 {
+    30
 }
 
 fn default_alert_webhook_type() -> String {
@@ -239,6 +247,40 @@ impl Default for HubConfig {
             tls: HubTlsConfig::default(),
         }
     }
+}
+
+/// 采样包日志配置（v0.4.2）
+#[derive(Debug, Clone, Deserialize)]
+pub struct PacketLogConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_packet_log_sample_rate")]
+    pub sample_rate: u16,
+    #[serde(default = "default_packet_log_memory_max_entries")]
+    pub memory_max_entries: usize,
+    /// 是否在前端展示 payload 十六进制（当前默认开启，保留供后续细粒度控制）
+    #[serde(default = "default_true")]
+    #[allow(dead_code)]
+    pub payload_hex: bool,
+}
+
+impl Default for PacketLogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sample_rate: default_packet_log_sample_rate(),
+            memory_max_entries: default_packet_log_memory_max_entries(),
+            payload_hex: true,
+        }
+    }
+}
+
+fn default_packet_log_sample_rate() -> u16 {
+    10000
+}
+
+fn default_packet_log_memory_max_entries() -> usize {
+    50000
 }
 
 fn default_hub_pull_interval_s() -> u64 {

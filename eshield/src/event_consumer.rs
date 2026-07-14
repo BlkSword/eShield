@@ -37,8 +37,8 @@ pub async fn run(
         events
     };
 
-    // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争
-    let mut by_source: HashMap<IpKey, u64> = HashMap::new();
+    // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争。
+    // Top 攻击源由 eBPF TOP_ATTACKERS Map 直接维护，事件侧不再聚合来源维度。
     let mut by_reason: HashMap<u16, u64> = HashMap::new();
     let mut by_port: HashMap<u16, u64> = HashMap::new();
 
@@ -67,7 +67,6 @@ pub async fn run(
             None => continue,
         };
 
-        *by_source.entry(src_key).or_insert(0) += 1;
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
@@ -98,7 +97,7 @@ pub async fn run(
         );
     }
 
-    stats.add_dropped_batch(&by_reason, &by_source, &by_port);
+    stats.add_dropped_batch(&by_reason, &by_port);
 
     if !events.is_empty() {
         tracing::info!(

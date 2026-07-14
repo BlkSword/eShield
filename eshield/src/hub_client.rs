@@ -167,7 +167,7 @@ impl HubClient {
             tokio::spawn(async move {
                 if client.config.sync_rules_enabled {
                     let mut interval = tokio::time::interval(Duration::from_secs(
-                        client.config.sync_rules_interval_s.max(1)
+                        client.config.sync_rules_interval_s.max(1),
                     ));
                     loop {
                         interval.tick().await;
@@ -216,9 +216,7 @@ impl HubClient {
             node_name: self.config.node_name.clone(),
             policies,
         };
-        let (url, resp) = self
-            .post_with_failover("/api/v1/policies", &body)
-            .await?;
+        let (url, resp) = self.post_with_failover("/api/v1/policies", &body).await?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -350,7 +348,13 @@ impl HubClient {
             .urls
             .get(idx)
             .cloned()
-            .unwrap_or_else(|| self.config.urls.first().cloned().unwrap_or_else(|| "http://localhost:9930".to_string()))
+            .unwrap_or_else(|| {
+                self.config
+                    .urls
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "http://localhost:9930".to_string())
+            })
             .trim_end_matches('/')
             .to_string()
     }
@@ -364,9 +368,7 @@ impl HubClient {
     /// 标记当前 Hub 可用，并把状态写回 ControlState 供 Dashboard 展示。
     fn mark_connected(&self, url: &str) {
         self.connected.store(true, Ordering::Relaxed);
-        self.control
-            .hub_connected
-            .store(true, Ordering::Relaxed);
+        self.control.hub_connected.store(true, Ordering::Relaxed);
         if let Ok(mut guard) = self.control.hub_active_url.lock() {
             *guard = url.to_string();
         }
@@ -375,9 +377,7 @@ impl HubClient {
     /// 标记所有 Hub 不可用，进入降级独立模式。
     fn mark_disconnected(&self) {
         self.connected.store(false, Ordering::Relaxed);
-        self.control
-            .hub_connected
-            .store(false, Ordering::Relaxed);
+        self.control.hub_connected.store(false, Ordering::Relaxed);
     }
 
     /// 对 GET 请求尝试所有 Hub URL，直到成功或全部失败。

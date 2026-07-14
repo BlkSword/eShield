@@ -220,7 +220,31 @@ pub struct RuntimeConfig {
     pub trust_enabled: u8,
     /// 全局危险等级：0=normal, 1=elevated, 2=critical
     pub danger_level: u8,
-    pub padding: [u8; 6],
+    /// 包日志开关：0=关闭，1=开启
+    pub packet_log_enabled: u8,
+    /// 包日志采样率：N 表示 1/N；0 等价于关闭
+    pub packet_log_sample_rate: u16,
+    pub padding: [u8; 3],
+}
+
+/// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct PacketSample {
+    pub timestamp_ns: u64,
+    pub src_ip: [u8; 16],
+    pub dst_ip: [u8; 16],
+    pub family: u8,
+    pub protocol: u8,
+    pub src_port: u16,
+    pub dst_port: u16,
+    /// 0=drop, 1=pass
+    pub action: u8,
+    pub rule_id: u16,
+    pub packet_len: u16,
+    /// payload_sample 中有效字节数
+    pub payload_bytes: u8,
+    pub payload_sample: [u8; 64],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）
@@ -329,8 +353,8 @@ impl Default for RateLimitConfig {
 mod userspace_impls {
     use super::{
         BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
-        PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig,
-        TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+        PacketSample, PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig,
+        RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -351,4 +375,5 @@ mod userspace_impls {
     unsafe impl Pod for RuntimeConfig {}
     unsafe impl Pod for RateLimitConfig {}
     unsafe impl Pod for TrustEntry {}
+    unsafe impl Pod for PacketSample {}
 }

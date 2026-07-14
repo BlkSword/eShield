@@ -1,6 +1,6 @@
-use aya_ebpf::programs::XdpContext;
 use aya_ebpf::bindings::xdp_action;
 use aya_ebpf::helpers::gen::{bpf_csum_diff, bpf_xdp_adjust_tail};
+use aya_ebpf::programs::XdpContext;
 use core::mem;
 
 use crate::maps::GLOBAL_STATS;
@@ -60,15 +60,24 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
     // Re-derive header pointers after the tail adjustment.
     let eth: *mut EthHdr = match unsafe { ptr_at_mut(ctx, 0) } {
         Some(p) => p,
-        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
+        None => {
+            inc_rst_fail();
+            return xdp_action::XDP_DROP;
+        }
     };
     let ip: *mut IpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN) } {
         Some(p) => p,
-        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
+        None => {
+            inc_rst_fail();
+            return xdp_action::XDP_DROP;
+        }
     };
     let tcp: *mut TcpHdr = match unsafe { ptr_at_mut(ctx, ETH_HDR_LEN + IPV4_HDR_LEN) } {
         Some(p) => p,
-        None => { inc_rst_fail(); return xdp_action::XDP_DROP; }
+        None => {
+            inc_rst_fail();
+            return xdp_action::XDP_DROP;
+        }
     };
 
     unsafe {
@@ -120,13 +129,7 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
         // Build IPv4 pseudo-header incrementally to keep stack usage tiny.
         // Pseudo-header bytes: saddr(4) + daddr(4) + 0 + proto + 0 + len(2).
         let mut word: u32 = (*ip).saddr;
-        let mut pseudo_sum = bpf_csum_diff(
-            core::ptr::null_mut(),
-            0,
-            &mut word as *mut u32,
-            4,
-            0,
-        );
+        let mut pseudo_sum = bpf_csum_diff(core::ptr::null_mut(), 0, &mut word as *mut u32, 4, 0);
         if pseudo_sum < 0 {
             inc_rst_fail();
             return xdp_action::XDP_DROP;
@@ -200,7 +203,11 @@ fn finalize_csum(sum: i64) -> u16 {
     v = (v & 0xffff) + (v >> 16);
     v = (v & 0xffff) + (v >> 16);
     let r = !(v as u16);
-    if r == 0 { 0xffff } else { r }
+    if r == 0 {
+        0xffff
+    } else {
+        r
+    }
 }
 
 // Mutable pointer helper (mirrors parser::ptr_at but returns *mut T).

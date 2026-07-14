@@ -26,7 +26,12 @@ pub fn handle_icmp_flood(_ctx: &XdpContext, src: &IpKey, now_ns: u64, _protocol:
     }
 
     if update.counter > update.threshold {
-        add_to_blacklist(src, now_ns, update.block_duration_s, rules::ICMP_FLOOD as u8);
+        add_to_blacklist(
+            src,
+            now_ns,
+            update.block_duration_s,
+            rules::ICMP_FLOOD as u8,
+        );
         return true;
     }
 

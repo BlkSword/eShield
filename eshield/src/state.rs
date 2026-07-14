@@ -93,19 +93,17 @@ impl Default for Stats {
 
 impl Stats {
     /// 批量聚合上报：减少高并发 DROP 事件下的原子操作与 DashMap 竞争。
-    pub fn add_dropped_batch(
-        &self,
-        by_reason: &HashMap<u16, u64>,
-        by_source: &HashMap<IpKey, u64>,
-        by_port: &HashMap<u16, u64>,
-    ) {
-        if by_source.is_empty() {
+    ///
+    /// 注意：Top 攻击源已由 eBPF 数据面通过 `TOP_ATTACKERS` Map 直接维护，
+    /// 并通过 `sync_top_attackers` 每秒同步，事件侧不再重复聚合来源维度。
+    pub fn add_dropped_batch(&self, by_reason: &HashMap<u16, u64>, by_port: &HashMap<u16, u64>) {
+        if by_reason.is_empty() && by_port.is_empty() {
             return;
         }
 
         // 总包数/总丢包数以及 SYN/UDP/ICMP/L7/GeoIP 等分类计数
         // 从 eBPF GLOBAL_STATS 同步；事件侧只更新没有独立全局计数器的
-        // 黑名单、速率限制、自适应以及协议/端口/来源维度。
+        // 黑名单、速率限制、自适应以及协议/端口维度。
         for (&reason, &count) in by_reason {
             match reason {
                 r if r == rules::BLACKLIST => {
@@ -119,13 +117,6 @@ impl Stats {
                 }
                 _ => continue,
             };
-        }
-
-        for (&src_ip, &count) in by_source {
-            self.top_attackers
-                .entry(src_ip)
-                .or_insert_with(|| AtomicU64::new(0))
-                .fetch_add(count, Ordering::Relaxed);
         }
 
         for (&port, &count) in by_port {
@@ -192,17 +183,17 @@ mod tests {
         let mut by_reason = HashMap::new();
         by_reason.insert(rules::BLACKLIST, 3);
         by_reason.insert(rules::RATE_LIMIT, 2);
-        let mut by_source = HashMap::new();
-        by_source.insert(IpKey::from_ipv4([192, 0, 2, 1]), 5);
+        let mut by_port = HashMap::new();
+        by_port.insert(443, 5);
 
-        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new());
+        stats.add_dropped_batch(&by_reason, &by_port);
 
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 2);
         assert_eq!(
             stats
-                .top_attackers
-                .get(&IpKey::from_ipv4([192, 0, 2, 1]))
+                .port_dropped
+                .get(&443)
                 .unwrap()
                 .load(Ordering::Relaxed),
             5
@@ -212,8 +203,8 @@ mod tests {
     #[test]
     fn test_add_dropped_batch_empty_is_noop() {
         let stats = Stats::default();
-        stats.add_dropped_batch(&HashMap::new(), &HashMap::new(), &HashMap::new());
-        assert!(stats.top_attackers.is_empty());
+        stats.add_dropped_batch(&HashMap::new(), &HashMap::new());
+        assert!(stats.port_dropped.is_empty());
     }
 
     #[test]
@@ -221,12 +212,16 @@ mod tests {
         let stats = Stats::default();
         let mut by_reason = HashMap::new();
         by_reason.insert(0xFFFF, 7);
-        let mut by_source = HashMap::new();
-        by_source.insert(IpKey::from_ipv4([10, 0, 0, 1]), 7);
+        let mut by_port = HashMap::new();
+        by_port.insert(80, 7);
 
-        stats.add_dropped_batch(&by_reason, &by_source, &HashMap::new());
+        stats.add_dropped_batch(&by_reason, &by_port);
 
         assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
         assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            stats.port_dropped.get(&80).unwrap().load(Ordering::Relaxed),
+            7
+        );
     }
 }

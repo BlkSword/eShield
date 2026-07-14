@@ -126,6 +126,7 @@ pub unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Option<*const T> {
 
 /// 可变版本的有界指针。
 #[inline]
+#[allow(dead_code)]
 pub unsafe fn ptr_at_mut<T>(ctx: &XdpContext, offset: usize) -> Option<*mut T> {
     let start = ctx.data();
     let end = ctx.data_end();

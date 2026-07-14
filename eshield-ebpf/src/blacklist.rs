@@ -1,7 +1,5 @@
-use crate::maps::{BLACKLIST, TRUST_MAP};
-use eshield_common::{
-    BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN,
-};
+use crate::maps::{BLACKLIST, TOP_ATTACKERS, TRUST_MAP};
+use eshield_common::{BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
 
 pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
     match unsafe { BLACKLIST.get(src) } {
@@ -12,6 +10,10 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
                 let mut updated = *entry;
                 updated.hit_count = updated.hit_count.saturating_add(1);
                 let _ = BLACKLIST.insert(src, &updated, 0);
+                // 同时把最新 hit_count 写入热榜 Map；LRU 会自然保留高频攻击源，
+                // 用户态不再每秒全量扫描 BLACKLIST。
+                let count = updated.hit_count as u64;
+                let _ = TOP_ATTACKERS.insert(src, &count, 0);
                 return true;
             }
         }

@@ -13,6 +13,7 @@ mod hub_client;
 mod ip;
 mod logging;
 mod login_limiter;
+mod packet_log;
 mod state;
 mod store;
 mod threat_intel;
@@ -25,7 +26,7 @@ use anyhow::Context;
 use aya::{include_bytes_aligned, maps::HashMap as LruHashMap, programs::Xdp, Ebpf};
 use aya_log::EbpfLogger;
 use clap::{Parser, Subcommand};
-use eshield_common::{BlockEntry, GlobalStats, IpKey};
+use eshield_common::{GlobalStats, IpKey};
 use rand::Rng;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,6 +44,7 @@ use crate::{
     control::ControlState,
     state::AppStateInner,
     store::RuleStore,
+    timeseries::MetricPoint,
 };
 
 const DEFAULT_ENDPOINT: &str = "http://localhost:8720";
@@ -160,6 +162,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // 任何在 ring buffer 中残留的 stale 事件。
     let state = Arc::new(AppStateInner::new());
     let adaptive = Arc::new(adaptive::AdaptiveEngine::new(config.adaptive.clone()));
+    let packet_log = Arc::new(packet_log::PacketLog::new(
+        config.packet_log.memory_max_entries,
+    ));
     state
         .stats
         .program_start_ns
@@ -240,6 +245,24 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         Auditor::new(MemoryAuditBackend::new(10_000))
     };
     let store = RuleStore::new(&config.store_path).context("failed to open rule store")?;
+
+    // 从 redb 恢复近期时序指标，使 Dashboard 趋势图在重启后保持连续。
+    // 过滤掉大于当前单调时钟的点（通常来自上一次系统启动），避免跨重启的时间异常。
+    let now = crate::time::monotonic_secs();
+    let retention_s = config.timeseries_retention_days.saturating_mul(86400);
+    let since = now.saturating_sub(retention_s);
+    match store.load_timeseries(since).await {
+        Ok(points) => {
+            let points: Vec<MetricPoint> =
+                points.into_iter().filter(|p| p.timestamp <= now).collect();
+            let count = points.len();
+            let mut window = state.stats.timeseries.write().await;
+            window.load(points);
+            info!("loaded {} timeseries points from store", count);
+        }
+        Err(e) => warn!("failed to load persisted timeseries: {}", e),
+    }
+
     let alert = AlertManager::new(AlertConfig {
         webhook_url: config.alert_webhook_url.clone(),
         webhook_type: config.alert_webhook_type.clone(),
@@ -292,8 +315,9 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let stats = state.stats.clone();
         let control = control.clone();
         let auditor = auditor.clone();
+        let packet_log = packet_log.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run(stats, control, auditor, auth, web_bind).await {
+            if let Err(e) = web::run(stats, control, auditor, auth, web_bind, packet_log).await {
                 warn!("web server exited: {}", e);
             }
         })
@@ -355,11 +379,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let ebpf = ebpf.clone();
         let store = store.clone();
         tokio::spawn(async move {
-            let syncer = blacklist_sync::BlacklistSync::new(
-                ebpf,
-                store,
-                Duration::from_secs(5),
-            );
+            let syncer = blacklist_sync::BlacklistSync::new(ebpf, store, Duration::from_secs(5));
             syncer.run().await;
         })
     };
@@ -379,8 +399,32 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                         break;
                     }
                 }
+                // 尽快释放 eBPF 锁，避免阻塞同步 / Web 任务。
+                drop(guard);
                 // 每批事件处理后让出 1ms，避免单核占满并给 Web / 控制面留响应时间
                 tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+    };
+
+    // 启动采样包日志消费任务：读取 PACKET_SAMPLES Ring Buffer 到内存缓冲
+    let packet_log_handle = {
+        let packet_log = packet_log.clone();
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut guard = ebpf.lock().await;
+                match packet_log::run(packet_log.clone(), &mut guard).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        warn!("packet log consumer exited: {}", e);
+                        break;
+                    }
+                }
+                // 尽快释放 eBPF 锁，避免阻塞 sync_global_stats / top_attackers 等任务。
+                drop(guard);
+                // 10ms 轮询一次；包日志是采样诊断功能，不需要亚毫秒级延迟。
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
     };
@@ -394,7 +438,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动 TOP 攻击源同步任务：每秒从 BLACKLIST map 读取 hit_count 重建 top_attackers
+    // 启动 TOP 攻击源同步任务：每秒从 eBPF TOP_ATTACKERS map 读取热榜数据
     let top_attackers_handle = {
         let stats = state.stats.clone();
         let ebpf = ebpf.clone();
@@ -455,6 +499,36 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动时序指标持久化任务：每 60 秒写入 redb，并清理超过保留期的数据
+    let timeseries_persist_handle = {
+        let stats = state.stats.clone();
+        let store = store.clone();
+        let retention_days = config.timeseries_retention_days;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                let points = {
+                    let ts = stats.timeseries.clone();
+                    let guard = ts.read().await;
+                    guard.snapshot(0)
+                };
+                if let Err(e) = store.save_timeseries(&points).await {
+                    warn!("failed to persist timeseries: {}", e);
+                }
+                let now = crate::time::monotonic_secs();
+                let before = now.saturating_sub(retention_days.saturating_mul(86400));
+                match store.prune_timeseries(before).await {
+                    Ok(pruned) if pruned > 0 => {
+                        info!("pruned {} old timeseries points", pruned);
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("failed to prune timeseries: {}", e),
+                }
+            }
+        })
+    };
+
     let mut sighup = unix_signal(SignalKind::hangup())?;
     let mut sigterm = unix_signal(SignalKind::terminate())?;
 
@@ -490,11 +564,13 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     }
 
     event_handle.abort();
+    packet_log_handle.abort();
     rotator_handle.abort();
     alert_handle.abort();
     threat_intel_handle.abort();
     hub_client_handle.abort();
     timeseries_handle.abort();
+    timeseries_persist_handle.abort();
     global_stats_handle.abort();
     trust_sync_handle.abort();
     danger_handle.abort();
@@ -502,13 +578,25 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let _ = trust_sync_handle.await;
     let _ = danger_handle.await;
     let _ = event_handle.await;
+    let _ = packet_log_handle.await;
     let _ = rotator_handle.await;
     let _ = alert_handle.await;
     let _ = threat_intel_handle.await;
     let _ = hub_client_handle.await;
     let _ = timeseries_handle.await;
+    let _ = timeseries_persist_handle.await;
     let _ = global_stats_handle.await;
     let _ = top_attackers_handle.await;
+
+    // 优雅退出前最后保存一次时序指标，避免最近 60 秒内的数据丢失。
+    {
+        let guard = state.stats.timeseries.read().await;
+        let points = guard.snapshot(0);
+        drop(guard);
+        if let Err(e) = store.save_timeseries(&points).await {
+            warn!("failed to save timeseries on shutdown: {}", e);
+        }
+    }
 
     // 优雅退出：显式卸载 XDP 程序，避免 systemd stop / SIGTERM 时留下悬空 XDP 钩子。
     if let Some(link_id) = xdp_link_id {
@@ -893,32 +981,36 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
     }
 }
 
-/// 每秒从 eBPF BLACKLIST map 读取 hit_count，重建用户态 top_attackers。
-/// 高频率 DROP 路径（SYN/UDP/ICMP Flood、rate_limit、blacklist）已不再写入 RingBuf，
-/// 因此不再依赖 event_consumer 聚合来源维度，避免其 backlog 导致 CPU 占满和统计不一致。
+/// 每秒从 eBPF TOP_ATTACKERS map 读取高频攻击源热榜，重建用户态 top_attackers。
+///
+/// TOP_ATTACKERS 由数据面在命中 BLACKLIST 时直接维护：只保留最近/最活跃的攻击源，
+/// 容量固定（256 条）。用户态无需每秒全量扫描 BLACKLIST（可能达十万条），
+/// 显著降低控制面 CPU 和锁占用，同时保证 Dashboard/告警展示 Top-20 的来源准确性。
 async fn sync_top_attackers(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
     loop {
         interval.tick().await;
         let mut guard = ebpf.lock().await;
         let mut next: HashMap<IpKey, u64> = HashMap::new();
-        match LruHashMap::<_, IpKey, BlockEntry>::try_from(
-            guard.map_mut("BLACKLIST").expect("BLACKLIST map not found"),
+        match LruHashMap::<_, IpKey, u64>::try_from(
+            guard
+                .map_mut("TOP_ATTACKERS")
+                .expect("TOP_ATTACKERS map not found"),
         ) {
-            Ok(blacklist) => {
-                for res in blacklist.iter() {
+            Ok(top) => {
+                for res in top.iter() {
                     match res {
-                        Ok((key, entry)) => {
-                            if entry.hit_count > 0 {
-                                next.insert(key, entry.hit_count as u64);
+                        Ok((key, count)) => {
+                            if count > 0 {
+                                next.insert(key, count);
                             }
                         }
-                        Err(e) => warn!("failed to read BLACKLIST entry: {}", e),
+                        Err(e) => warn!("failed to read TOP_ATTACKERS entry: {}", e),
                     }
                 }
             }
             Err(e) => {
-                warn!("failed to open BLACKLIST map: {}", e);
+                warn!("failed to open TOP_ATTACKERS map: {}", e);
                 continue;
             }
         }

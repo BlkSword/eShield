@@ -125,11 +125,11 @@
       font-size: 11px;
       color: var(--text-tertiary);
     }
-    .main { flex: 1; margin-left: 220px; display: flex; flex-direction: column; min-width: 0; }
+    .main { flex: 1; margin-left: 244px; display: flex; flex-direction: column; min-width: 0; }
     header {
       height: 60px;
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
+      background: transparent;
+      border-bottom: none;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -224,6 +224,8 @@
     .module-card-stats .label { font-size: 12px; color: var(--text-tertiary); }
     .module-category { font-size: 11px; font-weight: 600; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: .05em; }
     .metric-card { padding: 20px; position: relative; }
+    .metric-card.clickable { cursor: pointer; }
+    .metric-card.clickable:hover { border-color: var(--primary); box-shadow: var(--shadow); }
     .metric-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
     .metric-label { font-size: 13px; color: var(--text-secondary); font-weight: 500; }
     .metric-icon { width: 32px; height: 32px; border-radius: var(--radius-sm); display: inline-flex; align-items: center; justify-content: center; }
@@ -460,6 +462,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
             攻击事件
           </a>
+          <a class="nav-item" href="#/packets" data-page="packets">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/></svg>
+            包日志
+          </a>
           <a class="nav-item" href="#/audit" data-page="audit">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
             审计日志
@@ -596,6 +602,51 @@
             </div>
           </div>
           <div class="pagination" id="attack-events-pager"></div>
+        </div>
+
+        <!-- Packet Log -->
+        <div class="page" id="page-packets">
+          <div class="section-header-row">
+            <div>
+              <h2 class="section-title">包日志</h2>
+              <div class="section-subtitle">采样包明细 — 点击 IP 查看详情</div>
+            </div>
+            <button class="btn btn-secondary btn-sm" data-action="refreshPackets">刷新</button>
+          </div>
+          <div class="card">
+            <div class="card-body">
+              <div class="filters">
+                <input type="text" id="packet-filter-ip" placeholder="IP 地址">
+                <input type="number" id="packet-filter-port" placeholder="端口" min="1" max="65535">
+                <select id="packet-filter-action">
+                  <option value="">全部动作</option>
+                  <option value="0">丢弃</option>
+                  <option value="1">通过</option>
+                </select>
+                <input type="text" id="packet-filter-rule" placeholder="规则 ID">
+                <button class="btn btn-sm" data-action="searchPackets">查询</button>
+              </div>
+              <div style="overflow-x:auto">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>时间</th>
+                      <th>源 IP</th>
+                      <th>目的 IP</th>
+                      <th>源端口</th>
+                      <th>目的端口</th>
+                      <th>协议</th>
+                      <th>动作</th>
+                      <th>规则</th>
+                      <th>长度</th>
+                      <th>Payload (hex)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="packet-log-body"><tr><td colspan="10" class="empty">加载中...</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
         </div>
 
         <!-- Policy -->
@@ -942,6 +993,7 @@
       if (hash === 'rules') refreshRules();
       if (hash === 'security') refreshLists();
       if (hash === 'attacks') refreshAttackEvents();
+      if (hash === 'packets') refreshPackets();
       if (hash === 'audit') refreshAudit();
       if (hash === 'settings') refreshSettings();
       if (hash === 'policy') refreshPolicy();
@@ -996,8 +1048,12 @@
 
     function metricCard(opts) {
       const live = opts.live ? '<span class="live-dot" title="实时指标"></span>' : '';
-      const drill = opts.drill ? `data-action="drillAudit" data-reason="${opts.drill}" style="cursor:pointer" title="点击查看详情"` : '';
-      return `<div class="card metric-card" ${drill}>
+      const clickable = opts.link || opts.drill ? 'clickable' : '';
+      const attrs = [];
+      if (opts.drill) attrs.push(`data-action="drillAudit" data-reason="${opts.drill}" title="点击查看详情"`);
+      if (opts.link) attrs.push(`data-link="${opts.link}" title="点击跳转"`);
+      const attrStr = attrs.length ? attrs.join(' ') : '';
+      return `<div class="card metric-card ${clickable}" ${attrStr}>
         <div class="metric-top">
           <div class="metric-label">${opts.label} ${live}</div>
           <div class="metric-icon ${opts.iconClass}">${opts.icon}</div>
@@ -1011,18 +1067,24 @@
     function renderOverviewCards() {
       const c = document.getElementById('overview-cards');
       const cards = [
-        { label: '总丢弃包数', id: 'card-dropped', icon: icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), iconClass: 'red', live: false, sub: '累计（点击查看）', drill: '' },
-        { label: 'DPS 丢弃速率', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: 'Drop/s', drill: '' },
-        { label: 'PPS 包速率', id: 'card-pps', icon: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), iconClass: 'green', live: true, sub: 'Pkt/s' },
-        { label: '黑名单拦截', id: 'card-blacklist', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: false, sub: '点击查看', drill: 'BlockIp' },
-        { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '点击查看', drill: 'PatchConfig' },
-        { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'ReloadConfig' },
-        { label: 'UDP / ICMP 拦截', id: 'card-udp-icmp', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'BlockIp' },
-        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', drill: 'PatchConfig' },
-        { label: '高信誉 IP', id: 'card-trust-trusted', icon: icon('<path d="M20 6L9 17l-5-5"/>'), iconClass: 'green', live: true, sub: 'Trust > 700' },
-        { label: '可疑/恶意 IP', id: 'card-trust-suspicious', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: true, sub: 'Trust < 300' }
+        { label: '总丢弃包数', id: 'card-dropped', icon: icon('<path d="M3 6h18"/><path d="M3 12h18"/><path d="M3 18h18"/>'), iconClass: 'red', live: false, sub: '累计（点击查看）', link: 'attacks' },
+        { label: 'DPS 丢弃速率', id: 'card-dps', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'red', live: true, sub: 'Drop/s', link: 'attacks' },
+        { label: 'PPS 包速率', id: 'card-pps', icon: icon('<path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/>'), iconClass: 'green', live: true, sub: 'Pkt/s', link: 'overview' },
+        { label: '黑名单拦截', id: 'card-blacklist', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: false, sub: '点击查看', link: 'rules' },
+        { label: '速率限制拦截', id: 'card-rate', icon: icon('<path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>'), iconClass: 'yellow', live: false, sub: '点击查看', link: 'policy' },
+        { label: 'SYN Flood 拦截', id: 'card-syn', icon: icon('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', link: 'attacks' },
+        { label: 'UDP / ICMP 拦截', id: 'card-udp-icmp', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>'), iconClass: 'blue', live: false, sub: '点击查看', link: 'attacks' },
+        { label: 'GeoIP / L7 / 自适应', id: 'card-other', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'), iconClass: 'blue', live: false, sub: '点击查看', link: 'policy' },
+        { label: '高信誉 IP', id: 'card-trust-trusted', icon: icon('<path d="M20 6L9 17l-5-5"/>'), iconClass: 'green', live: true, sub: 'Trust > 700', link: 'security' },
+        { label: '可疑/恶意 IP', id: 'card-trust-suspicious', icon: icon('<circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>'), iconClass: 'red', live: true, sub: 'Trust < 300', link: 'security' }
       ];
       c.innerHTML = cards.map(metricCard).join('');
+      c.querySelectorAll('[data-link]').forEach(el => {
+        el.addEventListener('click', () => {
+          location.hash = '#/' + el.dataset.link;
+          navigate();
+        });
+      });
     }
 
     function animateValue(el, from, to, duration) {
@@ -1141,20 +1203,23 @@
         backgroundColor: 'transparent',
         tooltip: { trigger: 'axis' },
         legend: { data: ['总丢弃', '通过 PPS', '黑名单', '速率限制', 'SYN Flood', 'UDP Flood', 'ICMP Flood', 'L7', '自适应', 'GeoIP'], textStyle: { color: textColor }, type: 'scroll' },
-        grid: { left: 46, right: 20, top: 46, bottom: 24 },
+        grid: { left: 56, right: 56, top: 46, bottom: 24 },
         xAxis: { type: 'time', axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
-        yAxis: { type: 'value', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
+        yAxis: [
+          { type: 'value', name: 'Pkt/s', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor }, nameTextStyle: { color: textColor } },
+          { type: 'value', name: 'Drop/s', splitLine: { show: false }, axisLabel: { color: textColor }, nameTextStyle: { color: textColor } }
+        ],
         series: [
-          { name: '总丢弃', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[0] } },
-          { name: '通过 PPS', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[3] } },
-          { name: '黑名单', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[1] } },
-          { name: '速率限制', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[2] } },
-          { name: 'SYN Flood', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[4] } },
-          { name: 'UDP Flood', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[5] } },
-          { name: 'ICMP Flood', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[6] } },
-          { name: 'L7', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[7] } },
-          { name: '自适应', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[8] } },
-          { name: 'GeoIP', type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: '#64748b' } }
+          { name: '总丢弃', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[0] }, areaStyle: { opacity: 0.05, color: SERIES_COLORS[0] } },
+          { name: '通过 PPS', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[3] }, areaStyle: { opacity: 0.05, color: SERIES_COLORS[3] } },
+          { name: '黑名单', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[1] } },
+          { name: '速率限制', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[2] } },
+          { name: 'SYN Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[4] } },
+          { name: 'UDP Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[5] } },
+          { name: 'ICMP Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[6] } },
+          { name: 'L7', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[7] } },
+          { name: '自适应', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[8] } },
+          { name: 'GeoIP', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: '#64748b' } }
         ]
       });
       refreshTrafficChart();
@@ -1189,10 +1254,11 @@
             name,
             data: seriesMap[name],
             type: 'line',
-            smooth: true,
+            smooth: 'monotone',
+            connectNulls: false,
             showSymbol: false,
             stack: type === 'stack' ? 'total' : undefined,
-            areaStyle: type === 'stack' ? { opacity: 0.25 } : undefined,
+            areaStyle: type === 'stack' ? { opacity: 0.2 } : { opacity: 0.05 },
             lineStyle: { width: 2, color: i < SERIES_COLORS.length ? SERIES_COLORS[i] : undefined }
           }))
         });
@@ -1723,44 +1789,231 @@
     }
 
     // IP Drawer
-    function openIpDrawer(ip) {
-      document.getElementById('drawer-title').textContent = ip;
-      const attacker = (currentStats.top_attackers || []).find(a => a.ip === ip);
+    let currentIpDetail = null;
+
+    function trustLevelLabel(level) {
+      const labels = ['未知', '可信', '中性', '可疑', '恶意'];
+      return labels[level] || labels[0];
+    }
+
+    function formatPacketTime(timestamp_ns) {
+      // 后端返回纳秒级单调时钟；按毫秒渲染为本地时间字符串（用于展示相对顺序）
+      return new Date(Math.floor((timestamp_ns || 0) / 1_000_000)).toLocaleTimeString('zh-CN', { hour12: false });
+    }
+
+    function protocolName(p) {
+      return { 6: 'TCP', 17: 'UDP', 1: 'ICMP', 58: 'ICMPv6' }[p] || p;
+    }
+
+    function actionName(action) {
+      return action === 0 ? '<span class="tag tag-danger">丢弃</span>' : '<span class="tag tag-success">通过</span>';
+    }
+
+    async function openIpDrawer(ip) {
       const safeIp = escHtml(ip);
-      document.getElementById('drawer-body').innerHTML = `<div class="metric-list">
-        <div class="metric-item"><div class="label">丢弃包数</div><div class="value">${attacker ? attacker.count.toLocaleString() : '-'}</div></div>
-        <div class="metric-item"><div class="label">当前状态</div><div class="value">${attacker ? '攻击中' : '未知'}</div></div>
-      </div>
-      <div id="attacker-chart" style="height:180px;margin-top:16px"></div>
-      <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap">
-        <button class="btn btn-danger" data-action="blockIpValue" data-ip="${safeIp}">加入黑名单</button>
-        <button class="btn" data-action="allowCidrValue" data-ip="${safeIp}/32">加入白名单</button>
-        <button class="btn btn-secondary" data-action="quickBlockValue" data-ip="${safeIp}">立即快速封禁</button>
-      </div>`;
+      document.getElementById('drawer-title').textContent = ip;
+      document.getElementById('drawer-body').innerHTML = '<div class="empty">加载中...</div>';
       document.getElementById('drawer-backdrop').classList.add('active');
       document.getElementById('ip-drawer').classList.add('active');
-      setTimeout(() => initAttackerChart(ip), 0);
+      try {
+        const detail = await apiJson('GET', '/api/ip-detail?ip=' + encodeURIComponent(ip));
+        currentIpDetail = detail;
+        const statusTag = detail.blacklisted
+          ? '<span class="tag tag-danger">已拉黑</span>'
+          : '<span class="tag tag-success">未拉黑</span>';
+        document.getElementById('drawer-body').innerHTML = `
+          <div class="metric-list">
+            <div class="metric-item"><div class="label">IP</div><div class="value" style="font-size:14px">${safeIp}</div></div>
+            <div class="metric-item"><div class="label">状态</div><div class="value">${statusTag}</div></div>
+            <div class="metric-item"><div class="label">黑名单命中</div><div class="value">${(detail.hit_count || 0).toLocaleString()}</div></div>
+            <div class="metric-item"><div class="label">信誉分 / 等级</div><div class="value">${detail.trust_score || 0} · ${trustLevelLabel(detail.trust_level)}</div></div>
+            <div class="metric-item"><div class="label">采样丢弃</div><div class="value" style="color:var(--danger)">${(detail.drop_count || 0).toLocaleString()}</div></div>
+            <div class="metric-item"><div class="label">采样通过</div><div class="value" style="color:var(--success)">${(detail.pass_count || 0).toLocaleString()}</div></div>
+          </div>
+          <div style="margin-top:16px;display:flex;gap:12px;flex-wrap:wrap">
+            <button class="btn btn-danger" data-action="blockIpFromDrawer" data-ip="${safeIp}">封禁此 IP</button>
+            <button class="btn btn-secondary" data-action="unblockIpFromDrawer" data-ip="${safeIp}">解封此 IP</button>
+          </div>
+          <div class="tabs" style="margin-top:22px">
+            <div class="tab active" data-ip-tab="activity">最近活动</div>
+            <div class="tab" data-ip-tab="ports">端口分布</div>
+            <div class="tab" data-ip-tab="trend">趋势</div>
+          </div>
+          <div class="tab-panel active" id="ip-tab-activity">
+            <div id="ip-recent-activity" style="max-height:360px;overflow-y:auto"></div>
+          </div>
+          <div class="tab-panel" id="ip-tab-ports">
+            <div id="ip-port-chart" style="height:220px"></div>
+          </div>
+          <div class="tab-panel" id="ip-tab-trend">
+            <div style="display:flex;gap:8px;margin-bottom:10px">
+              <select id="ip-series-range" data-action="changeIpSeriesRange">
+                <option value="3600">1 小时</option>
+                <option value="21600">6 小时</option>
+                <option value="86400">24 小时</option>
+              </select>
+            </div>
+            <div id="ip-trend-chart" style="height:220px"></div>
+          </div>
+        `;
+        bindIpDrawerTabs();
+        renderIpRecentActivity(detail.recent_samples || []);
+        setTimeout(() => initIpPortChart(detail.top_ports || []), 0);
+        setTimeout(() => initIpTrendChart(ip), 0);
+      } catch (e) {
+        document.getElementById('drawer-body').innerHTML = `<div class="state-error">加载失败：${escHtml(e.message)}</div>`;
+      }
     }
-    function closeDrawer() { document.getElementById('drawer-backdrop').classList.remove('active'); document.getElementById('ip-drawer').classList.remove('active'); }
 
-    async function initAttackerChart(ip) {
-      const el = document.getElementById('attacker-chart');
+    function bindIpDrawerTabs() {
+      document.querySelectorAll('[data-ip-tab]').forEach(t => {
+        t.addEventListener('click', () => {
+          const tab = t.dataset.ipTab;
+          document.querySelectorAll('[data-ip-tab]').forEach(x => x.classList.remove('active'));
+          document.querySelectorAll('#drawer-body .tab-panel').forEach(x => x.classList.remove('active'));
+          t.classList.add('active');
+          document.getElementById('ip-tab-' + tab).classList.add('active');
+          if (tab === 'trend' && ipTrendChart) ipTrendChart.resize();
+          if (tab === 'ports' && ipPortChart) ipPortChart.resize();
+        });
+      });
+      const sel = document.getElementById('ip-series-range');
+      if (sel) sel.addEventListener('change', () => initIpTrendChart(currentIpDetail ? currentIpDetail.ip : ''));
+    }
+
+    function renderIpRecentActivity(samples) {
+      const container = document.getElementById('ip-recent-activity');
+      if (!container) return;
+      if (!samples.length) { container.innerHTML = '<div class="empty">无最近采样</div>'; return; }
+      const rows = samples.map(s => `<tr>
+        <td>${formatPacketTime(s.timestamp_ns)}</td>
+        <td>${escHtml(s.src_ip)}</td>
+        <td>${escHtml(s.dst_ip)}</td>
+        <td>${s.src_port || '-'}</td>
+        <td>${s.dst_port || '-'}</td>
+        <td>${protocolName(s.protocol)}</td>
+        <td>${actionName(s.action)}</td>
+        <td>${s.rule_id}</td>
+        <td>${s.packet_len}</td>
+        <td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.payload_hex || '')}</td>
+      </tr>`).join('');
+      container.innerHTML = `<table><thead><tr><th>时间</th><th>源 IP</th><th>目的 IP</th><th>SP</th><th>DP</th><th>协议</th><th>动作</th><th>规则</th><th>长度</th><th>Payload</th></tr></thead><tbody>${rows}</tbody></table>`;
+    }
+
+    let ipPortChart = null;
+    let ipTrendChart = null;
+
+    function initIpPortChart(topPorts) {
+      const el = document.getElementById('ip-port-chart');
       if (!el) return;
-      if (attackerChart) { attackerChart.dispose(); attackerChart = null; }
-      attackerChart = echarts.init(el, document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : null);
+      if (ipPortChart) { ipPortChart.dispose(); ipPortChart = null; }
+      ipPortChart = echarts.init(el, document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : null);
       const { textColor, gridColor } = chartThemeColors();
-      attackerChart.setOption({
+      const ports = topPorts.slice().sort((a, b) => a.count - b.count);
+      ipPortChart.setOption({
         backgroundColor: 'transparent',
-        grid: { left: 40, right: 16, top: 16, bottom: 24 },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        grid: { left: 50, right: 16, top: 16, bottom: 24 },
+        xAxis: { type: 'value', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
+        yAxis: { type: 'category', data: ports.length ? ports.map(p => String(p.port)) : ['暂无数据'], axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
+        series: [{ type: 'bar', data: ports.length ? ports.map(p => p.count) : [0], itemStyle: { color: 'var(--danger)', borderRadius: [0, 4, 4, 0] } }]
+      });
+    }
+
+    async function initIpTrendChart(ip) {
+      const el = document.getElementById('ip-trend-chart');
+      if (!el || !ip) return;
+      if (ipTrendChart) { ipTrendChart.dispose(); ipTrendChart = null; }
+      ipTrendChart = echarts.init(el, document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : null);
+      const { textColor, gridColor } = chartThemeColors();
+      const range = document.getElementById('ip-series-range');
+      const duration_s = range ? parseInt(range.value) : 3600;
+      ipTrendChart.setOption({
+        backgroundColor: 'transparent',
+        tooltip: { trigger: 'axis' },
+        legend: { data: ['丢弃', '通过'], textStyle: { color: textColor } },
+        grid: { left: 46, right: 20, top: 30, bottom: 24 },
         xAxis: { type: 'time', axisLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
         yAxis: { type: 'value', splitLine: { lineStyle: { color: gridColor } }, axisLabel: { color: textColor } },
-        series: [{ type: 'line', smooth: true, showSymbol: false, data: [], lineStyle: { width: 2, color: 'var(--danger)' }, areaStyle: { color: 'rgba(239,68,68,0.1)' } }]
+        series: [
+          { name: '丢弃', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], lineStyle: { width: 2, color: 'var(--danger)' }, areaStyle: { color: 'var(--danger)', opacity: 0.08 } },
+          { name: '通过', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], lineStyle: { width: 2, color: 'var(--success)' }, areaStyle: { color: 'var(--success)', opacity: 0.05 } }
+        ]
       });
       try {
-        const data = await apiJson('GET', '/api/metrics/attacker-series?ip=' + encodeURIComponent(ip) + '&duration_s=3600');
-        const points = (data.series || []).map(p => [new Date(p.timestamp * 1000), p.count]);
-        attackerChart.setOption({ series: [{ data: points }] });
+        const data = await apiJson('GET', '/api/ip-series?ip=' + encodeURIComponent(ip) + '&duration_s=' + duration_s);
+        const drops = (data.series || []).map(p => [new Date(p.timestamp * 1000), p.drop_count]);
+        const passes = (data.series || []).map(p => [new Date(p.timestamp * 1000), p.pass_count]);
+        ipTrendChart.setOption({ series: [{ data: drops }, { data: passes }] });
       } catch (e) { console.error(e); }
+    }
+
+    function closeDrawer() {
+      document.getElementById('drawer-backdrop').classList.remove('active');
+      document.getElementById('ip-drawer').classList.remove('active');
+      currentIpDetail = null;
+    }
+
+    async function blockIpFromDrawer(ip) {
+      try { await api('POST', '/api/blacklist', { ip, duration_s: 300 }); toast('已封禁 ' + escHtml(ip), 'success'); openIpDrawer(ip); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    async function unblockIpFromDrawer(ip) {
+      try { await api('DELETE', '/api/blacklist', { ip }); toast('已解封 ' + escHtml(ip), 'success'); openIpDrawer(ip); }
+      catch (e) { toast(e.message, 'error'); }
+    }
+
+    // Packet Log page
+    let packetLogPollTimer = null;
+
+    async function refreshPackets() {
+      const params = new URLSearchParams();
+      params.set('limit', '100');
+      const ip = document.getElementById('packet-filter-ip');
+      const port = document.getElementById('packet-filter-port');
+      const action = document.getElementById('packet-filter-action');
+      const rule = document.getElementById('packet-filter-rule');
+      if (ip && ip.value.trim()) params.set('ip', ip.value.trim());
+      if (port && port.value) params.set('port', port.value);
+      if (action && action.value !== '') params.set('action', action.value);
+      if (rule && rule.value) params.set('rule', rule.value);
+      try {
+        const d = await apiJson('GET', '/api/packets?' + params.toString());
+        renderPackets(d.entries || []);
+      } catch (e) { console.error(e); }
+    }
+
+    function searchPackets() {
+      refreshPackets();
+    }
+
+    function renderPackets(entries) {
+      const tbody = document.getElementById('packet-log-body');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+      if (!entries.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty">无数据</td></tr>'; return; }
+      entries.forEach(e => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td>${formatPacketTime(e.timestamp_ns)}</td>
+          <td><a href="#" data-action="openIpDrawer" data-ip="${escHtml(e.src_ip)}" style="color:var(--primary);text-decoration:none;font-weight:500">${escHtml(e.src_ip)}</a></td>
+          <td><a href="#" data-action="openIpDrawer" data-ip="${escHtml(e.dst_ip)}" style="color:var(--primary);text-decoration:none;font-weight:500">${escHtml(e.dst_ip)}</a></td>
+          <td>${e.src_port || '-'}</td>
+          <td>${e.dst_port || '-'}</td>
+          <td>${protocolName(e.protocol)}</td>
+          <td>${actionName(e.action)}</td>
+          <td>${e.rule_id}</td>
+          <td>${e.packet_len}</td>
+          <td style="font-family:monospace;font-size:11px;max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escHtml(e.payload_hex || '')}">${escHtml(e.payload_hex || '')}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function startPacketLogPolling() {
+      if (packetLogPollTimer) return;
+      packetLogPollTimer = setInterval(() => {
+        if (document.getElementById('page-packets').classList.contains('active')) refreshPackets();
+      }, 5000);
     }
 
     // Helpers
@@ -1883,6 +2136,10 @@
         case 'blockIpValue': blockIpValue(ip); break;
         case 'allowCidrValue': allowCidrValue(ip); break;
         case 'openIpDrawer': openIpDrawer(ip); e.preventDefault(); break;
+        case 'blockIpFromDrawer': blockIpFromDrawer(ip); break;
+        case 'unblockIpFromDrawer': unblockIpFromDrawer(ip); break;
+        case 'refreshPackets': refreshPackets(); break;
+        case 'searchPackets': searchPackets(); break;
         case 'quickBlock': quickBlock(); break;
         case 'quickUnblock': quickUnblock(); break;
         case 'quickBlockValue': quickBlockValue(ip); break;
@@ -1954,10 +2211,10 @@
       window.addEventListener('hashchange', navigate);
       document.getElementById('series-range').addEventListener('change', refreshTrafficChart);
       document.getElementById('series-type').addEventListener('change', refreshTrafficChart);
-      });
       refreshStats();
       setInterval(refreshStats, 2000);
       setInterval(refreshTrafficChart, 10000);
+      startPacketLogPolling();
     });
   </script>
 </body>

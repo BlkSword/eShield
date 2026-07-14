@@ -7,6 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use aya::maps::HashMap as LruHashMap;
 use chrono::Utc;
 use futures::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -21,9 +22,13 @@ use crate::audit::{AuditAction, Auditor};
 use crate::auth::{self, AuthState};
 use crate::control::{ControlState, RuntimeConfigPatch};
 use crate::health;
-use crate::ip::format_ip_key;
+use crate::ip::{format_ip_key, parse_ip};
 use crate::login_limiter::LoginLimiter;
+use crate::packet_log::{PacketLog, PacketLogQuery};
 use crate::state::Stats;
+use eshield_common::{BlockEntry, IpKey, TrustEntry};
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Embedded ECharts library for offline dashboard use.
 const ECHARTS_JS: &[u8] = include_bytes!("echarts.min.js");
@@ -107,6 +112,7 @@ pub struct WebState {
     pub auditor: Auditor,
     pub auth: AuthState,
     pub login_limiter: Arc<LoginLimiter>,
+    pub packet_log: Arc<PacketLog>,
 }
 
 pub async fn run(
@@ -115,6 +121,7 @@ pub async fn run(
     auditor: Auditor,
     auth: AuthState,
     bind: String,
+    packet_log: Arc<PacketLog>,
 ) -> anyhow::Result<()> {
     let state = Arc::new(WebState {
         stats,
@@ -122,6 +129,7 @@ pub async fn run(
         auditor,
         auth,
         login_limiter: Arc::new(LoginLimiter::new()),
+        packet_log,
     });
 
     let public = Router::new()
@@ -158,6 +166,9 @@ pub async fn run(
         .route("/api/audit/stream", get(audit_stream_handler))
         .route("/api/metrics/attacker-series", get(attacker_series_handler))
         .route("/api/attack-events", get(attack_events_handler))
+        .route("/api/packets", get(packets_handler))
+        .route("/api/ip-detail", get(ip_detail_handler))
+        .route("/api/ip-series", get(ip_series_handler))
         .route(
             "/api/port-acl",
             get(list_port_acl_handler).post(set_port_acl_handler),
@@ -777,7 +788,10 @@ async fn hub_proxy(
 ) -> Result<Response, ApiError> {
     let cfg = &state.control.hub_config;
     if !cfg.enabled || cfg.token.is_empty() {
-        return Err(api_err(StatusCode::SERVICE_UNAVAILABLE, "hub not configured"));
+        return Err(api_err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hub not configured",
+        ));
     }
     let mut url = format!("{}{}", hub_active_url(cfg), path);
     if let Some(q) = query {
@@ -914,6 +928,235 @@ async fn audit_stream_handler(
         Err(_) => Ok(Event::default().event("ping").data("")),
     });
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default())
+}
+
+#[derive(Deserialize)]
+struct PacketQuery {
+    #[serde(default)]
+    ip: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default)]
+    protocol: Option<u8>,
+    #[serde(default)]
+    action: Option<u8>,
+    #[serde(default)]
+    rule: Option<u16>,
+    #[serde(default = "default_packet_limit")]
+    limit: usize,
+}
+
+fn default_packet_limit() -> usize {
+    100
+}
+
+/// 查询采样包日志。
+async fn packets_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<PacketQuery>,
+) -> Json<serde_json::Value> {
+    let query = PacketLogQuery {
+        ip: q.ip,
+        port: q.port,
+        protocol: q.protocol,
+        action: q.action,
+        rule: q.rule,
+        from_ns: None,
+        to_ns: None,
+        limit: q.limit.min(1000),
+    };
+    let entries = state.packet_log.query(&query);
+    Json(serde_json::json!({
+        "entries": entries,
+        "count": entries.len(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct IpDetailQuery {
+    ip: String,
+}
+
+#[derive(Serialize)]
+struct IpPortCount {
+    port: u16,
+    count: u64,
+}
+
+#[derive(Serialize)]
+struct IpDetailResponse {
+    ip: String,
+    blacklisted: bool,
+    hit_count: u64,
+    trust_score: u32,
+    trust_level: u8,
+    drop_count: u64,
+    pass_count: u64,
+    recent_samples: Vec<crate::packet_log::PacketSampleEntry>,
+    top_ports: Vec<IpPortCount>,
+}
+
+/// 查询指定 IP 的实时状态：黑名单、信誉分、最近采样包、被攻击端口分布。
+async fn ip_detail_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<IpDetailQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let key = parse_ip(&q.ip).map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let (blacklisted, hit_count, trust_score, trust_level) = {
+        let mut guard = state.control.ebpf.lock().await;
+
+        let (blacklisted, hit_count) = {
+            let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                .map_mut("BLACKLIST")
+                .ok_or_else(|| api_err(StatusCode::SERVICE_UNAVAILABLE, "BLACKLIST map not found"))?
+                .try_into()
+                .map_err(|e| {
+                    api_err(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!("BLACKLIST map: {}", e),
+                    )
+                })?;
+            match blacklist.get(&key, 0) {
+                Ok(entry) => (true, entry.hit_count as u64),
+                Err(_) => (false, 0),
+            }
+        };
+
+        let (trust_score, trust_level) = match guard.map_mut("TRUST_MAP") {
+            Some(m) => match LruHashMap::<_, IpKey, TrustEntry>::try_from(m) {
+                Ok(trust_map) => match trust_map.get(&key, 0) {
+                    Ok(entry) => ((entry.trust_score / 10).min(100), entry.level),
+                    Err(_) => (50, 0),
+                },
+                Err(e) => {
+                    tracing::debug!("failed to open TRUST_MAP: {}", e);
+                    (50, 0)
+                }
+            },
+            None => (50, 0),
+        };
+
+        (blacklisted, hit_count, trust_score, trust_level)
+    };
+
+    let samples = state.packet_log.query(&PacketLogQuery {
+        ip: Some(q.ip.clone()),
+        port: None,
+        protocol: None,
+        action: None,
+        rule: None,
+        from_ns: None,
+        to_ns: None,
+        limit: 100,
+    });
+
+    let mut drop_count = 0u64;
+    let mut pass_count = 0u64;
+    let mut port_counts: HashMap<u16, u64> = HashMap::new();
+    for s in &samples {
+        if s.action == 0 {
+            drop_count += 1;
+        } else {
+            pass_count += 1;
+        }
+        *port_counts.entry(s.dst_port).or_insert(0) += 1;
+    }
+    let mut top_ports: Vec<IpPortCount> = port_counts
+        .into_iter()
+        .map(|(port, count)| IpPortCount { port, count })
+        .collect();
+    top_ports.sort_by_key(|p| std::cmp::Reverse(p.count));
+    top_ports.truncate(10);
+
+    let resp = IpDetailResponse {
+        ip: q.ip,
+        blacklisted,
+        hit_count,
+        trust_score,
+        trust_level,
+        drop_count,
+        pass_count,
+        recent_samples: samples,
+        top_ports,
+    };
+    Ok(Json(serde_json::to_value(resp).unwrap_or_default()))
+}
+
+#[derive(Deserialize)]
+struct IpSeriesQuery {
+    ip: String,
+    #[serde(default = "default_series_duration")]
+    duration_s: u64,
+}
+
+#[derive(Serialize)]
+struct IpSeriesPoint {
+    timestamp: u64,
+    drop_count: Option<u64>,
+    pass_count: Option<u64>,
+}
+
+/// 将指定 IP 的采样包日志按 1 分钟桶聚合，用于详情页趋势图。
+async fn ip_series_handler(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Query(q): axum::extract::Query<IpSeriesQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let key = parse_ip(&q.ip).map_err(|e| api_err(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let _ = key;
+
+    let duration_s = q.duration_s.clamp(60, 86400);
+    let now_ns = crate::time::monotonic_ns();
+    let from_ns = now_ns.saturating_sub(duration_s * 1_000_000_000);
+
+    let samples = state.packet_log.query(&PacketLogQuery {
+        ip: Some(q.ip.clone()),
+        port: None,
+        protocol: None,
+        action: None,
+        rule: None,
+        from_ns: Some(from_ns),
+        to_ns: None,
+        limit: 10000,
+    });
+
+    // 将 eBPF 单调时钟转换为 wall-clock 秒，与 /api/metrics/series 保持一致。
+    let wall_now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    let mono_now_ns = now_ns as i128;
+    let offset_ns = wall_now_ns - mono_now_ns;
+
+    let mut buckets: HashMap<u64, (u64, u64)> = HashMap::new();
+    for s in &samples {
+        let wall_ts_ns = (s.timestamp_ns as i128 + offset_ns).max(0) as u64;
+        let minute = wall_ts_ns / 60_000_000_000;
+        let entry = buckets.entry(minute).or_insert((0, 0));
+        if s.action == 0 {
+            entry.0 += 1;
+        } else {
+            entry.1 += 1;
+        }
+    }
+
+    let start_minute = ((from_ns as i128 + offset_ns).max(0) as u64) / 60_000_000_000;
+    let end_minute = (wall_now_ns as u64) / 60_000_000_000;
+    let mut points = Vec::with_capacity(((end_minute - start_minute) + 1) as usize);
+    for minute in start_minute..=end_minute {
+        let ts = minute * 60;
+        let (drop_count, pass_count) = match buckets.get(&minute) {
+            Some(&(d, p)) => (Some(d), Some(p)),
+            None => (None, None),
+        };
+        points.push(IpSeriesPoint {
+            timestamp: ts,
+            drop_count,
+            pass_count,
+        });
+    }
+
+    Ok(Json(serde_json::json!({ "ip": q.ip, "series": points })))
 }
 
 /// 返回最近攻击事件（DROP 事件流）。

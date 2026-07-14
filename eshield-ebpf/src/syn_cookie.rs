@@ -1,5 +1,5 @@
-use aya_ebpf::programs::XdpContext;
 use crate::parser::IpHdr;
+use aya_ebpf::programs::XdpContext;
 
 pub const NO_ACTION: u32 = u32::MAX;
 

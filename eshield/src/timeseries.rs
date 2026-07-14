@@ -7,7 +7,7 @@ use crate::ip::format_ip_key;
 use crate::state::Stats;
 
 /// A single sampled metrics point.
-#[derive(Clone, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct MetricPoint {
     pub timestamp: u64,
     pub total_packets: u64,
@@ -22,9 +22,20 @@ pub struct MetricPoint {
     pub icmp_flood_blocked: u64,
     pub geoip_blocked: u64,
     /// Derived: dropped packets per second since the previous point.
-    pub dps: u64,
+    /// `None` indicates that no packets were observed during this interval.
+    pub dps: Option<u64>,
     /// Derived: passed packets per second since the previous point.
-    pub pps: u64,
+    /// `None` indicates that no packets were observed during this interval.
+    pub pps: Option<u64>,
+    /// Maximum observed DPS within the interval (currently equal to `dps`).
+    #[serde(default)]
+    pub dps_max: Option<u64>,
+    /// Maximum observed PPS within the interval (currently equal to `pps`).
+    #[serde(default)]
+    pub pps_max: Option<u64>,
+    /// Whether any packet was passed or dropped during the interval.
+    #[serde(default)]
+    pub has_data: bool,
     /// Snapshot of top attackers at this point: ip -> count.
     pub top_attackers: std::collections::HashMap<String, u64>,
     /// Snapshot of top attacked ports at this point: port -> count.
@@ -86,15 +97,32 @@ impl TimeSeriesWindow {
             now.saturating_sub(self.head_timestamp).max(1)
         };
 
-        let dps = if self.head_timestamp == 0 {
+        let dropped_delta = if self.head_timestamp == 0 {
             0
         } else {
-            total_dropped.saturating_sub(self.last_total_dropped) / elapsed
+            total_dropped.saturating_sub(self.last_total_dropped)
         };
-        let pps = if self.head_timestamp == 0 {
+        let passed_delta = if self.head_timestamp == 0 {
             0
         } else {
-            total_passed.saturating_sub(self.last_total_passed) / elapsed
+            total_passed.saturating_sub(self.last_total_passed)
+        };
+        let packet_delta = if self.head_timestamp == 0 {
+            0
+        } else {
+            total_packets.saturating_sub(self.last_total_packets)
+        };
+
+        let has_data = self.head_timestamp != 0 && packet_delta > 0;
+        let dps = if has_data {
+            Some(dropped_delta / elapsed)
+        } else {
+            None
+        };
+        let pps = if has_data {
+            Some(passed_delta / elapsed)
+        } else {
+            None
         };
 
         let top_attackers: HashMap<String, u64> = stats
@@ -127,6 +155,9 @@ impl TimeSeriesWindow {
             geoip_blocked: stats.geoip_blocked.load(Ordering::Relaxed),
             dps,
             pps,
+            dps_max: dps,
+            pps_max: pps,
+            has_data,
             top_attackers,
             port_dropped,
         };
@@ -158,6 +189,25 @@ impl TimeSeriesWindow {
             .skip_while(|p| p.timestamp < cutoff)
             .cloned()
             .collect()
+    }
+
+    /// 将持久化的点加载到窗口中。
+    ///
+    /// 只保留最近的 `capacity` 个点；最新点的时间戳作为下一次 `record()`
+    /// 的间隔基准，但计数器基线归零——因为新进程里 eBPF 计数器从 0 开始。
+    pub fn load(&mut self, points: Vec<MetricPoint>) {
+        if points.is_empty() {
+            return;
+        }
+        self.slots.clear();
+        let start = points.len().saturating_sub(self.capacity);
+        self.slots.extend(points.into_iter().skip(start));
+        if let Some(last) = self.slots.last() {
+            self.head_timestamp = last.timestamp;
+            self.last_total_packets = 0;
+            self.last_total_dropped = 0;
+            self.last_total_passed = 0;
+        }
     }
 }
 

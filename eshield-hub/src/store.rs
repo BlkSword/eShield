@@ -163,11 +163,7 @@ impl Store {
     }
 
     /// 查询自 `since_ns` 以来被删除的策略。
-    pub fn query_tombstones_since(
-        &self,
-        since_ns: u64,
-        limit: usize,
-    ) -> Result<(Vec<IpKey>, u64)> {
+    pub fn query_tombstones_since(&self, since_ns: u64, limit: usize) -> Result<(Vec<IpKey>, u64)> {
         let read_txn = self.db.begin_read()?;
         let table = match read_txn.open_table(TOMBSTONES_TABLE) {
             Ok(t) => t,

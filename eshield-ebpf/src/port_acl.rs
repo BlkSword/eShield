@@ -43,7 +43,14 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) 
         let dport_low = u16::from_be(entry.dport_low);
         let dport_high = u16::from_be(entry.dport_high);
 
-        match match_port_acl_entry(protocol, dport, entry.protocol, dport_low, dport_high, entry.action) {
+        match match_port_acl_entry(
+            protocol,
+            dport,
+            entry.protocol,
+            dport_low,
+            dport_high,
+            entry.action,
+        ) {
             Some(AclMatch::Drop) => {
                 emit_port_acl_event(_ctx, src, protocol, dport);
                 return true;

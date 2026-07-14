@@ -40,7 +40,12 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(Arc::clone(&state));
 
     let protected = Router::new()
-        .route("/api/v1/policies", post(push_policies).get(pull_policies).delete(delete_policies))
+        .route(
+            "/api/v1/policies",
+            post(push_policies)
+                .get(pull_policies)
+                .delete(delete_policies),
+        )
         .route("/api/v1/policies/deleted", get(deleted_policies))
         .route("/api/v1/rules", get(get_rules).post(set_rules))
         .route("/api/v1/nodes/heartbeat", post(heartbeat))

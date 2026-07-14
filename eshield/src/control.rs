@@ -74,6 +74,8 @@ pub struct RuntimeConfigSnapshot {
     pub hub_enabled: bool,
     pub hub_node_name: String,
     pub hub_urls: Vec<String>,
+    pub packet_log_enabled: bool,
+    pub packet_log_sample_rate: u16,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -489,7 +491,9 @@ impl ControlState {
                     tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
                     trust_enabled: u8::from(snapshot.trust_enabled),
                     danger_level: 0,
-                    padding: [0; 6],
+                    packet_log_enabled: u8::from(snapshot.packet_log_enabled),
+                    packet_log_sample_rate: snapshot.packet_log_sample_rate,
+                    padding: [0; 3],
                 },
                 0,
             )?;
@@ -683,7 +687,14 @@ impl ControlState {
                     Ok(entry) => entry.hit_count,
                     Err(_) => continue,
                 };
-                hits.push((key, blocked_until_ns, reason, first_seen_ns, origin, hit_count));
+                hits.push((
+                    key,
+                    blocked_until_ns,
+                    reason,
+                    first_seen_ns,
+                    origin,
+                    hit_count,
+                ));
             }
         }
 
@@ -857,7 +868,10 @@ impl ControlState {
     }
 
     /// 应用从 Hub 统一下发的规则包（ACL / L7 / 防护项目）。
-    pub async fn apply_hub_rules(&self, bundle: &crate::hub_client::RuleBundle) -> anyhow::Result<()> {
+    pub async fn apply_hub_rules(
+        &self,
+        bundle: &crate::hub_client::RuleBundle,
+    ) -> anyhow::Result<()> {
         self.set_port_acl(bundle.port_acl.clone()).await?;
         self.set_l7_patterns(bundle.l7_patterns.clone()).await?;
         self.set_protection_projects(bundle.protection_projects.clone())
@@ -937,6 +951,8 @@ impl RuntimeConfigSnapshot {
             hub_enabled: config.hub.enabled,
             hub_node_name: config.hub.node_name.clone(),
             hub_urls: config.hub.urls.clone(),
+            packet_log_enabled: config.packet_log.enabled,
+            packet_log_sample_rate: config.packet_log.sample_rate,
         }
     }
 }
@@ -957,7 +973,9 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
         trust_enabled: u8::from(config.trust_score.enabled),
         danger_level: 0,
-        padding: [0; 6],
+        packet_log_enabled: u8::from(config.packet_log.enabled),
+        packet_log_sample_rate: config.packet_log.sample_rate,
+        padding: [0; 3],
     };
     tracing::info!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",

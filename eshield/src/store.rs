@@ -1,4 +1,5 @@
 use crate::config::BlockOrigin;
+use crate::timeseries::MetricPoint;
 use anyhow::Context;
 use eshield_common::IpKey;
 use redb::{Database, ReadableTable, TableDefinition};
@@ -13,6 +14,7 @@ const PORT_ACL: TableDefinition<u32, &[u8]> = TableDefinition::new("port_acl");
 const L7_PATTERNS: TableDefinition<u32, &[u8]> = TableDefinition::new("l7_patterns");
 const PROTECTION_PROJECTS: TableDefinition<u32, &[u8]> =
     TableDefinition::new("protection_projects");
+const TIMESERIES: TableDefinition<u64, &[u8]> = TableDefinition::new("timeseries");
 
 #[derive(Clone)]
 pub struct RuleStore {
@@ -329,6 +331,80 @@ impl RuleStore {
                 Some(v) => Ok(serde_json::from_slice(v.value())?),
                 None => Ok(Vec::new()),
             }
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn load_timeseries(&self, since: u64) -> anyhow::Result<Vec<MetricPoint>> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(TIMESERIES) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let mut out: Vec<MetricPoint> = Vec::new();
+            for item in table.iter()? {
+                let (k, v) = item?;
+                if k.value() >= since {
+                    out.push(serde_json::from_slice(v.value())?);
+                }
+            }
+            out.sort_by_key(|p| p.timestamp);
+            Ok(out)
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn save_timeseries(&self, points: &[MetricPoint]) -> anyhow::Result<()> {
+        let db = self.db.clone();
+        let points = points.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(TIMESERIES)?;
+                for p in &points {
+                    let value = serde_json::to_vec(p)?;
+                    table.insert(&p.timestamp, value.as_slice())?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    pub async fn prune_timeseries(&self, before: u64) -> anyhow::Result<usize> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            let count = {
+                let mut table = tx.open_table(TIMESERIES)?;
+                let keys: Vec<u64> = table
+                    .iter()?
+                    .filter_map(|r| {
+                        r.ok().and_then(|(k, _)| {
+                            let ts = k.value();
+                            if ts < before {
+                                Some(ts)
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .collect();
+                let count = keys.len();
+                for k in keys {
+                    table.remove(&k)?;
+                }
+                count
+            };
+            tx.commit()?;
+            Ok(count)
         })
         .await
         .context("store task panicked")?

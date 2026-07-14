@@ -32,3 +32,5 @@ ROADMAP.md
 # Local runtime config
 config.toml
 /docs
+/dist
+AGENTS.md

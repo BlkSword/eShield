@@ -37,7 +37,13 @@ pub fn update_rate_counter(src: &IpKey, now_ns: u64, out: &mut RateUpdate) -> bo
 
     if let Some(entry) = unsafe { RATE_MAP.get(src) } {
         let elapsed_ns = now_ns.saturating_sub(entry.last_decay_ns);
-        let decayed = decay_counter(entry.counter, elapsed_ns, tick_ns, cfg.decay_num, cfg.decay_den);
+        let decayed = decay_counter(
+            entry.counter,
+            elapsed_ns,
+            tick_ns,
+            cfg.decay_num,
+            cfg.decay_den,
+        );
 
         counter = decayed.saturating_add(1);
         last_decay_ns = now_ns;
