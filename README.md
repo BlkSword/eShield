@@ -92,6 +92,9 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | **Trust Score（v0.4.0）** | IP 双向信誉评估——PASS 缓慢加分，DROP 快速减分，信誉分动态调制速率阈值。 |
 | **Danger Signal（v0.4.0）** | 系统级危险信号监测——CPU/内存/DPS 异常时自动提高全局防御等级（正常/警戒/危险）。 |
 | **分布式 Hub（v0.4.2）** | 多节点通过 `eshield-hub` 聚合共享黑名单/信誉/规则；节点自治，Hub 故障时自动降级。 |
+| **时序持久化（v0.4.2）** | 分钟级 PPS/DPS/拦截趋势写入 redb，进程重启后自动加载，支持保留天数配置。 |
+| **包日志采样（v0.4.2）** | 仅对 DROP 包按 `sample_rate` 采样，控制台可按源 IP 过滤，辅助溯源取证。 |
+| **IP 详情页（v0.4.2）** | 点击任意攻击源 IP 进入详情页，查看统计、采样包、时序曲线与一键封禁。 |
 
 > **关于防护项目**：当前版本中，防护项目作为控制面策略分组被加载、校验、持久化并展示在 Dashboard/API 中；受 XDP verifier 组合栈 512 字节限制，暂不在 eBPF 数据面对每条连接按项目独立匹配。全局防御模块仍照常生效。
 >
@@ -224,6 +227,8 @@ eshield reset-token
 | `[port_acl]` | 端口/协议级 allow/drop 规则 |
 | `[protection_projects]` | 控制面策略分组 |
 | `[hub]` | **v0.4.2** 分布式 Hub 同步配置 |
+| `timeseries_retention_days` | **v0.4.2** 时序指标 redb 保留天数 |
+| `[packet_log]` | **v0.4.2** DROP 包采样日志配置 |
 
 ### 热加载
 
@@ -269,12 +274,14 @@ sync_rules_enabled = true
 
 启动后访问 `http://<host>:8720/`，中文 Web 控制台提供：
 
-- **总览**：实时包统计、DPS/PPS、各防御模块命中数、IP 信誉分布、系统危险等级、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源、最近拦截事件实时流。
+- **总览**：实时包统计、DPS/PPS、各防御模块命中数、IP 信誉分布、系统危险等级、流量与拦截趋势图（支持 1/6/24 小时与折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源、最近拦截事件实时流。指标卡片支持点击跳转到对应功能页。
+- **攻击事件**：历史攻击事件列表，支持点击攻击源 IP 进入 IP 详情页，查看该 IP 的统计、采样包时序与一键封禁。
+- **包日志**：v0.4.2 新增，仅对 DROP 包按 `sample_rate` 采样，支持按源 IP 过滤与 Payload 十六进制预览。
 - **防护策略**：统一的全局模块开关、速率限制参数、自适应黑名单参数与按端口的防护项目。
 - **规则中心**：端口 ACL、L7 指纹、GeoIP、威胁情报 feeds。
 - **安全运营**：IP 封禁/解封、CIDR 放行。
 - **审计日志**：操作审计与 SSE 实时流。
-- **设置**：运行时信息、告警配置、令牌管理。
+- **设置**：运行时信息、告警配置、令牌管理、主题切换。
 
 ### Prometheus 指标
 
@@ -311,6 +318,7 @@ REST API 完整端点、请求/响应示例与认证说明见 [docs/api.md](docs
 
 | 文档 | 内容 |
 |---|---|
+| [docs/user-guide.md](docs/user-guide.md) | 面向运维/安全人员的完整使用手册 |
 | [docs/architecture.md](docs/architecture.md) | 系统架构、数据包旅程、BPF Maps |
 | [docs/distributed-architecture.md](docs/distributed-architecture.md) | 分布式 Hub-Node 架构、配置与数据流 |
 | [docs/deployment.md](docs/deployment.md) | 二进制、systemd、容器、K8s 与 Hub 部署 |
