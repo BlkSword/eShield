@@ -1210,16 +1210,16 @@
           { type: 'value', name: 'Drop/s', splitLine: { show: false }, axisLabel: { color: textColor }, nameTextStyle: { color: textColor } }
         ],
         series: [
-          { name: '总丢弃', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[0] }, areaStyle: { opacity: 0.05, color: SERIES_COLORS[0] } },
-          { name: '通过 PPS', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[3] }, areaStyle: { opacity: 0.05, color: SERIES_COLORS[3] } },
-          { name: '黑名单', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[1] } },
-          { name: '速率限制', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[2] } },
-          { name: 'SYN Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[4] } },
-          { name: 'UDP Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[5] } },
-          { name: 'ICMP Flood', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[6] } },
-          { name: 'L7', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[7] } },
-          { name: '自适应', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[8] } },
-          { name: 'GeoIP', type: 'line', smooth: 'monotone', connectNulls: false, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: '#64748b' } }
+          { name: '总丢弃', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[0] } },
+          { name: '通过 PPS', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], lineStyle: { width: 2, color: SERIES_COLORS[3] } },
+          { name: '黑名单', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[1] } },
+          { name: '速率限制', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[2] } },
+          { name: 'SYN Flood', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[4] } },
+          { name: 'UDP Flood', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[5] } },
+          { name: 'ICMP Flood', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[6] } },
+          { name: 'L7', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[7] } },
+          { name: '自适应', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: SERIES_COLORS[8] } },
+          { name: 'GeoIP', type: 'line', smooth: 'monotone', connectNulls: true, showSymbol: false, data: [], yAxisIndex: 1, lineStyle: { width: 2, color: '#64748b' } }
         ]
       });
       refreshTrafficChart();
@@ -1237,8 +1237,9 @@
         };
         (data.series || []).forEach(p => {
           const t = new Date(p.timestamp * 1000);
-          seriesMap['总丢弃'].push([t, p.dps || 0]);
-          seriesMap['通过 PPS'].push([t, p.pps || 0]);
+          // 无数据区间保留 null 并让 connectNulls 连接，避免突然掉到 0 造成"归零"错觉。
+          seriesMap['总丢弃'].push([t, p.has_data ? (p.dps ?? null) : null]);
+          seriesMap['通过 PPS'].push([t, p.has_data ? (p.pps ?? null) : null]);
           seriesMap['黑名单'].push([t, p.blacklist_blocked || 0]);
           seriesMap['速率限制'].push([t, p.rate_limited || 0]);
           seriesMap['SYN Flood'].push([t, p.syn_flood_blocked || 0]);
@@ -1255,10 +1256,10 @@
             data: seriesMap[name],
             type: 'line',
             smooth: 'monotone',
-            connectNulls: false,
+            connectNulls: true,
             showSymbol: false,
             stack: type === 'stack' ? 'total' : undefined,
-            areaStyle: type === 'stack' ? { opacity: 0.2 } : { opacity: 0.05 },
+            areaStyle: type === 'stack' ? { opacity: 0.2 } : undefined,
             lineStyle: { width: 2, color: i < SERIES_COLORS.length ? SERIES_COLORS[i] : undefined }
           }))
         });

@@ -642,12 +642,51 @@ fn default_series_duration() -> u64 {
     3600
 }
 
+/// 趋势图用精简数据点：只保留 Dashboard 趋势图实际消费的字段，
+/// 去掉 total_*、top_attackers / port_dropped 等冗余 HashMap，
+/// 显著降低首屏 payload 大小和前端渲染耗时。
+#[derive(Serialize)]
+struct TrafficSeriesPoint {
+    timestamp: u64,
+    blacklist_blocked: u64,
+    rate_limited: u64,
+    syn_flood_blocked: u64,
+    l7_blocked: u64,
+    adaptive_blocked: u64,
+    udp_flood_blocked: u64,
+    icmp_flood_blocked: u64,
+    geoip_blocked: u64,
+    dps: Option<u64>,
+    pps: Option<u64>,
+    has_data: bool,
+}
+
+impl From<&crate::timeseries::MetricPoint> for TrafficSeriesPoint {
+    fn from(p: &crate::timeseries::MetricPoint) -> Self {
+        Self {
+            timestamp: p.timestamp,
+            blacklist_blocked: p.blacklist_blocked,
+            rate_limited: p.rate_limited,
+            syn_flood_blocked: p.syn_flood_blocked,
+            l7_blocked: p.l7_blocked,
+            adaptive_blocked: p.adaptive_blocked,
+            udp_flood_blocked: p.udp_flood_blocked,
+            icmp_flood_blocked: p.icmp_flood_blocked,
+            geoip_blocked: p.geoip_blocked,
+            dps: p.dps,
+            pps: p.pps,
+            has_data: p.has_data,
+        }
+    }
+}
+
 async fn metrics_series_handler(
     State(state): State<Arc<WebState>>,
     Query(q): Query<SeriesQuery>,
 ) -> Json<serde_json::Value> {
     let series = state.stats.timeseries.read().await.snapshot(q.duration_s);
-    Json(serde_json::json!({ "series": series }))
+    let slim: Vec<TrafficSeriesPoint> = series.iter().map(|p| p.into()).collect();
+    Json(serde_json::json!({ "series": slim }))
 }
 
 async fn list_port_acl_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
