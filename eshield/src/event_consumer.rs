@@ -70,9 +70,10 @@ pub async fn run(
         *by_reason.entry(event.rule_id).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
-        // GeoIP / SYN Flood / UDP Flood / ICMP Flood / L7 / Blacklist 事件
+        // GeoIP / SYN Flood / UDP Flood / ICMP Flood / Blacklist 事件
         // 已由 eBPF 数据面直接处理（加入黑名单或丢弃），不再进入自适应引擎，
         // 避免海量事件反复触发 DashMap 操作导致 CPU 占满。
+        // L7 指纹与端口 ACL 命中也会进入自适应引擎，用于对反复触发的源提升封禁时长。
         if adaptive.is_enabled()
             && event.rule_id != eshield_common::rules::GEOIP
             && event.rule_id != eshield_common::rules::SYN_FLOOD
