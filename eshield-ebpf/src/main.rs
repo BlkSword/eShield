@@ -26,8 +26,8 @@ use eshield_common::{
     rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample, WhitelistKeyV4, WhitelistKeyV6,
 };
 use maps::{
-    CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, PACKET_SAMPLES, WHITELIST_V4,
-    WHITELIST_V6,
+    CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, PACKET_SAMPLES,
+    TOP_ATTACKERS, WHITELIST_V4, WHITELIST_V6,
 };
 use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, ETH_HDR_LEN};
 
@@ -194,6 +194,11 @@ unsafe fn with_stats(f: impl FnOnce(&mut GlobalStats)) {
 fn drop_packet(pc: &PacketCtx) -> u32 {
     unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
     trust::trust_drop(pc.src, pc.now_ns);
+    // 在 eBPF 数据面统一维护高频攻击源热榜，覆盖所有丢弃路径。
+    // 黑名单命中原来的 TOP_ATTACKERS 写入已移除，避免重复计数。
+    let prev = unsafe { TOP_ATTACKERS.get(pc.src) }.unwrap_or(&0);
+    let next = prev.saturating_add(1);
+    let _ = TOP_ATTACKERS.insert(pc.src, &next, 0);
     emit_drop_event(pc);
     if pc.tcp_reset_on_drop != 0 && pc.protocol == parser::IPPROTO_TCP {
         tcp_reset::reply_tcp_rst(pc.ctx, pc.ip_hdr_len)

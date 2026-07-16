@@ -1,4 +1,4 @@
-use crate::maps::{BLACKLIST, TOP_ATTACKERS, TRUST_MAP};
+use crate::maps::{BLACKLIST, TRUST_MAP};
 use eshield_common::{BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
 
 pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
@@ -6,14 +6,11 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
         Some(entry) => {
             // BLOCK_PERMANENT 表示永久封禁
             if entry.blocked_until_ns == BLOCK_PERMANENT || entry.blocked_until_ns > now_ns {
-                // 命中黑名单时递增 hit_count，供用户态 top_attackers 使用
+                // 命中黑名单时递增 hit_count，供持久化/审计使用。
+                // Top 攻击源由主流程 drop_packet 统一维护，避免重复计数。
                 let mut updated = *entry;
                 updated.hit_count = updated.hit_count.saturating_add(1);
                 let _ = BLACKLIST.insert(src, &updated, 0);
-                // 同时把最新 hit_count 写入热榜 Map；LRU 会自然保留高频攻击源，
-                // 用户态不再每秒全量扫描 BLACKLIST。
-                let count = updated.hit_count as u64;
-                let _ = TOP_ATTACKERS.insert(src, &count, 0);
                 return true;
             }
         }
