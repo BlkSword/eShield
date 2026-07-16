@@ -194,6 +194,7 @@ unsafe fn with_stats(f: impl FnOnce(&mut GlobalStats)) {
 fn drop_packet(pc: &PacketCtx) -> u32 {
     unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
     trust::trust_drop(pc.src, pc.now_ns);
+    emit_drop_event(pc);
     if pc.tcp_reset_on_drop != 0 && pc.protocol == parser::IPPROTO_TCP {
         tcp_reset::reply_tcp_rst(pc.ctx, pc.ip_hdr_len)
     } else {
@@ -228,7 +229,6 @@ fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
                 inc_protocol_dropped(s, pc.protocol);
             });
         }
-        emit_geoip_event(pc.ctx, pc.src, pc.protocol, pc.dport);
         drop_packet(pc)
     } else {
         NO_ACTION
@@ -568,16 +568,16 @@ fn is_geoip_blocked(src: &IpKey) -> bool {
     }
 }
 
-fn emit_geoip_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
+fn emit_drop_event(pc: &PacketCtx) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
         let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;
         unsafe {
             (*event).timestamp_ns = bpf_ktime_get_ns();
-            (*event).src_ip = src.addr;
-            (*event).family = src.family;
-            (*event).protocol = protocol;
-            (*event).rule_id = eshield_common::rules::GEOIP;
-            (*event).dst_port = dst_port;
+            (*event).src_ip = pc.src.addr;
+            (*event).family = pc.src.family;
+            (*event).protocol = pc.protocol;
+            (*event).rule_id = pc.rule_id;
+            (*event).dst_port = pc.dport;
         }
         entry.submit(0);
     }
