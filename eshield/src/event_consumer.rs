@@ -1,3 +1,4 @@
+use aya::maps::{MapData, RingBuf};
 use aya::Ebpf;
 use eshield_common::{DropEvent, IpFamily, IpKey};
 use std::collections::HashMap;
@@ -10,20 +11,18 @@ use crate::adaptive::AdaptiveEngine;
 use crate::ip::format_ip_key;
 use crate::state::Stats;
 
-/// 消费一批 Ring Buffer 事件（最多 256 条），然后返回。
-/// 调用方需要周期性地重新获取锁并调用本函数。
+/// 消费一批 Ring Buffer 事件（最多 4096 条），然后返回。
+/// `ring_buf` 由调用方全生命周期持有：aya RingBuf 会缓存 producer 位置，
+/// 每批重建句柄会使 consumer 位置越过 producer，导致已消费事件被无限重读。
+/// `ebpf` 仅供自适应引擎在触发时写 map 使用。
 pub async fn run(
     stats: Arc<Stats>,
     adaptive: Arc<AdaptiveEngine>,
+    ring_buf: &mut RingBuf<MapData>,
     ebpf: &mut Ebpf,
 ) -> anyhow::Result<usize> {
-    // 先把事件读到本地 Vec，然后释放 RingBuf，避免与 adaptive 同时借用 ebpf
+    // 先把事件读到本地 Vec，然后释放 RingBuf 借用，避免与 adaptive 同时借用 ebpf
     let events: Vec<DropEvent> = {
-        let mut ring_buf = aya::maps::RingBuf::try_from(
-            ebpf.map_mut("EVENTS")
-                .ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?,
-        )?;
-
         let mut events = Vec::with_capacity(4096);
         while let Some(item) = ring_buf.next() {
             if item.len() >= std::mem::size_of::<DropEvent>() {

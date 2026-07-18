@@ -183,23 +183,49 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
 
     // 在 XDP 挂载前清空 Ring Buffer：挂载后数据面会立即开始收包并产生事件，
     // 若先挂载再 drain，可能把启动瞬间的流量事件误判为残留事件。
-    match aya::maps::RingBuf::try_from(ebpf.map_mut("EVENTS").expect("EVENTS map not found")) {
-        Ok(mut ring_buf) => {
-            let mut drained = 0usize;
-            while ring_buf.next().is_some() {
-                drained += 1;
-                // 上限提高到 50M，避免旧版本遗留的巨量事件污染新进程统计
-                if drained >= 50_000_000 {
-                    warn!("drained more than 50M stale events, stopping to avoid spin");
-                    break;
+    //
+    // RingBuf 句柄必须全生命周期持有同一个：aya 的 RingBuf 会缓存 producer 位置
+    // （pos_cache 初值 0），若每批事件都重建句柄，consumer 位置会越过 producer，
+    // 已消费的事件将被无限重读（表现为空流量下 4096 条/批的幻影事件 + CPU 占满）。
+    // 因此这里 take_map 取出所有权，句柄随任务常驻。
+    let events_ring = {
+        let map = ebpf.take_map("EVENTS").expect("EVENTS map not found");
+        match aya::maps::RingBuf::try_from(map) {
+            Ok(mut ring_buf) => {
+                let mut drained = 0usize;
+                while ring_buf.next().is_some() {
+                    drained += 1;
+                    // 上限提高到 50M，避免旧版本遗留的巨量事件污染新进程统计
+                    if drained >= 50_000_000 {
+                        warn!("drained more than 50M stale events, stopping to avoid spin");
+                        break;
+                    }
                 }
+                if drained > 0 {
+                    info!("drained {} stale events from EVENTS ring buffer", drained);
+                }
+                Some(ring_buf)
             }
-            if drained > 0 {
-                info!("drained {} stale events from EVENTS ring buffer", drained);
+            Err(e) => {
+                warn!("failed to open EVENTS map for drain: {}", e);
+                None
             }
         }
-        Err(e) => warn!("failed to open EVENTS map for drain: {}", e),
-    }
+    };
+
+    let samples_ring = match ebpf.take_map("PACKET_SAMPLES") {
+        Some(map) => match aya::maps::RingBuf::try_from(map) {
+            Ok(ring_buf) => Some(ring_buf),
+            Err(e) => {
+                warn!("failed to open PACKET_SAMPLES ring buffer: {}", e);
+                None
+            }
+        },
+        None => {
+            warn!("PACKET_SAMPLES map not found");
+            None
+        }
+    };
 
     let program: &mut Xdp = ebpf
         .program_mut("eshield")
@@ -384,15 +410,26 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动事件消费任务：周期性获取 Ebpf 锁消费事件，避免阻塞热加载
+    // 启动事件消费任务：RingBuf 句柄常驻（见上方说明），Ebpf 锁仅用于自适应引擎写 map
     let event_handle = {
         let stats = state.stats.clone();
         let adaptive = adaptive.clone();
         let ebpf = ebpf.clone();
         tokio::spawn(async move {
+            let Some(mut ring_buf) = events_ring else {
+                warn!("EVENTS ring buffer unavailable, event consumer not started");
+                return;
+            };
             loop {
                 let mut guard = ebpf.lock().await;
-                match event_consumer::run(stats.clone(), adaptive.clone(), &mut guard).await {
+                match event_consumer::run(
+                    stats.clone(),
+                    adaptive.clone(),
+                    &mut ring_buf,
+                    &mut guard,
+                )
+                .await
+                {
                     Ok(_) => {}
                     Err(e) => {
                         warn!("event consumer exited: {}", e);
@@ -407,22 +444,22 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动采样包日志消费任务：读取 PACKET_SAMPLES Ring Buffer 到内存缓冲
+    // 启动采样包日志消费任务：RingBuf 句柄常驻（见上方说明），不再需要 Ebpf 锁
     let packet_log_handle = {
         let packet_log = packet_log.clone();
-        let ebpf = ebpf.clone();
         tokio::spawn(async move {
+            let Some(mut ring_buf) = samples_ring else {
+                warn!("PACKET_SAMPLES ring buffer unavailable, packet log consumer not started");
+                return;
+            };
             loop {
-                let mut guard = ebpf.lock().await;
-                match packet_log::run(packet_log.clone(), &mut guard).await {
+                match packet_log::run(packet_log.clone(), &mut ring_buf).await {
                     Ok(_) => {}
                     Err(e) => {
                         warn!("packet log consumer exited: {}", e);
                         break;
                     }
                 }
-                // 尽快释放 eBPF 锁，避免阻塞 sync_global_stats / top_attackers 等任务。
-                drop(guard);
                 // 10ms 轮询一次；包日志是采样诊断功能，不需要亚毫秒级延迟。
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }

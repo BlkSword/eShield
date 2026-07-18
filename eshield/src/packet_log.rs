@@ -195,15 +195,14 @@ fn format_ip_for_filter(addr: &[u8; 16], family: u8) -> String {
 
 /// 消费一批 `PACKET_SAMPLES` Ring Buffer 事件（默认最多 1024 条），然后返回。
 ///
-/// 调用方需要周期性地重新获取锁并调用本函数。为降低对 HTTP/CLI 等控制面任务的
-/// 影响，每次处理完一批后会让出调度器。
-pub async fn run(packet_log: Arc<PacketLog>, ebpf: &mut aya::Ebpf) -> anyhow::Result<usize> {
+/// `ring_buf` 由调用方全生命周期持有：aya RingBuf 会缓存 producer 位置，
+/// 每批重建句柄会使 consumer 位置越过 producer，导致已消费事件被无限重读。
+pub async fn run(
+    packet_log: Arc<PacketLog>,
+    ring_buf: &mut aya::maps::RingBuf<aya::maps::MapData>,
+) -> anyhow::Result<usize> {
     const BATCH_SIZE: usize = 1024;
     let samples: Vec<PacketSample> = {
-        let mut ring_buf = aya::maps::RingBuf::try_from(
-            ebpf.map_mut("PACKET_SAMPLES")
-                .ok_or_else(|| anyhow::anyhow!("PACKET_SAMPLES map not found"))?,
-        )?;
         let mut samples = Vec::with_capacity(BATCH_SIZE);
         while let Some(item) = ring_buf.next() {
             if item.len() >= std::mem::size_of::<PacketSample>() {
