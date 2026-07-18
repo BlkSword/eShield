@@ -1,0 +1,74 @@
+/* ============ Overview ============ */
+.row-main { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 16px; }
+.row-trio { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 16px; }
+.feed-card { display: flex; flex-direction: column; min-height: 0; }
+.feed-card .feed-list { max-height: 372px; }
+.trend-body { height: 340px; padding: 6px 10px 10px; }
+.donut-body, .bars-body { height: 250px; padding: 0 10px 12px; }
+
+/* ============ Attacks ============ */
+.attacker-trend-body { height: 260px; padding: 6px 10px 10px; }
+.trend-toggle svg { transition: transform .2s var(--ease); }
+.trend-toggle.collapsed svg { transform: rotate(-90deg); }
+
+/* ============ Policy ============ */
+.module-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.module-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 8px; }
+.module-head { display: flex; align-items: center; gap: 10px; }
+.module-name { font-size: 14px; font-weight: 700; }
+.module-cat { margin-left: auto; }
+.module-desc { font-size: 12.5px; color: var(--text-2); line-height: 1.55; min-height: 38px; }
+.module-foot { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.module-stat { font-size: 11.5px; color: var(--text-3); font-family: var(--mono); }
+.module-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.module-fields .field .input { padding: 6px 10px; font-size: 12.5px; }
+.module-fields .switch-row { justify-content: space-between; }
+
+/* ============ Rules ============ */
+.rules-tabs-card .tab-body { padding: 0; }
+.geoip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.feed-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-m);
+  background: var(--bg-base); margin-bottom: 8px; }
+.feed-item .f-url { font-family: var(--mono); font-size: 12px; word-break: break-all; }
+.feed-item .f-meta { font-size: 11.5px; color: var(--text-3); margin-top: 4px; }
+
+/* ============ Security ============ */
+.security-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.whitelist-tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 18px 16px; }
+.wl-tag { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-m);
+  font-family: var(--mono); font-size: 12px; }
+.wl-tag button { color: var(--text-3); display: grid; place-items: center; border-radius: 4px; }
+.wl-tag button:hover { color: var(--danger); }
+
+/* ============ Cluster ============ */
+.cluster-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.cluster-stat { padding: 16px 18px; }
+.cluster-stat .v { font-family: var(--mono); font-size: 24px; font-weight: 700; margin-top: 8px; }
+.node-status { display: inline-flex; align-items: center; gap: 6px; }
+.node-status .dot { width: 7px; height: 7px; border-radius: 50%; }
+.node-status.online .dot { background: var(--success); }
+.node-status.online { color: var(--success); }
+.node-status.offline .dot { background: var(--text-3); }
+.node-status.offline { color: var(--text-3); }
+
+/* ============ Settings ============ */
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+.token-box { display: flex; gap: 10px; align-items: center; }
+.token-box .input { font-family: var(--mono); font-size: 12px; }
+.token-value { font-family: var(--mono); font-size: 12px; word-break: break-all;
+  background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-m); padding: 10px 12px; }
+
+/* ============ Responsive ============ */
+@media (max-width: 1500px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 1200px) {
+  .row-main, .row-trio, .security-grid, .settings-grid, .geoip-grid { grid-template-columns: 1fr; }
+  .cluster-cards { grid-template-columns: 1fr 1fr; }
+  .feed-card .feed-list { max-height: 260px; }
+}
+@media (max-width: 860px) {
+  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+  .cluster-cards { grid-template-columns: 1fr; }
+  .search-box { width: 150px; }
+  .danger-pill { display: none; }
+}

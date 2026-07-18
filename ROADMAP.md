@@ -1,10 +1,10 @@
 # eShield 路线图（Roadmap）
 
-> 当前版本：**v0.4.2**（已发布）
+> 当前版本：**v0.4.5**（开发中）
 >
 > 已完成：单节点 CC/DDoS 防御 + 分布式 Hub-Node 协同免疫。
 >
-> 当前焦点：**v0.5.0 — L7 增强与规则进化**
+> 当前焦点：**v0.4.5 — 控制台重写与体验收尾**
 
 ---
 
@@ -87,11 +87,12 @@
 - [x] 优化字体、字号、行距与视觉层级
 - [x] 统一卡片、表格、按钮、表单样式
 - [x] 增加页面切换动画与微交互
+- [x] 控制台全面重写：`eshield/web/` 模块化实现（原生 ES modules + design tokens，暗色 SOC 视觉，9 个页面，无前端构建链仍嵌单二进制）；旧版单文件控制台保留在 `/legacy` 一个版本周期
 
 ### 2. 控制台体验增强
 
-- [ ] TOP 攻击源趋势（历史曲线）
-- [ ] 审计事件流 / SSE 实时滚动
+- [x] TOP 攻击源趋势（历史曲线）——攻击事件页新增 TOP5 攻击源趋势折叠卡片（逐间隔丢包数多线图，时间范围与总览趋势联动）
+- [x] 审计事件流 / SSE 实时滚动（新控制台审计页：SSE 实时插入 + 连接状态徽标）
 - [x] 按 IP / 动作 / 时间过滤审计日志
 - [ ] 紧急封禁的移动端快捷操作
 
@@ -104,11 +105,11 @@
 ### 4. 运维与交付
 
 - [ ] 权限最小化（加载 eBPF 后 drop root，保留必要 capabilities）
-- [ ] 优雅退出（SIGTERM 卸载 XDP、清理 eBPF Map）
-- [ ] DEB / RPM 安装包（`cargo deb` / `cargo generate-rpm`）
-- [ ] 最小容器镜像 + Docker Compose + Kubernetes DaemonSet 示例
-- [ ] 完善 `docs/deployment.md` 与 `docs/ops.md`
-- [ ] GitHub Release 发布脚本
+- [x] 优雅退出（SIGTERM 卸载 XDP、清理 eBPF Map）
+- [x] DEB / RPM 安装包（`cargo deb` / `cargo generate-rpm`，见 `scripts/build-release.sh`）
+- [ ] 最小容器镜像 + Docker Compose + Kubernetes DaemonSet 示例（Dockerfile 与 `packaging/k8s/` 已有，Docker Compose 待补）
+- [x] 完善 `docs/deployment.md` 与 `docs/operations.md`
+- [x] GitHub Release 发布脚本（`.github/workflows/release.yml` + `scripts/publish-release.*`）
 
 ### 5. 测试与质量
 

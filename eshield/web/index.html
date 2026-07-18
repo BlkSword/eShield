@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eShield 控制台</title>
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link rel="stylesheet" href="/static/css/components.css">
+<link rel="stylesheet" href="/static/css/pages.css">
+<script>window.__INITIAL_CONFIG__ = __CONFIG_JSON__;</script>
+<script src="/static/echarts.min.js"></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="logo">
+      <div class="logo-mark" id="logoMark"></div>
+      <div class="logo-text">
+        <div class="logo-name">eShield</div>
+        <div class="logo-sub">网络清洗盾</div>
+      </div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="sidebar-footer">
+      <button class="collapse-btn" id="collapseBtn" title="折叠/展开侧边栏"></button>
+      <div class="sidebar-footer-text" id="versionText">v—</div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="header">
+      <div>
+        <div class="page-title" id="pageTitle">总览</div>
+      </div>
+      <div class="page-sub" id="pageSub"></div>
+      <div class="header-spacer"></div>
+      <div class="search-box">
+        <span class="search-icon" id="searchIcon"></span>
+        <input id="globalSearch" type="text" placeholder="搜索 IP 情报…" autocomplete="off" spellcheck="false">
+        <kbd>/</kbd>
+      </div>
+      <div class="danger-pill" id="dangerPill" title="Danger Signal 全局危险等级"></div>
+      <div class="live-chip" id="sseChip" title="审计事件流连接状态">
+        <span class="live-dot" id="sseDot"></span><span id="sseLabel">连接中</span>
+      </div>
+      <button class="icon-btn" id="themeBtn" title="切换主题"></button>
+    </header>
+    <main class="content" id="page"></main>
+  </div>
+</div>
+
+<div class="drawer-mask" id="drawerMask"></div>
+<aside class="drawer" id="drawer"></aside>
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script type="module" src="/static/js/main.js"></script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{ConnectInfo, Query, Request, State},
+    extract::{ConnectInfo, Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, Html, IntoResponse, Response, Sse},
@@ -138,12 +138,14 @@ pub async fn run(
         .route("/login", get(login_handler))
         .route("/blocked", get(blocked_handler))
         .route("/static/echarts.min.js", get(echarts_handler))
+        .route("/static/*path", get(static_assets_handler))
         .route("/api/auth/login", post(login_api_handler))
         .layer(middleware::from_fn(request_logger))
         .with_state(state.clone());
 
     let protected = Router::new()
         .route("/", get(index_handler))
+        .route("/legacy", get(legacy_handler))
         .route("/api/stats", get(stats_handler))
         .route("/api/metrics/series", get(metrics_series_handler))
         .route(
@@ -388,7 +390,20 @@ async fn reset_token_handler(State(state): State<Arc<WebState>>) -> Response {
             None,
         )
         .await;
-    Json(serde_json::json!({"token": new_token})).into_response()
+    // 同步刷新 cookie，否则 EventSource（只能携带 cookie）会在旧 token 失效后断流。
+    let cookie = format!(
+        "eshield-token={}; Path=/; HttpOnly; SameSite=Lax",
+        new_token
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Set-Cookie", cookie)
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"token": new_token}).to_string(),
+        ))
+        .unwrap()
+        .into_response()
 }
 
 async fn stats_handler(State(state): State<Arc<WebState>>) -> Json<StatsResponse> {
@@ -990,6 +1005,8 @@ fn default_packet_limit() -> usize {
 }
 
 /// 查询采样包日志。
+///
+/// 采样时间戳来自 eBPF 单调时钟，统一转换为 wall-clock 纳秒后返回。
 async fn packets_handler(
     State(state): State<Arc<WebState>>,
     axum::extract::Query(q): axum::extract::Query<PacketQuery>,
@@ -1004,7 +1021,15 @@ async fn packets_handler(
         to_ns: None,
         limit: q.limit.min(1000),
     };
-    let entries = state.packet_log.query(&query);
+    let wall_now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    let offset_ns = wall_now_ns - crate::time::monotonic_ns() as i128;
+    let mut entries = state.packet_log.query(&query);
+    for e in &mut entries {
+        e.timestamp_ns = (e.timestamp_ns as i128 + offset_ns).max(0) as u64;
+    }
     Json(serde_json::json!({
         "entries": entries,
         "count": entries.len(),
@@ -1199,10 +1224,20 @@ async fn ip_series_handler(
 }
 
 /// 返回最近攻击事件（DROP 事件流）。
+///
+/// `DropEvent.timestamp_ns` 来自 eBPF 单调时钟（`bpf_ktime_get_ns`），
+/// 这里统一转换为 wall-clock 纳秒，前端可直接 `new Date(ts / 1e6)` 展示。
 async fn attack_events_handler(
     State(state): State<Arc<WebState>>,
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
 ) -> Json<serde_json::Value> {
+    // 单调时钟 → wall-clock 偏移，与 /api/ip-series 的换算方式保持一致。
+    let wall_now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    let offset_ns = wall_now_ns - crate::time::monotonic_ns() as i128;
+
     let events: Vec<serde_json::Value> = state
         .stats
         .attack_events(q.limit.min(200))
@@ -1232,7 +1267,7 @@ async fn attack_events_handler(
                 _ => "未知",
             };
             serde_json::json!({
-                "timestamp_ns": e.timestamp_ns,
+                "timestamp_ns": (e.timestamp_ns as i128 + offset_ns).max(0) as u64,
                 "src_ip": src_ip,
                 "protocol": e.protocol,
                 "rule_id": e.rule_id,
@@ -1265,12 +1300,125 @@ async fn attacker_series_handler(
     Json(serde_json::json!({ "ip": q.ip, "series": points }))
 }
 
-const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const LEGACY_DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const INDEX_HTML: &str = include_str!("../web/index.html");
 
+/// 新版控制台（默认）：`eshield/web/` 下的模块化静态资源。
 async fn index_handler(State(state): State<Arc<WebState>>) -> Html<String> {
     let config_json = serde_json::to_string(&*state.control.runtime.read().await)
         .unwrap_or_else(|_| "{}".to_string());
-    Html(DASHBOARD_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
+    Html(INDEX_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
+}
+
+/// 旧版单文件控制台，保留一个版本周期用于回退对比，随后移除。
+async fn legacy_handler(State(state): State<Arc<WebState>>) -> Html<String> {
+    let config_json = serde_json::to_string(&*state.control.runtime.read().await)
+        .unwrap_or_else(|_| "{}".to_string());
+    Html(LEGACY_DASHBOARD_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
+}
+
+/// 嵌入的新版控制台静态资源（CSS/JS 模块），保持单二进制、离线可用。
+static STATIC_ASSETS: &[(&str, &str, &[u8])] = &[
+    (
+        "css/tokens.css",
+        MIME_CSS,
+        include_bytes!("../web/css/tokens.css"),
+    ),
+    (
+        "css/base.css",
+        MIME_CSS,
+        include_bytes!("../web/css/base.css"),
+    ),
+    (
+        "css/components.css",
+        MIME_CSS,
+        include_bytes!("../web/css/components.css"),
+    ),
+    (
+        "css/pages.css",
+        MIME_CSS,
+        include_bytes!("../web/css/pages.css"),
+    ),
+    ("js/main.js", MIME_JS, include_bytes!("../web/js/main.js")),
+    ("js/api.js", MIME_JS, include_bytes!("../web/js/api.js")),
+    ("js/store.js", MIME_JS, include_bytes!("../web/js/store.js")),
+    (
+        "js/router.js",
+        MIME_JS,
+        include_bytes!("../web/js/router.js"),
+    ),
+    (
+        "js/format.js",
+        MIME_JS,
+        include_bytes!("../web/js/format.js"),
+    ),
+    ("js/icons.js", MIME_JS, include_bytes!("../web/js/icons.js")),
+    ("js/ui.js", MIME_JS, include_bytes!("../web/js/ui.js")),
+    (
+        "js/charts.js",
+        MIME_JS,
+        include_bytes!("../web/js/charts.js"),
+    ),
+    (
+        "js/ipdrawer.js",
+        MIME_JS,
+        include_bytes!("../web/js/ipdrawer.js"),
+    ),
+    (
+        "js/pages/overview.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/overview.js"),
+    ),
+    (
+        "js/pages/attacks.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/attacks.js"),
+    ),
+    (
+        "js/pages/packets.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/packets.js"),
+    ),
+    (
+        "js/pages/audit.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/audit.js"),
+    ),
+    (
+        "js/pages/policy.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/policy.js"),
+    ),
+    (
+        "js/pages/rules.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/rules.js"),
+    ),
+    (
+        "js/pages/security.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/security.js"),
+    ),
+    (
+        "js/pages/cluster.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/cluster.js"),
+    ),
+    (
+        "js/pages/settings.js",
+        MIME_JS,
+        include_bytes!("../web/js/pages/settings.js"),
+    ),
+];
+
+const MIME_CSS: &str = "text/css; charset=utf-8";
+const MIME_JS: &str = "application/javascript; charset=utf-8";
+
+async fn static_assets_handler(Path(path): Path<String>) -> Response {
+    if let Some((_, mime, bytes)) = STATIC_ASSETS.iter().find(|(p, _, _)| *p == path) {
+        return ([("content-type", *mime)], *bytes).into_response();
+    }
+    api_err_response(StatusCode::NOT_FOUND, "static asset not found")
 }
 
 async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
