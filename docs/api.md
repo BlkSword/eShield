@@ -1,6 +1,8 @@
 > # eShield REST API 参考
 
-> 版本：v0.4.2
+> 版本：v0.4.5
+
+> **v0.4.5 破坏性变更**：`/api/attack-events` 与 `/api/packets` 返回的 `timestamp_ns` 字段语义由 **eBPF 单调时钟纳秒**（开机起算）改为 **wall-clock Unix 纳秒**（后端统一转换后返回）。此前依赖该字段自行对齐 `CLOCK_MONOTONIC` 的客户端需要改为按 Unix 时间戳处理。
 
 ## 认证
 
@@ -23,8 +25,12 @@ Authorization: Bearer <token>
 | `/api/auth/login` | POST | 控制台登录验证 |
 | `/api/auth/check` | GET | 登录状态检查 |
 | `/api/auth/reset-token` | POST | 重置访问令牌 |
-| `/` | GET | Web Dashboard |
+| `/` | GET | Web Dashboard（新版控制台，`eshield/web/` 模块化资源） |
+| `/legacy` | GET | 旧版单文件控制台（保留一个版本周期，v0.6.0 移除） |
+| `/static/*` | GET | 新版控制台静态资源（CSS/JS ES modules，`include_bytes!` 嵌入二进制） |
 | `/api/stats` | GET | 运行统计 |
+| `/api/attack-events` | GET | 攻击事件（DROP），`timestamp_ns` 为 wall-clock Unix 纳秒 |
+| `/api/packets` | GET | 采样包日志，`timestamp_ns` 为 wall-clock Unix 纳秒 |
 | `/api/config` | GET, PATCH | 读取/修改运行时配置 |
 | `/api/config/reload` | POST | 从文件重新加载配置 |
 | `/api/protection-modules` | GET | 防护模块列表与状态 |

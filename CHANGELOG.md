@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.4.5 (2026-07-18)
+
+### 新增
+
+- **控制台全面重写**：新控制台位于 `eshield/web/`，原生 ES modules + 模块化 CSS，无前端构建链，仍全部嵌入单二进制。
+  - 暗色优先 SOC 视觉体系（完整 design tokens，暗/亮双主题），统一 SVG 线性图标，替换 emoji。
+  - 九个页面：总览 / 攻击事件 / 包日志 / 审计日志 / 防护策略 / 规则中心 / 安全运营 / 集群节点 / 设置。
+  - 总览页：6 张 KPI 卡（sparkline + 模块状态点）、按防御模块分解的趋势图（折线/堆叠 + 15分钟~24小时四档）、实时拦截事件流、协议分布环图、TOP 端口、TOP 攻击源。
+  - 全局 IP 搜索（`/` 聚焦，Enter 直达 IP 情报抽屉）；IP 情报抽屉展示信誉分、采样包、端口分布与攻击趋势，可直接封禁/解封。
+  - 审计日志页：服务端过滤 + 真分页 + SSE 实时插入 + CSV 导出。
+  - 防护策略页：模块开关即改即存，参数表单保存完整子对象；防护项目可视化管理。
+  - 骨架屏 / 空态 / 错误态三态统一；轮询随页面切换自动启停。
+  - 旧版单文件控制台保留在 `/legacy`，将于下个版本移除。
+  - 新增 `tests/remote/console_verify.sh` 端到端验证（27 项检查）。
+- **TOP 攻击源趋势**：攻击事件页新增 TOP5 攻击源趋势折叠卡片，调用既有 `GET /api/metrics/attacker-series`，按时间范围（与总览趋势联动）绘制逐间隔丢包数多线图，10s 轮询随页面卸载停止。
+
+### 修复
+
+- **Ring Buffer 幻影事件（严重）**：`event_consumer` 与 `packet_log` 每批事件都重建 aya `RingBuf` 句柄，aya 的 `pos_cache` 初值为 0，consumer 位置越过 producer 后已消费事件被无限重读——空流量下持续读出 4096 条/批的旧事件，CPU 占满一个核，并拖慢 Hub 策略上报。现改为启动时 `take_map` 取出 map 所有权、RingBuf 句柄随消费任务常驻；`packet_log` 消费不再需要 Ebpf 锁。
+- **趋势图 X 轴标签重复**：采样间隔 <60s 时标签降级为 `HH:MM:SS`；`categoryAxis` 启用 `hideOverlap` 自动抽稀。
+- **趋势图 legend 与 Y 轴刻度重叠**：legend 改为单行滚动（`type: 'scroll'`），grid top 从 34 提升到 40。
+- **feed 卡片头部拥挤**：`.card-head` 增加 `flex-wrap: wrap`，窄宽度下工具区自动换行。
+
+- **攻击事件 / 包日志时间戳错误**：`/api/attack-events` 与 `/api/packets` 返回的 eBPF 单调时钟纳秒未转换为 wall-clock，前端显示为"1970 + 开机时长"；后端现统一转换后返回。
+- **reset-token 后 SSE 断流**：`POST /api/auth/reset-token` 现在同步 `Set-Cookie`，EventSource（仅可携带 cookie）不再因旧令牌失效而 401。
+- **保存速率限制参数强制开启开关**：新防护策略页以当前 config 快照为底叠上表单值提交完整子对象，不再硬编码 `enabled: true`。
+- **审计页 SSE 状态标签失效**：新版消除了重复的 `id="sse-status"`，SSE 三态（已连接/连接中/重连中）全局可见。
+- 清理旧控制台死代码：未使用的防护模块 modal、`attackerChart`、未实现的"全局搜索"注释。
+
+### 改进
+
+- 版本号显示改为读取后端 `/api/config` 的 `version` 字段，不再使用硬编码 fallback。
+
 ## 0.4.2 (2026-07-12)
 
 ### 新增

@@ -89,6 +89,8 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | Config hot reload | Reload configuration via `SIGHUP` or `systemctl reload` without restart. |
 | Auth / audit / persistence | Optional Bearer token, audit log, and dynamic rule persistence with redb. |
 | Observability | Prometheus `/metrics`, JSON stats, audit SSE, top attackers. |
+| Console rewrite (v0.4.5) | Native ES modules + modular CSS, dark/light themes, nine pages; legacy console kept at `/legacy` for one release cycle. |
+| TOP attacker trends (v0.4.5) | Top-5 attacker per-interval drop lines on the attack events page, time range linked with the overview trend. |
 
 > **About protection projects**: In the current version, protection projects are loaded, validated, persisted, and exposed via the Dashboard/API. Due to the XDP verifier's 512-byte combined stack limit, per-project packet matching in the eBPF data path is not yet enabled; global defense modules remain active.
 
@@ -260,7 +262,7 @@ Nodes push high-confidence local blocks to the Hub and pull policies from peers 
 
 ### Web Dashboard
 
-After starting the service, open `http://<host>:8720/`. The Dashboard shows real-time packet statistics, defense-module hits, top attackers, audit logs, and live control forms.
+After starting the service, open `http://<host>:8720/`. The Dashboard (rewritten in v0.4.5 as modular ES modules with dark/light themes; legacy console kept at `/legacy`) shows real-time packet statistics, defense-module hits, trend charts (15m/1h/6h/24h), top-5 attacker trend lines, top attackers, audit logs, and live control forms.
 
 ### Prometheus Metrics
 
