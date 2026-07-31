@@ -1,17 +1,73 @@
-/* ============ eShield Console Design Tokens ============ */
+/* ==========================================================================
+   eShield Console v2 · Design Tokens
+   主题：防御态势中心 / Defense Ops Center
+   风格：深空蓝黑 · 玻璃拟态 · 霓虹青主色 · 雷达/扫描视觉语言
+   注意：--text-* / --bg-* / --accent-* 等旧名称为 JS（charts.js、ipdrawer 等）
+         引用保留的兼容别名，值已更新为新设计色板。
+   ========================================================================== */
+
 :root, [data-theme="dark"] {
-  --bg-base: #0a0e15;
-  --bg-raised: #10161f;
-  --bg-overlay: #161e2a;
-  --bg-hover: #1b2432;
-  --border: #1e2735;
-  --border-strong: #2b3749;
-  --text-1: #e8edf4;
-  --text-2: #93a2b6;
-  --text-3: #5b6b80;
+  /* ---- 新设计色板 ---- */
+  --bg-0: #04060c;            /* 页面底色 */
+  --bg-1: #080c16;            /* 次级底色 */
+  --bg-2: #0d1322;            /* 卡片 */
+  --bg-3: #131b2e;            /* 悬浮/输入 */
+  --bg-4: #1a2438;            /* 强悬浮 */
+  --line-1: rgba(148, 163, 184, .09);
+  --line-2: rgba(148, 163, 184, .16);
+  --line-3: rgba(148, 163, 184, .28);
+  --tx-1: #e6ecf7;
+  --tx-2: #93a2bb;
+  --tx-3: #5c6b85;
+  --cyan: #22d3ee;
+  --cyan-2: #06b6d4;
+  --cyan-3: #0e7490;
+  --cyan-glow: rgba(34, 211, 238, .35);
+  --cyan-soft: rgba(34, 211, 238, .11);
+  --red: #fb7185;
+  --red-2: #f43f5e;
+  --red-soft: rgba(244, 63, 94, .12);
+  --amber: #fbbf24;
+  --amber-2: #f59e0b;
+  --amber-soft: rgba(251, 191, 36, .12);
+  --green: #34d399;
+  --green-2: #10b981;
+  --green-soft: rgba(52, 211, 153, .12);
+  --blue: #60a5fa;
+  --blue-2: #3b82f6;
+  --blue-soft: rgba(96, 165, 250, .12);
+  --violet: #a78bfa;
+  --violet-2: #8b5cf6;
+  --violet-soft: rgba(167, 139, 250, .12);
+  --grid-line: rgba(34, 211, 238, .045);
+  --halo: rgba(34, 211, 238, .07);
+  --r-sm: 8px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 20px;
+  --radius-s: 8px;
+  --radius-sm: 8px;
+  --radius-m: 12px;
+  --radius-md: 12px;
+  --radius-l: 16px;
+  --radius-lg: 16px;
+  --accent-glow: rgba(34, 211, 238, .35);
+  --sh-card: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .35);
+  --sh-pop: 0 24px 64px rgba(0, 0, 0, .55), 0 0 0 1px var(--line-1);
+
+  /* ---- 兼容别名（JS 引用） ---- */
+  --bg-base: #04060c;
+  --bg-raised: #0d1322;
+  --bg-overlay: #080c16;
+  --bg-hover: #131b2e;
+  --border: rgba(148, 163, 184, .16);
+  --border-strong: rgba(148, 163, 184, .28);
+  --text-1: #e6ecf7;
+  --text-2: #93a2bb;
+  --text-3: #5c6b85;
   --accent: #22d3ee;
   --accent-strong: #06b6d4;
-  --accent-soft: rgba(34, 211, 238, .12);
+  --accent-soft: rgba(34, 211, 238, .11);
   --danger: #fb7185;
   --danger-strong: #f43f5e;
   --danger-soft: rgba(244, 63, 94, .12);
@@ -24,35 +80,70 @@
   --info: #60a5fa;
   --info-strong: #3b82f6;
   --info-soft: rgba(96, 165, 250, .12);
-  --violet: #a78bfa;
   --violet-strong: #8b5cf6;
-  --violet-soft: rgba(167, 139, 250, .12);
-  --radius-s: 6px;
-  --radius-m: 10px;
-  --radius-l: 14px;
-  --shadow-1: 0 1px 2px rgba(0, 0, 0, .3);
-  --shadow-2: 0 12px 32px rgba(0, 0, 0, .4);
+  --radius-s: 8px;
+  --radius-m: 12px;
+  --radius-l: 16px;
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .35);
+  --shadow-2: 0 24px 64px rgba(0, 0, 0, .55), 0 0 0 1px rgba(148, 163, 184, .09);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --mono: "JetBrains Mono", "SF Mono", Consolas, "Courier New", monospace;
+  --mono: "JetBrains Mono", "SF Mono", "Cascadia Code", Consolas, "Courier New", monospace;
   --ease: cubic-bezier(.22, .68, .36, 1);
-  --header-bg: rgba(10, 14, 21, .82);
+  --header-bg: rgba(4, 6, 12, .78);
 }
+
 [data-theme="light"] {
-  --bg-base: #f3f5f9;
+  --bg-0: #eef2f8;
+  --bg-1: #f5f8fc;
+  --bg-2: #ffffff;
+  --bg-3: #eef3fa;
+  --bg-4: #e3eaf4;
+  --line-1: rgba(30, 58, 102, .08);
+  --line-2: rgba(30, 58, 102, .14);
+  --line-3: rgba(30, 58, 102, .26);
+  --tx-1: #0f1a2e;
+  --tx-2: #475c77;
+  --tx-3: #8296b2;
+  --cyan: #0891b2;
+  --cyan-2: #0e7490;
+  --cyan-3: #155e75;
+  --cyan-glow: rgba(8, 145, 178, .28);
+  --cyan-soft: rgba(8, 145, 178, .1);
+  --red: #e11d48;
+  --red-2: #be123c;
+  --red-soft: rgba(225, 29, 72, .09);
+  --amber: #d97706;
+  --amber-2: #b45309;
+  --amber-soft: rgba(217, 119, 6, .1);
+  --green: #059669;
+  --green-2: #047857;
+  --green-soft: rgba(5, 150, 105, .1);
+  --blue: #2563eb;
+  --blue-2: #1d4ed8;
+  --blue-soft: rgba(37, 99, 235, .09);
+  --violet: #7c3aed;
+  --violet-2: #6d28d9;
+  --violet-soft: rgba(124, 58, 237, .09);
+  --grid-line: rgba(30, 58, 102, .05);
+  --halo: rgba(8, 145, 178, .08);
+  --sh-card: 0 1px 2px rgba(30, 58, 102, .06);
+  --sh-pop: 0 24px 48px rgba(30, 58, 102, .18), 0 0 0 1px rgba(30, 58, 102, .08);
+
+  --bg-base: #eef2f8;
   --bg-raised: #ffffff;
-  --bg-overlay: #ffffff;
-  --bg-hover: #eef2f7;
-  --border: #e2e8f0;
-  --border-strong: #cbd5e1;
-  --text-1: #0f172a;
-  --text-2: #475569;
-  --text-3: #94a3b8;
+  --bg-overlay: #f5f8fc;
+  --bg-hover: #eef3fa;
+  --border: rgba(30, 58, 102, .14);
+  --border-strong: rgba(30, 58, 102, .26);
+  --text-1: #0f1a2e;
+  --text-2: #475c77;
+  --text-3: #8296b2;
   --accent: #0891b2;
   --accent-strong: #0e7490;
   --accent-soft: rgba(8, 145, 178, .1);
   --danger: #e11d48;
   --danger-strong: #be123c;
-  --danger-soft: rgba(225, 29, 72, .08);
+  --danger-soft: rgba(225, 29, 72, .09);
   --warning: #d97706;
   --warning-strong: #b45309;
   --warning-soft: rgba(217, 119, 6, .1);
@@ -61,11 +152,16 @@
   --success-soft: rgba(5, 150, 105, .1);
   --info: #2563eb;
   --info-strong: #1d4ed8;
-  --info-soft: rgba(37, 99, 235, .08);
-  --violet: #7c3aed;
+  --info-soft: rgba(37, 99, 235, .09);
   --violet-strong: #6d28d9;
-  --violet-soft: rgba(124, 58, 237, .08);
-  --shadow-1: 0 1px 3px rgba(15, 23, 42, .06);
-  --shadow-2: 0 12px 32px rgba(15, 23, 42, .12);
+  --radius-s: 8px;
+  --radius-sm: 8px;
+  --radius-m: 12px;
+  --radius-md: 12px;
+  --radius-l: 16px;
+  --radius-lg: 16px;
+  --accent-glow: rgba(8, 145, 178, .28);
+  --shadow-1: 0 1px 2px rgba(30, 58, 102, .06);
+  --shadow-2: 0 24px 48px rgba(30, 58, 102, .18);
   --header-bg: rgba(255, 255, 255, .85);
 }

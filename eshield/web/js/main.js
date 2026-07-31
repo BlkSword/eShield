@@ -1,4 +1,4 @@
-/* 控制台入口：主题、侧边栏、头部组件、SSE 连接管理、全局快捷键、路由启动。 */
+/* 控制台入口：主题、侧边栏、头部态势条、SSE 连接管理、全局快捷键、路由启动。 */
 import { $ } from './format.js';
 import { icon } from './icons.js';
 import { store } from './store.js';
@@ -26,7 +26,6 @@ function applyTheme(t) {
   store.set('theme', t);
 }
 applyTheme(localStorage.getItem('eshield-theme') || 'dark');
-$('#themeBtn').innerHTML = `<span class="icon-sun">${icon('sun')}</span><span class="icon-moon">${icon('moon')}</span>`;
 $('#themeBtn').addEventListener('click', () => {
   applyTheme(rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
   refreshAllCharts();
@@ -50,7 +49,7 @@ const NAV = [
     { id: 'settings', label: '设置', icon: 'settings' },
   ]},
 ];
-$('#logoMark').innerHTML = icon('shieldCheck', 18);
+$('#logoMark').innerHTML = icon('shieldCheck', 20);
 $('#nav').innerHTML = NAV.map(g => `
   <div class="nav-group-label">${g.group}</div>
   ${g.items.map(it => `<button class="nav-item" data-nav="${it.id}">${icon(it.icon)}<span class="nav-label">${it.label}</span></button>`).join('')}
@@ -59,7 +58,6 @@ $('#nav').addEventListener('click', e => {
   const btn = e.target.closest('[data-nav]');
   if (btn) navigate(btn.dataset.nav);
 });
-$('#collapseBtn').innerHTML = icon('chevronLeft');
 $('#collapseBtn').addEventListener('click', () => {
   $('#sidebar').classList.toggle('collapsed');
   setTimeout(resizeAllCharts, 280);
@@ -71,7 +69,7 @@ for (const mod of [overview, attacks, packets, audit, policy, rules, security, c
   registerPage(mod.id, mod);
 }
 
-/* ================= 危险等级 & SSE 状态 ================= */
+/* ================= 危险等级 & 顶部态势 ================= */
 const DANGER_LEVELS = [
   { cls: '', text: '危险等级 L0 · 平稳' },
   { cls: 'l1', text: '危险等级 L1 · 警戒' },
@@ -81,16 +79,38 @@ function renderDanger(level) {
   const lv = DANGER_LEVELS[Math.min(level, 2)];
   const pill = $('#dangerPill');
   pill.className = 'danger-pill ' + lv.cls;
-  pill.innerHTML = `<span class="dot"></span>${lv.text}`;
+  $('#dangerText').textContent = lv.text;
+  $('#xdpMeta').textContent = level > 0
+    ? `${cfg?.interface || '—'} · 防御等级已上调`
+    : `${cfg?.interface || '—'} · DRV_MODE`;
 }
+
+let cfg = window.__INITIAL_CONFIG__ || {};
 
 async function pollStats() {
   try {
     const stats = await apiGet('/api/stats');
     store.set('stats', stats);
     renderDanger(stats.danger_level || 0);
+    $('#hdrPps').textContent = fmtPps(stats.current_pps);
+    $('#hdrDps').textContent = fmtPps(stats.current_dps);
+    $('#hdrDps').classList.toggle('hot', (stats.current_dps || 0) > 20000);
   } catch { /* 网络抖动时保持旧状态 */ }
 }
+
+/* 头部 PPS 格式化：≥1 万显示 X.Xk */
+function fmtPps(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+
+apiGet('/api/config').then(c => {
+  cfg = c;
+  $('#xdpMeta').textContent = `${c.interface || '—'} · DRV_MODE`;
+  $('#xdpName').textContent = 'XDP 程序已挂载';
+}).catch(() => {});
 pollStats();
 setInterval(pollStats, 5000);
 
@@ -114,7 +134,6 @@ renderSse('connecting');
 connectSse();
 
 /* ================= 全局搜索 / 快捷键 ================= */
-$('#searchIcon').innerHTML = icon('search', 14);
 document.addEventListener('keydown', e => {
   if (e.key === '/' && document.activeElement !== $('#globalSearch')
       && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {

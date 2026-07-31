@@ -1,9 +1,10 @@
 /* ============ Overview ============ */
-.row-main { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 16px; }
-.row-trio { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 16px; }
+.row-main { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 18px; }
+.row-trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.row-duo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 18px; }
 .feed-card { display: flex; flex-direction: column; min-height: 0; }
-.feed-card .feed-list { max-height: 372px; }
-.trend-body { height: 340px; padding: 6px 10px 10px; }
+.feed-card .feed-list { max-height: 400px; }
+.trend-body { height: 360px; padding: 8px 10px 10px; }
 .donut-body, .bars-body { height: 250px; padding: 0 10px 12px; }
 
 /* ============ Attacks ============ */
@@ -28,7 +29,7 @@
 .rules-tabs-card .tab-body { padding: 0; }
 .geoip-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .feed-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-m);
-  background: var(--bg-base); margin-bottom: 8px; }
+  background: var(--bg-1); margin-bottom: 8px; }
 .feed-item .f-url { font-family: var(--mono); font-size: 12px; word-break: break-all; }
 .feed-item .f-meta { font-size: 11.5px; color: var(--text-3); margin-top: 4px; }
 
@@ -36,7 +37,7 @@
 .security-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
 .whitelist-tags { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 18px 16px; }
 .wl-tag { display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px;
-  background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-m);
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius-m);
   font-family: var(--mono); font-size: 12px; }
 .wl-tag button { color: var(--text-3); display: grid; place-items: center; border-radius: 4px; }
 .wl-tag button:hover { color: var(--danger); }
@@ -57,12 +58,17 @@
 .token-box { display: flex; gap: 10px; align-items: center; }
 .token-box .input { font-family: var(--mono); font-size: 12px; }
 .token-value { font-family: var(--mono); font-size: 12px; word-break: break-all;
-  background: var(--bg-base); border: 1px solid var(--border); border-radius: var(--radius-m); padding: 10px 12px; }
+  background: var(--bg-1); border: 1px solid var(--border); border-radius: var(--radius-m); padding: 10px 12px; }
 
 /* ============ Responsive ============ */
-@media (max-width: 1500px) { .kpi-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 1500px) {
+  .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+  .row-main { grid-template-columns: 1fr; }
+  .row-trio { grid-template-columns: 1fr 1fr; }
+  .row-trio > .card:last-child { grid-column: 1 / -1; }
+}
 @media (max-width: 1200px) {
-  .row-main, .row-trio, .security-grid, .settings-grid, .geoip-grid { grid-template-columns: 1fr; }
+  .row-trio, .security-grid, .settings-grid, .geoip-grid, .row-duo { grid-template-columns: 1fr; }
   .cluster-cards { grid-template-columns: 1fr 1fr; }
   .feed-card .feed-list { max-height: 260px; }
 }

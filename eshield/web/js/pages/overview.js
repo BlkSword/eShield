@@ -1,4 +1,4 @@
-/* 总览页：KPI、趋势图、实时事件流、协议分布、TOP 端口、TOP 攻击源。 */
+/* 总览页：KPI、威胁雷达、流量趋势、实时事件流、协议分布、TOP 端口、TOP 攻击源。 */
 import { apiGet } from '../api.js';
 import { $, $$, esc, fmtInt, fmtCn, fmtTime, tsToDate, cssVar, protocolName, ruleInfo } from '../format.js';
 import { store } from '../store.js';
@@ -42,13 +42,50 @@ const TREND_FIELDS = [
 ];
 const RANGES = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 };
 
+/* IP 字符串 → 稳定散列（用于雷达方位角） */
+function hashAngle(ip) {
+  let h = 0;
+  for (let i = 0; i < ip.length; i++) h = (h * 31 + ip.charCodeAt(i)) >>> 0;
+  return (h % 3600) / 10;   // 0-360
+}
+
+/* 威胁雷达 SVG：攻击源按散列方位 + 命中数归一化半径分布 */
+function radarSVG(blips) {
+  const cx = 130, cy = 130, R = 104;
+  const rings = [26, 52, 78, 104];
+  const ringStr = rings.map(r => `<circle class="ring${r > 80 ? ' faint' : ''}" cx="${cx}" cy="${cy}" r="${r}"/>`).join('');
+  const axisStr = [0, 45, 90, 135].map(deg => {
+    const a = (deg - 90) * Math.PI / 180;
+    return `<line class="axis" x1="${cx}" y1="${cy}" x2="${cx + Math.cos(a) * R}" y2="${cy + Math.sin(a) * R}"/>`;
+  }).join('');
+  const blipStr = blips.map(b => {
+    const a = (b.ang - 90) * Math.PI / 180;
+    const x = cx + Math.cos(a) * b.d * R, y = cy + Math.sin(a) * b.d * R;
+    const color = b.hot ? cssVar('--danger') : cssVar('--accent');
+    return `<circle class="radar-blip" cx="${x}" cy="${y}" r="${b.hot ? 3.5 : 2.6}" fill="${color}" style="animation-delay:${(b.d * 0.3).toFixed(2)}s"/>`;
+  }).join('');
+  return `<svg class="radar-svg" viewBox="0 0 260 260">
+    <defs>
+      <linearGradient id="radarGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="${cssVar('--accent')}" stop-opacity=".30"/>
+        <stop offset=".6" stop-color="${cssVar('--accent')}" stop-opacity=".06"/>
+        <stop offset="1" stop-color="${cssVar('--accent')}" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    ${ringStr}${axisStr}
+    <path class="radar-sweep" d="M${cx},${cy} L${cx + R},${cy} A${R},${R} 0 0 1 ${cx - R},${cy} Z"/>
+    ${blipStr}
+    <circle class="radar-center" cx="${cx}" cy="${cy}" r="3"/>
+  </svg>`;
+}
+
 export function mount(el) {
   el.innerHTML = `
     <section class="kpi-grid" id="ovKpi">${KPIS.map(() => `<div class="card kpi-card">${skeleton(96)}</div>`).join('')}</section>
     <section class="row-main">
       <div class="card">
         <div class="card-head">
-          <div><div class="card-title">流量与拦截趋势</div><div class="card-sub">按防御模块分解的每秒丢包</div></div>
+          <div><div class="card-title"><span class="tick"></span>流量与拦截趋势</div><div class="card-sub">PPS / DPS · 按防御模块分解</div></div>
           <div class="card-tools">
             <div class="seg" id="ovMode">
               <button data-mode="line" class="active">折线</button><button data-mode="stack">堆叠</button>
@@ -60,29 +97,38 @@ export function mount(el) {
         </div>
         <div class="trend-body" id="ovTrend"></div>
       </div>
-      <div class="card feed-card">
+      <div class="card">
         <div class="card-head">
-          <div><div class="card-title">实时拦截事件</div><div class="card-sub">DROP 事件流 · 3s 刷新</div></div>
+          <div><div class="card-title"><span class="tick"></span>威胁态势雷达</div><div class="card-sub">TOP 攻击源方位分布</div></div>
+          <div class="card-tools"><span class="tag tag-drop" id="radarCountTag">0 源</span></div>
         </div>
-        <div class="feed-list" id="ovFeed">${skeleton(200)}</div>
+        <div class="radar-wrap" id="ovRadar">${skeleton(220)}</div>
+        <div class="radar-legend"><span><i style="background:${cssVar('--accent')}"></i>活跃攻击源</span><span><i style="background:${cssVar('--danger')}"></i>高危 TOP3</span></div>
       </div>
     </section>
     <section class="row-trio">
       <div class="card">
-        <div class="card-head"><div><div class="card-title">协议分布</div><div class="card-sub">丢包按协议分解</div></div></div>
+        <div class="card-head"><div><div class="card-title"><span class="tick"></span>协议分布</div><div class="card-sub">丢包按协议分解</div></div></div>
         <div class="donut-body" id="ovDonut"></div>
       </div>
       <div class="card">
-        <div class="card-head"><div><div class="card-title">TOP 被攻击端口</div><div class="card-sub">按丢包数排序</div></div></div>
+        <div class="card-head"><div><div class="card-title"><span class="tick"></span>TOP 被攻击端口</div><div class="card-sub">按丢包数排序</div></div></div>
         <div class="bars-body" id="ovPorts"></div>
       </div>
       <div class="card">
         <div class="card-head">
-          <div><div class="card-title">TOP 攻击源</div><div class="card-sub">点击查看 IP 情报</div></div>
+          <div><div class="card-title"><span class="tick"></span>TOP 攻击源</div><div class="card-sub">点击查看 IP 情报</div></div>
           <div class="card-tools"><button class="btn btn-ghost btn-sm" id="ovAllAttacks">查看全部</button></div>
         </div>
         <div class="attacker-list" id="ovAttackers">${skeleton(200)}</div>
       </div>
+    </section>
+    <section class="card feed-card">
+      <div class="card-head">
+        <div><div class="card-title"><span class="tick"></span>实时拦截事件</div><div class="card-sub">DROP 事件流 · 3s 刷新</div></div>
+        <div class="card-tools"><span class="live-chip" style="padding:0"><span class="live-dot on"></span>live</span></div>
+      </div>
+      <div class="feed-list" id="ovFeed">${skeleton(200)}</div>
     </section>`;
 
   /* ---------- 状态 ---------- */
@@ -94,6 +140,7 @@ export function mount(el) {
   let spark = { pps: [], dps: [], blacklist_blocked: [], rate_limited: [], syn_flood_blocked: [], other: [] };
   let feedLastTs = 0;
   let kpiFirstRender = true;
+  let radarBlips = [];
   const timers = [];
   const charts = [];
 
@@ -103,9 +150,9 @@ export function mount(el) {
   function buildKpis() {
     $('#ovKpi').innerHTML = KPIS.map((k, i) => {
       const c = cssVar(k.tone);
-      return `<div class="card kpi-card" data-kpi="${k.key}" style="animation-delay:${i * .05}s">
+      return `<div class="card kpi-card" data-kpi="${k.key}" style="--kpi-tone:${c};animation-delay:${i * .05}s">
         <div class="kpi-top">
-          <span class="kpi-icon" style="background:color-mix(in srgb, ${c} 12%, transparent);color:${c}">${icon(k.icon)}</span>
+          <span class="kpi-icon">${icon(k.icon)}</span>
           <span class="kpi-label">${k.label}</span>
           ${k.module ? '<span class="status-dot off" data-kpi-dot></span>' : ''}
         </div>
@@ -156,6 +203,7 @@ export function mount(el) {
       renderKpis();
       donut.merge(); ports.merge();   // 增量合并刷新，避免整图重绘闪烁
       renderAttackers();
+      renderRadar();
     } catch (e) {
       if (!stats) $('#ovKpi').innerHTML = `<div class="card" style="grid-column:1/-1">${errorState(e.message)}</div>`;
     }
@@ -243,6 +291,31 @@ export function mount(el) {
   // 初始 range 可能来自 store（攻击事件页联动），同步按钮高亮
   $$('#ovRange button').forEach(x => x.classList.toggle('active', x.dataset.range === range));
 
+  /* ---------- 威胁雷达 ---------- */
+  let radarSig = '';
+  function renderRadar() {
+    const list = (stats?.top_attackers || []).slice(0, 8);
+    const sig = JSON.stringify(list.map(a => a.ip));   // 仅 IP 列表变化时重建，保持扫描动画连续
+    if (sig === radarSig) return;   // 攻击源未变化时保持扫描动画连续
+    radarSig = sig;
+    const box = $('#ovRadar');
+    if (!box) return;
+    if (!list.length) {
+      box.innerHTML = '<div class="empty-state" style="padding:80px 20px"><div class="e-title">暂无攻击源</div><div class="e-sub">当前没有 DROP 记录</div></div>';
+      $('#radarCountTag').textContent = '0 源';
+      return;
+    }
+    const max = Math.max(...list.map(a => a.count), 1);
+    radarBlips = list.map((a, i) => ({
+      ang: hashAngle(a.ip) + (i * 7) % 15 - 7,
+      d: 0.18 + Math.sqrt(a.count / max) * 0.68,
+      hot: i < 3,
+    }));
+    box.innerHTML = radarSVG(radarBlips);
+    const hot = radarBlips.filter(b => b.hot).length;
+    $('#radarCountTag').textContent = `${list.length} 源 · ${hot} 高危`;
+  }
+
   /* ---------- 实时事件流 ---------- */
   function feedRow(e) {
     const rule = ruleInfo(e.rule_id);
@@ -250,7 +323,8 @@ export function mount(el) {
       <span class="feed-time">${fmtTime(tsToDate(e.timestamp_ns))}</span>
       <span class="tag ${rule.cls}">${rule.tag}</span>
       <span class="feed-ip" data-ip="${esc(e.src_ip)}">${esc(e.src_ip)}</span>
-      <span class="feed-meta">${protocolName(e.protocol)}:${e.dst_port} · ${esc(e.rule_name || rule.name)}</span>
+      <span class="feed-proto">${protocolName(e.protocol)}${e.dst_port ? ':' + e.dst_port : ''}</span>
+      <span class="feed-meta">${esc(e.rule_name || rule.name)}</span>
     </div>`;
   }
   async function pollFeed() {
@@ -285,7 +359,7 @@ export function mount(el) {
       { name: 'TCP', value: s.tcp_dropped || 0, itemStyle: { color: '#60a5fa' } },
       { name: 'UDP', value: s.udp_dropped || 0, itemStyle: { color: '#a78bfa' } },
       { name: 'ICMP', value: s.icmp_dropped || 0, itemStyle: { color: '#fbbf24' } },
-      { name: '其他', value: s.other_dropped || 0, itemStyle: { color: '#94a3b8' } },
+      { name: '其他', value: s.other_dropped || 0, itemStyle: { color: '#64748b' } },
     ];
     const total = data.reduce((sum, x) => sum + x.value, 0);
     return {
@@ -296,7 +370,7 @@ export function mount(el) {
         subtextStyle: { color: cssVar('--text-3'), fontSize: 11 } },
       series: [{ type: 'pie', radius: ['56%', '76%'], center: ['50%', '46%'],
         label: { show: false },
-        itemStyle: { borderRadius: 5, borderColor: cssVar('--bg-raised'), borderWidth: 2 },
+        itemStyle: { borderRadius: 6, borderColor: cssVar('--bg-raised'), borderWidth: 2 },
         emphasis: { scaleSize: 6 }, data }],
     };
   });
@@ -312,7 +386,7 @@ export function mount(el) {
       yAxis: { type: 'category', inverse: true, data: items.map(x => String(x.port)),
         axisLine: { show: false }, axisTick: { show: false },
         axisLabel: { color: cssVar('--text-1'), fontSize: 11.5, fontFamily: 'Consolas, monospace' } },
-      series: [{ type: 'bar', data: items.map(x => x.count), barWidth: 12,
+      series: [{ type: 'bar', data: items.map(x => x.count), barWidth: 11,
         itemStyle: { borderRadius: [0, 6, 6, 0],
           color: { type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
             colorStops: [{ offset: 0, color: cssVar('--accent-strong') }, { offset: 1, color: cssVar('--accent') }] } },
@@ -332,15 +406,18 @@ export function mount(el) {
     const box = $('#ovAttackers');
     if (!list.length) { box.innerHTML = emptyState('暂无攻击源', '当前没有 DROP 记录'); return; }
     const max = Math.max(...list.map(a => a.count), 1);
-    box.innerHTML = list.map((a, i) => `
-      <div class="attacker-row" data-ip="${esc(a.ip)}">
+    box.innerHTML = list.map((a, i) => {
+      const rule = ruleInfo(a.rule_id);
+      return `<div class="attacker-row" data-ip="${esc(a.ip)}">
         <span class="attacker-rank${i < 3 ? ' top' : ''}">${String(i + 1).padStart(2, '0')}</span>
         <div class="attacker-main">
           <div class="attacker-ip">${esc(a.ip)}</div>
-          <div class="attacker-bar"><i style="width:${(a.count / max * 100).toFixed(1)}%"></i></div>
+          <div class="attacker-bar"><i class="${i < 3 ? 'hot' : ''}" style="width:${(a.count / max * 100).toFixed(1)}%"></i></div>
+          <div class="attacker-rule">${rule.name}</div>
         </div>
         <div class="attacker-right"><div class="attacker-hits">${fmtCn(a.count)}</div></div>
-      </div>`).join('');
+      </div>`;
+    }).join('');
   }
   $('#ovAttackers').addEventListener('click', e => {
     const row = e.target.closest('[data-ip]');
