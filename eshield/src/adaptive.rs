@@ -1,7 +1,6 @@
 use aya::maps::HashMap as LruHashMap;
 use aya::Ebpf;
 use eshield_common::{rules, BlockEntry, IpKey, BLOCK_PERMANENT};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AdaptiveConfig;
 use crate::ip::format_ip_key;
@@ -102,8 +101,6 @@ impl AdaptiveEngine {
 }
 
 fn now_s() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    // 与 eBPF 事件时间戳一致使用 CLOCK_MONOTONIC，避免 NTP 校时导致滑动窗口错乱
+    crate::time::monotonic_secs()
 }

@@ -68,7 +68,7 @@ export function mount(el) {
       </section>
       <section class="card section-gap">
         <div class="card-head">
-          <div><div class="card-title">防护项目</div><div class="card-sub">按协议 + 端口将防御模块绑定为策略分组（当前仅控制面分组，≤ ${MAX_PROJECTS} 个）</div></div>
+          <div><div class="card-title">防护项目</div><div class="card-sub">按 协议 + 端口 + 目标 IP 匹配（PASS/DROP 数据面生效，DEFEND 复用全局防御，≤ ${MAX_PROJECTS} 个）</div></div>
           <div class="card-tools"><button class="btn btn-primary btn-sm" id="plAddProj">${icon('plus', 13)} 新增项目</button></div>
         </div>
         <div class="card-body"><div class="module-grid" id="plProjects"><div style="grid-column:1/-1">${skeleton(160)}</div></div></div>
@@ -280,8 +280,8 @@ export function mount(el) {
         <div class="field"><span class="field-label">动作</span>
           <select class="select" id="ppAction">${actions.map(([v, l]) => `<option value="${v}" ${p?.action === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       </div>
-      <div class="field section-gap"><span class="field-label">目标 IP / CIDR（每行一条，留空表示任意 IP）</span>
-        <textarea class="textarea" id="ppTargets" rows="3" placeholder="10.0.0.0/8">${esc((p?.target_ips || []).join('\n'))}</textarea></div>
+      <div class="field section-gap"><span class="field-label">目标 IP / CIDR（每行一条，留空表示任意 IP；IPv4 CIDR 下限 /24）</span>
+        <textarea class="textarea" id="ppTargets" rows="3" placeholder="10.0.0.1&#10;192.168.1.0/24">${esc((p?.target_ips || []).join('\n'))}</textarea></div>
       <div class="field section-gap"><span class="field-label">绑定防御模块</span>
         <div id="ppModules">${PROJECT_MODULES.map(m => `<label class="switch-row"><span class="field-label">${esc(m.name)}</span>
           <span class="switch"><input type="checkbox" value="${esc(m.id)}" ${p?.enabled_modules?.includes(m.id) ? 'checked' : ''}><span class="track"></span></span>
@@ -313,6 +313,8 @@ export function mount(el) {
     const targets = $('#ppTargets').value.split('\n').map(s => s.trim()).filter(Boolean);
     const bad = targets.find(t => !isValidCidr(t) && !t.includes(':'));
     if (bad) { toast(`目标 IP / CIDR 无效：${bad}`, 'info'); return; }
+    const badPrefix = targets.find(t => /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(t) && Number(t.split('/')[1]) < 24);
+    if (badPrefix) { toast(`IPv4 CIDR 下限 /24：${badPrefix}`, 'info'); return; }
     if (editIdx < 0 && projects.length >= MAX_PROJECTS) { toast(`项目数量已达上限 ${MAX_PROJECTS}`, 'err'); return; }
     const item = {
       name,

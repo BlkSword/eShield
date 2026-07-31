@@ -17,29 +17,6 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) 
             None => continue,
         };
 
-        // action == 0 表示空条目
-        if entry.action == 0 {
-            continue;
-        }
-
-        // protocol 匹配：0 表示任意
-        if entry.protocol != 0 && entry.protocol != protocol {
-            continue;
-        }
-
-        // 端口匹配：dport_low == 0 表示任意
-        let dport_low = u16::from_be(entry.dport_low);
-        let dport_high = u16::from_be(entry.dport_high);
-        if dport_low != 0 {
-            if dport_high != 0 {
-                if dport < dport_low || dport > dport_high {
-                    continue;
-                }
-            } else if dport != dport_low {
-                continue;
-            }
-        }
-
         let dport_low = u16::from_be(entry.dport_low);
         let dport_high = u16::from_be(entry.dport_high);
 

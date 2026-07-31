@@ -145,7 +145,6 @@ pub async fn run(
 
     let protected = Router::new()
         .route("/", get(index_handler))
-        .route("/legacy", get(legacy_handler))
         .route("/api/stats", get(stats_handler))
         .route("/api/metrics/series", get(metrics_series_handler))
         .route(
@@ -1259,11 +1258,13 @@ async fn attack_events_handler(
                 eshield_common::rules::SYN_FLOOD => "SYN Flood",
                 eshield_common::rules::L7_PATTERN => "L7 指纹",
                 eshield_common::rules::ADAPTIVE => "自适应",
+                eshield_common::rules::API_BLOCK => "手动封禁",
                 eshield_common::rules::PORT_ACL => "端口 ACL",
                 eshield_common::rules::UDP_FLOOD => "UDP Flood",
                 eshield_common::rules::ICMP_FLOOD => "ICMP Flood",
                 eshield_common::rules::GEOIP => "GeoIP",
                 eshield_common::rules::THREAT_INTEL => "威胁情报",
+                eshield_common::rules::PROJECT_POLICY => "防护项目",
                 _ => "未知",
             };
             serde_json::json!({
@@ -1300,7 +1301,6 @@ async fn attacker_series_handler(
     Json(serde_json::json!({ "ip": q.ip, "series": points }))
 }
 
-const LEGACY_DASHBOARD_HTML: &str = include_str!("dashboard.html");
 const INDEX_HTML: &str = include_str!("../web/index.html");
 
 /// 新版控制台（默认）：`eshield/web/` 下的模块化静态资源。
@@ -1308,13 +1308,6 @@ async fn index_handler(State(state): State<Arc<WebState>>) -> Html<String> {
     let config_json = serde_json::to_string(&*state.control.runtime.read().await)
         .unwrap_or_else(|_| "{}".to_string());
     Html(INDEX_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
-}
-
-/// 旧版单文件控制台，保留一个版本周期用于回退对比，随后移除。
-async fn legacy_handler(State(state): State<Arc<WebState>>) -> Html<String> {
-    let config_json = serde_json::to_string(&*state.control.runtime.read().await)
-        .unwrap_or_else(|_| "{}".to_string());
-    Html(LEGACY_DASHBOARD_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
 }
 
 /// 嵌入的新版控制台静态资源（CSS/JS 模块），保持单二进制、离线可用。

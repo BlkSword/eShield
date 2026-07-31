@@ -63,7 +63,6 @@ if grep -q "__CONFIG_JSON__" /tmp/eshield-resp 2>/dev/null; then :; fi
 code=$(curl -s -H "$AUTH" http://127.0.0.1:8720/)
 echo "$code" | grep -q "__CONFIG_JSON__" && bad "index 配置注入未完成（仍含占位符）" || ok "index 配置注入完成"
 echo "$code" | grep -q "static/js/main.js" && ok "index 引用 ES modules 入口" || bad "index 缺少 main.js"
-check "/legacy" 'data-theme="light"' "旧版控制台保留"
 check "/static/css/tokens.css" "--bg-base" "tokens.css"
 check "/static/css/base.css" ".sidebar" "base.css"
 check "/static/css/components.css" ".kpi-card" "components.css"

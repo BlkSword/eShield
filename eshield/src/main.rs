@@ -849,9 +849,11 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 每秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
+/// 每 5 秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
+/// 降频 5s（原 1s）：TRUST_MAP 最多 10 万条目，全量迭代代价高，
+/// 信誉分布统计不需要秒级精度，同时显著降低全局 Ebpf 锁占用。
 async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         interval.tick().await;
         let mut guard = ebpf.lock().await;
@@ -883,10 +885,6 @@ async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats.trust_neutral.store(neutral, Ordering::Relaxed);
         stats.trust_suspicious.store(suspicious, Ordering::Relaxed);
         stats.trust_malicious.store(malicious, Ordering::Relaxed);
-        stats.danger_level.store(
-            stats.danger_level.load(Ordering::Relaxed),
-            Ordering::Relaxed,
-        );
     }
 }
 
