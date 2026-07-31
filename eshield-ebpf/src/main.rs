@@ -23,11 +23,12 @@ use aya_ebpf::{
     programs::XdpContext,
 };
 use eshield_common::{
-    rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample, WhitelistKeyV4, WhitelistKeyV6,
+    project_action, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample,
+    ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
 };
 use maps::{
     CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, PACKET_SAMPLES,
-    TOP_ATTACKERS, WHITELIST_V4, WHITELIST_V6,
+    PROJECT_POLICY, TOP_ATTACKERS, WHITELIST_V4, WHITELIST_V6,
 };
 use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, ETH_HDR_LEN};
 
@@ -131,6 +132,12 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         return action;
     }
 
+    action = check_project_policy(&mut pc);
+    if action != NO_ACTION {
+        log_packet_sample(&pc, action);
+        return action;
+    }
+
     action = check_geoip_drop(&mut pc, runtime.geoip_enabled);
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
@@ -223,6 +230,86 @@ fn check_port_acl_drop(pc: &mut PacketCtx) -> u32 {
     }
 }
 
+/// 防护项目匹配（v0.4.6）：按 目的 IPv4 + 目的端口 + 协议 精确查表。
+/// - PASS：直接放行（跳过后续防御模块，语义与白名单一致，但优先级低于端口 ACL）
+/// - DROP：直接丢弃
+/// - DEFEND / NONE：无特殊动作，继续全局防御流程
+///
+/// 控制面将 target_ips CIDR 展开为精确 IP 写入 PROJECT_POLICY；
+/// 支持 any 端口（dport=0）/ any 协议（protocol=0）通配，查找时按精确度降级回退。
+#[inline(never)]
+fn check_project_policy(pc: &mut PacketCtx) -> u32 {
+    // 快速路径：未配置防护项目时直接跳过（CONFIG Array 查询比 Hash 查询便宜得多）
+    let runtime = match CONFIG.get(0) {
+        Some(c) => c,
+        None => return NO_ACTION,
+    };
+    if runtime.project_enabled == 0 {
+        return NO_ACTION;
+    }
+
+    let Some(eshield_common::IpFamily::Ipv4) = pc.dst.family() else {
+        return NO_ACTION;
+    };
+    let addr = pc.dst.ipv4().to_be();
+    let dport = pc.dport.to_be();
+
+    let exact = ProjectPolicyKey {
+        addr,
+        dport,
+        protocol: pc.protocol,
+        padding: 0,
+    };
+    let any_proto = ProjectPolicyKey {
+        addr,
+        dport,
+        protocol: 0,
+        padding: 0,
+    };
+    let any_port = ProjectPolicyKey {
+        addr,
+        dport: 0,
+        protocol: pc.protocol,
+        padding: 0,
+    };
+    let any_both = ProjectPolicyKey {
+        addr,
+        dport: 0,
+        protocol: 0,
+        padding: 0,
+    };
+
+    let policy = PROJECT_POLICY
+        .get(&exact)
+        .or_else(|| PROJECT_POLICY.get(&any_proto))
+        .or_else(|| PROJECT_POLICY.get(&any_port))
+        .or_else(|| PROJECT_POLICY.get(&any_both));
+    let policy = match policy {
+        Some(p) => p,
+        None => return NO_ACTION,
+    };
+
+    match policy.action {
+        project_action::PASS => {
+            pc.rule_id = rules::PROJECT_POLICY;
+            unsafe { with_stats(|s| s.total_passed += 1) };
+            trust::trust_pass(pc.src, pc.now_ns);
+            xdp_action::XDP_PASS
+        }
+        project_action::DROP => {
+            pc.rule_id = rules::PROJECT_POLICY;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            drop_packet(pc)
+        }
+        _ => NO_ACTION,
+    }
+}
+
 #[inline(never)]
 fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
     if geoip_enabled != 0 && is_geoip_blocked(pc.src) {
@@ -268,9 +355,12 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             trust::trust_pass(pc.src, pc.now_ns);
             return action;
         }
+        // IPv4 + SYN Proxy 开启时，SYN Flood 检测由 handle_syn 内部完成
+        //（计数一次），此处不再重复检测，避免同一 SYN 被计数两次。
+        return NO_ACTION;
     }
 
-    // SYN Flood 检测始终运行（与 SYN Cookie 代理互不排斥）。
+    // SYN Flood 检测（IPv6 或 SYN Proxy 关闭时）
     if let Some(tcp) = unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) } {
         let tcp_flags = unsafe { (*tcp).flags() };
         if syn_flood::handle_syn_flood(pc.ctx, pc.src, tcp_flags, pc.now_ns) {
@@ -475,10 +565,10 @@ fn read_ports(
     true
 }
 
-/// 按采样率将被丢弃的包元数据写入 PACKET_SAMPLES Ring Buffer。
-/// 仅由 DROP 路径调用；action 仅用于标记 0=drop，不直接作为 XDP action 返回。
+/// 按采样率将被丢弃/放行的包元数据写入 PACKET_SAMPLES Ring Buffer。
+/// 仅由主流程的提前返回路径调用（当前仅 DROP 与防护项目 PASS）；action 标记 0=drop / 1=pass。
 #[inline(never)]
-fn log_packet_sample(pc: &PacketCtx, _action: u32) {
+fn log_packet_sample(pc: &PacketCtx, action: u32) {
     let runtime = match CONFIG.get(0) {
         Some(c) => c,
         None => return,
@@ -519,7 +609,7 @@ fn log_packet_sample(pc: &PacketCtx, _action: u32) {
         (*event).protocol = pc.protocol;
         (*event).src_port = pc.sport;
         (*event).dst_port = pc.dport;
-        (*event).action = 0; // 0 = drop
+        (*event).action = if action == xdp_action::XDP_PASS { 1 } else { 0 };
         (*event).rule_id = pc.rule_id;
         (*event).packet_len = packet_len;
         (*event).payload_bytes = copy_len as u8;

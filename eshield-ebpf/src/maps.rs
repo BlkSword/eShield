@@ -4,7 +4,8 @@ use aya_ebpf::{
 };
 use eshield_common::{
     BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-    RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+    ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry,
+    WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -36,10 +37,6 @@ pub static GLOBAL_STATS: PerCpuArray<GlobalStats> = PerCpuArray::with_max_entrie
 /// 容量大于展示 Top-N（20）以留出 LRU 抖动余量。
 #[map]
 pub static TOP_ATTACKERS: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(256, 0);
-
-/// 规则命中计数
-#[map]
-pub static RULE_HITS: PerCpuArray<u64> = PerCpuArray::with_max_entries(16, 0);
 
 /// 事件 Ring Buffer
 #[map]
@@ -73,8 +70,14 @@ pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(16, 0);
 #[map]
 pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);
 
-/// SYN Proxy 连接表（LRU Hash）：已通过 Cookie 验证的连接元组
-/// value 为过期时间戳（ns）
+/// 防护项目策略表（LRU Hash）：按 目的 IPv4 + 目的端口 + 协议 精确匹配。
+/// 控制面将项目的 target_ips CIDR 展开为精确 IP 后写入；容量 8192 条。
+#[map]
+pub static PROJECT_POLICY: LruHashMap<ProjectPolicyKey, ProjectPolicy> =
+    LruHashMap::with_max_entries(8192, 0);
+
+/// SYN Cookie 挑战模式表（LRU Hash）：源 IP → 进入挑战模式的单调时钟时间戳。
+/// 触发 SYN Flood 阈值后该源的 SYN 被 Cookie 挑战；ACK 验证通过后删除条目恢复直通。
 #[map]
 pub static SYN_PROXY_CONN: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);
 

@@ -100,6 +100,7 @@ pub mod rules {
     pub const ICMP_FLOOD: u16 = 9;
     pub const GEOIP: u16 = 10;
     pub const THREAT_INTEL: u16 = 11;
+    pub const PROJECT_POLICY: u16 = 12;
 }
 
 /// 黑名单条目
@@ -224,7 +225,9 @@ pub struct RuntimeConfig {
     pub packet_log_enabled: u8,
     /// 包日志采样率：N 表示 1/N；0 等价于关闭
     pub packet_log_sample_rate: u16,
-    pub padding: [u8; 3],
+    /// 防护项目表非空标志：0=无项目（数据面快速跳过），1=有项目
+    pub project_enabled: u8,
+    pub padding: [u8; 2],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）
