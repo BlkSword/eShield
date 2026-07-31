@@ -182,7 +182,7 @@ wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
 rm -f /var/lib/eshield/rules.redb
 
-echo "=== Test 3: SYN flood detection should drop SYN flood source ==="
+echo "=== Test 3: SYN flood should enter challenge mode; legitimate retry succeeds ==="
 cat > "$mktemp_cfg" <<'TOML'
 interface = "veth-server"
 log_level = "info"
@@ -193,6 +193,8 @@ blacklist = []
 enabled = false
 threshold = 5
 tick_ms = 100
+decay_num = 7
+decay_den = 8
 
 [syn_proxy]
 enabled = true
@@ -209,23 +211,40 @@ if ! ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
     exit 1
 fi
 
-# 发送 20 个 SYN 包触发 SYN flood 阈值
+# 发送 20 个 SYN 包触发 SYN flood 阈值，源 IP 进入 Cookie 挑战模式
 ip netns exec eshield-client hping3 -S -p 80 -c 20 -i u10000 10.0.0.1 >/dev/null 2>&1 || true
 sleep 0.5
 
-# 触发后源 IP 应被加黑名单，后续 ping 被丢弃
-if ip netns exec eshield-client ping -c 3 -W 2 10.0.0.1 >/dev/null 2>&1; then
-    echo "FAIL: SYN flood did not drop subsequent traffic"
+# 挑战模式下的第一次连接：SYN 被 Cookie 挑战，数据无法送达服务器
+ip netns exec eshield-server nc -l 10.0.0.1 9002 > /tmp/sc_recv1 2>/dev/null &
+NC_PID=$!
+sleep 0.5
+echo -n "FIRST" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9002 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+# 重试连接：客户端 ACK 已通过 Cookie 验证并解除挑战，SYN 直通内核正常握手
+ip netns exec eshield-server nc -l 10.0.0.1 9003 > /tmp/sc_recv2 2>/dev/null &
+NC_PID=$!
+sleep 0.5
+echo -n "RETRY" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9003 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+if [ "$(cat /tmp/sc_recv1 2>/dev/null)" = "" ] && [ "$(cat /tmp/sc_recv2 2>/dev/null)" = "RETRY" ]; then
+    echo "PASS: SYN flood challenged, legitimate retry succeeded after cookie validation"
+else
+    echo "FAIL: SYN Cookie challenge behavior unexpected"
+    echo "first: '$(cat /tmp/sc_recv1 2>/dev/null)'"
+    echo "retry: '$(cat /tmp/sc_recv2 2>/dev/null)'"
     kill $ESHIELD_PID 2>/dev/null || true
     exit 1
-else
-    echo "PASS: SYN flood detected and traffic dropped"
 fi
 
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
-rm -f /var/lib/eshield/rules.redb
+rm -f /var/lib/eshield/rules.redb /tmp/sc_recv1 /tmp/sc_recv2
 
 echo "=== Test 4: L7 lightweight fingerprint scan should drop matching payload ==="
 cat > "$mktemp_cfg" <<'TOML'
@@ -522,6 +541,111 @@ wait $ESHIELD_PID 2>/dev/null || true
 kill $HTTP_PID 2>/dev/null || true
 wait $HTTP_PID 2>/dev/null || true
 rm -rf /tmp/ti-feed
+
+
+
+echo "=== Test 10: protection project DROP should block matching dst port ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[[protection_projects]]
+name = "drop-web"
+description = "drop tcp 8080 to server"
+protocol = "tcp"
+dport = "8080"
+target_ips = ["10.0.0.1/32"]
+action = "drop"
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 2
+
+# 8080 命中项目 DROP：数据无法送达
+ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/pp_recv_drop 2>/dev/null &
+NC_PID=$!
+sleep 0.5
+echo -n "HI" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8080 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+# 8081 未匹配项目：正常可达
+ip netns exec eshield-server nc -l 10.0.0.1 8081 > /tmp/pp_recv_ok 2>/dev/null &
+NC_PID=$!
+sleep 0.5
+echo -n "OK" | ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 8081 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+if [ "$(cat /tmp/pp_recv_drop 2>/dev/null)" = "" ] && [ "$(cat /tmp/pp_recv_ok 2>/dev/null)" = "OK" ]; then
+    echo "PASS: protection project DROP blocked 8080, 8081 unaffected"
+else
+    echo "FAIL: protection project behavior unexpected"
+    echo "drop: '$(cat /tmp/pp_recv_drop 2>/dev/null)'"
+    echo "ok: '$(cat /tmp/pp_recv_ok 2>/dev/null)'"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+rm -f /var/lib/eshield/rules.redb /tmp/pp_recv_drop /tmp/pp_recv_ok
+
+echo "=== Test 11: SYN Cookie disabled path keeps real handshake transparent ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = true
+
+[l7_scan]
+enabled = false
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 2
+
+# 高阈值（默认 200）下正常握手不应被挑战，保持透明
+ip netns exec eshield-server nc -l 10.0.0.1 9010 > /tmp/sc_base 2>/dev/null &
+NC_PID=$!
+sleep 0.5
+echo -n "BASELINE" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9010 || true
+sleep 0.5
+kill $NC_PID 2>/dev/null || true
+
+if [ "$(cat /tmp/sc_base 2>/dev/null)" = "BASELINE" ]; then
+    echo "PASS: normal handshake transparent under SYN Cookie proxy"
+else
+    echo "FAIL: normal handshake broken under SYN Cookie proxy"
+    echo "base: '$(cat /tmp/sc_base 2>/dev/null)'"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+rm -f /var/lib/eshield/rules.redb /tmp/sc_base
 
 
 
