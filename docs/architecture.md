@@ -23,25 +23,20 @@
 ┌─────────────────────────────────▼────────────────────────────┐
 │ 数据面 (Data Plane) — eBPF/XDP 内核态                         │
 │ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
-│ │ 包解析   │→│ 白名单   │→│ Challenge│→│ 端口/协议│         │
-│ │ IPv4/v6  │ │ 匹配     │ │ 临时白名单│ │ ACL      │         │
+│ │ 包解析   │→│ 白名单   │→│ 端口/协议│→│ 防护项目 │         │
+│ │ IPv4/v6  │ │ 匹配     │ │ ACL      │ │ PASS/DROP│         │
 │ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
 │            ↓                                                 │
 │ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
-│ │ GeoIP    │ │ 速率限制 │ │ SYN Proxy│ │ SYN Flood│         │
-│ │ CIDR 匹配│ │(滑窗计数)│ │(Cookie+ │ │ 检测     │         │
-│ │          │ │          │ │  MSS)    │ │          │         │
+│ │ GeoIP    │ │ SYN Proxy│ │ SYN Flood│ │ UDP/ICMP │         │
+│ │ CIDR 匹配│ │(Cookie+  │ │ 检测     │ │ Flood    │         │
+│ │          │ │  MSS)    │ │          │ │ 检测     │         │
 │ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
 │            ↓                                                 │
 │ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐         │
-│ │ UDP Flood│ │ ICMP Flood│ │ WAF      │ │ L7 轻量  │        │
-│ │ 检测     │ │ 检测     │ │ HTTP 规则│ │ 指纹扫描 │         │
-│ └──────────┘ └──────────┘ └──────────┘ └──────────┘         │
-│            ↓                                                 │
-│ ┌──────────┐ → 决策: PASS / DROP / TX                        │
-│ │ 黑名单   │                                                  │
-│ │ 检查     │                                                  │
-│ └──────────┘                                                  │
+│ │ L7 轻量  │ │ 速率限制 │ │ 黑名单   │ → 决策     │        │
+│ │ 指纹扫描 │ │(滑窗计数)│ │ 检查     │  PASS/DROP│         │
+│ └──────────┘ └──────────┘ └──────────┘ /TX        │         │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -49,13 +44,13 @@
 
 1. 包解析：有界读取 Eth / IP(v4/v6) / TCP / UDP / ICMP 头部
 2. 白名单：LPM Trie 查询 CIDR（IPv4 / IPv6）
-3. Challenge 临时白名单：已通过 JS 验证的源 IP 直接放行
-4. 端口/协议 ACL：按目的端口与协议匹配 allow/drop 规则
+3. 端口/协议 ACL：按目的端口与协议匹配 allow/drop 规则
+4. 防护项目：按 目的 IPv4 + 端口 + 协议 查 `PROJECT_POLICY`（PASS 放行 / DROP 丢弃 / DEFEND 继续全局防御）
 5. GeoIP/ASN：LPM Trie CIDR 匹配，支持自定义 CSV 或 MaxMind MMDB
-6. 速率限制：Per-CPU LRU Hash + 指数衰减滑动窗口
-7. SYN Proxy / SYN Flood / UDP Flood / ICMP Flood：按协议检测
-8. WAF：HTTP 首包 method / path / host / UA / body 前缀匹配
-9. L7 扫描：读取前 64 字节载荷模式匹配
+6. TCP：SYN Proxy（IPv4 SYN-ACK Cookie 挑战 + ACK 校验）→ SYN Flood 速率检测
+7. UDP Flood / ICMP Flood：按协议检测
+8. L7 扫描：读取 TCP 首包载荷前 8 字节模式匹配
+9. 速率限制：Per-CPU LRU Hash + 指数衰减滑动窗口
 10. 黑名单：LRU Hash 查询到期自动解封
 11. 默认放行：XDP_PASS
 
@@ -68,15 +63,15 @@
 | BLACKLIST | LRU Hash | IpKey | BlockEntry | 100,000 | 动态封禁 |
 | RATE_MAP | Per-CPU LRU Hash | IpKey | RateCounter | 100,000 | 速率计数 |
 | GLOBAL_STATS | Per-CPU Array | u32 | GlobalStats | 1 | 全局统计 |
-| RULE_HITS | Per-CPU Array | u32 | u64 | 16 | 规则命中 |
 | EVENTS | Ring Buffer | — | DropEvent | 4 MB | 事件上报 |
+| PACKET_SAMPLES | Ring Buffer | — | PacketSample | 16 MB | 采样包日志 |
+| TOP_ATTACKERS | LRU Hash | IpKey | u64 | 256 | 高频攻击源热榜 |
 | COOKIE_SECRETS | Array | u32 | CookieSecret | 1 | SYN Cookie 密钥 |
 | L7_PATTERNS | Array | u32 | L7Pattern | 16 | L7 特征 |
 | PORT_ACL | Array | u32 | PortAclEntry | 128 | 端口/协议 ACL |
-| WAF_RULES | Array | u32 | WafRule | 8 | HTTP WAF 规则 |
+| PROJECT_POLICY | LRU Hash | ProjectPolicyKey | ProjectPolicy | 8,192 | 防护项目策略（精确 IP 展开） |
 | GEOIP_BLOCKED_V4 | LPM Trie | GeoIpKeyV4 | u8 | 4,096 | GeoIP IPv4 拦截 CIDR |
 | GEOIP_BLOCKED_V6 | LPM Trie | GeoIpKeyV6 | u8 | 4,096 | GeoIP IPv6 拦截 CIDR |
-| CHALLENGE_ALLOWLIST | LRU Hash | IpKey | u64 | 100,000 | Challenge 临时白名单（过期时间 ns） |
 | CONFIG | Array | u32 | RuntimeConfig | 1 | 运行时配置 |
 
 ## 控制面数据流

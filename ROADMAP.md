@@ -21,6 +21,8 @@
 - [x] 自适应阈值引擎
 - [x] Ring Buffer 事件上报
 
+> **注意**：SYN Cookie 代理在 v0.4.2 曾被临时禁用（eBPF verifier 兼容问题），v0.4.6 以降级式挑战恢复（仅 SYN Flood 超限源受挑战，正常连接直通）。
+
 ### v0.2 — 实时控制与可观测性
 
 - [x] RESTful 控制 API（封禁/解封、白名单、配置补丁、热加载）
@@ -44,6 +46,8 @@
 - [x] Dashboard 扩展：WAF、GeoIP、威胁情报、Challenge 配置展示
 - [x] 规则持久化迁移到 redb，启动时跳过历史 `BLACKLIST` 避免覆盖配置文件
 - [x] 扩展集成测试：Test 4.5（WAF）、Test 4.6（Challenge）、Test 8（GeoIP）、Test 9（威胁情报）
+
+> **注意**：WAF 与 JS/302 Challenge 模块已在 v0.3.4 移除（项目重新聚焦网络层 DDoS 清洗，见 CHANGELOG 0.3.4）。
 
 ---
 
@@ -75,6 +79,20 @@
 - [x] 多 Hub URL 故障转移
 - [x] Bearer token 鉴权与 TLS 支持
 - [x] `tests/hub_node_test.sh` 端到端集成测试
+
+> **注意**：防护项目在 v0.4.2-v0.4.5 期间仅为控制面策略分组（数据面未逐包匹配）；v0.4.6 起 target_ips 展开为精确 IP 下发到 `PROJECT_POLICY` map，PASS/DROP 在数据面真实生效（DEFEND 复用全局防御模块）。
+
+## 已发布：v0.4.6 — 数据面功能修复与清理
+
+**目标**：恢复 SYN Cookie 代理、防护项目数据面落地、清理文档漂移与死代码。
+
+- [x] 恢复 SYN Cookie 代理（降级式挑战：SYN Flood 超限源进入 Cookie 挑战并被 XDP 层清洗，合法客户端验证后解除、后续连接直通；正常连接始终无感）
+- [x] 防护项目数据面落地：`PROJECT_POLICY` map + 数据面 PASS/DROP 匹配（target_ips CIDR 展开，支持 any 端口/协议）
+- [x] 移除 legacy 单文件控制台（`/legacy` 路由与 `dashboard.html`）
+- [x] 删除死代码（`RULE_HITS`、`SYN_PROXY_CONN` 未使用 map；`sync_trust_scores` 自存自读）
+- [x] port_acl 双重匹配去重；trust 同步降频 5s；adaptive 窗口改用单调时钟
+- [x] GeoIP LPM 容量预警（>=80% 告警）；防护项目网段下限 /24 校验
+- [x] 文档同步（ROADMAP WAF/SYN Cookie/防护项目状态、版本号注释）
 
 ## 下一阶段：v0.5.0 — L7 增强与规则进化
 

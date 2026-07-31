@@ -12,7 +12,7 @@
 - **控制面**：Rust + Tokio + axum，提供 REST API、中文 Web Dashboard、CLI、TUI、审计日志、持久化与告警。
 - **目标产物**：单二进制静态链接（musl），只需要 `eshield` 一个可执行文件即可运行。
 
-> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理目前仅支持 IPv4 TCP；L7 扫描仅检查 TCP 首包；防护项目当前只在控制面分组，未在 eBPF 数据面逐包匹配。
+> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理仅支持 IPv4 TCP（降级式挑战：仅 SYN Flood 源进入 Cookie 挑战，正常连接直通）；L7 扫描仅检查 TCP 首包；防护项目按精确 IP 匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配，DEFEND 动作复用全局防御模块）。
 
 ---
 
@@ -86,12 +86,12 @@
 
 Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，无前端构建链，经 `include_str!`/`include_bytes!` 嵌入二进制）：
 
-- `index.html`：应用骨架，`__CONFIG_JSON__` 注入运行时配置。
-- `css/`：`tokens.css`（design tokens，暗/亮双主题）、`base.css`（布局/侧边栏/头部）、`components.css`（卡片/表格/表单/抽屉/Toast 等）、`pages.css`（页面级）。
-- `js/`：`main.js`（入口：主题/侧边栏/SSE/快捷键/路由启动）、`api.js`（fetch 封装 + 认证）、`store.js`（状态总线）、`router.js`（hash 路由 + 页面生命周期）、`format.js`（格式化，唯一一份）、`icons.js`（SVG 图标）、`ui.js`（Toast/骨架屏/抽屉等）、`charts.js`（ECharts 主题感知助手）、`ipdrawer.js`（IP 情报抽屉，全站共享）。
-- `js/pages/`：九个页面模块（overview / attacks / packets / audit / policy / rules / security / cluster / settings），每个导出 `id`/`title`/`sub`/`mount(el)→unmount`。
+- `index.html`：应用骨架，`__CONFIG_JSON__` 注入运行时配置；含背景网格/光晕装饰层、XDP 状态栏、顶部 PPS/DPS 实时态势条。
+- `css/`：`tokens.css`（design tokens，暗/亮双主题；`--text-*`/`--bg-*`/`--accent-*` 等旧名称为 JS 引用保留的兼容别名）、`base.css`（外壳：侧边栏/头部态势条）、`components.css`（卡片/表格/表单/抽屉/Toast/KPI/雷达等）、`pages.css`（页面级布局）。
+- `js/`：`main.js`（入口：主题/侧边栏/SSE/快捷键/危险等级/头部 PPS/DPS 轮询/路由启动）、`api.js`（fetch 封装 + 认证）、`store.js`（状态总线）、`router.js`（hash 路由 + 页面生命周期）、`format.js`（格式化，唯一一份）、`icons.js`（SVG 图标）、`ui.js`（Toast/骨架屏/抽屉等）、`charts.js`（ECharts 主题感知助手）、`ipdrawer.js`（IP 情报抽屉，全站共享）。
+- `js/pages/`：九个页面模块（overview / attacks / packets / audit / policy / rules / security / cluster / settings），每个导出 `id`/`title`/`sub`/`mount(el)→unmount`；总览页含威胁态势雷达（按攻击源散列方位 + 命中数分布，动画连续需保持攻击源签名不变才重建 SVG）。
 - 新增/删除静态文件时，必须同步 `web.rs` 中的 `STATIC_ASSETS` 表。
-- 旧版单文件控制台 `eshield/src/dashboard.html` 保留在 `/legacy` 一个版本周期，随后删除。
+- 旧版单文件控制台 `eshield/src/dashboard.html` 已删除（v0.4.6）；若需对比历史实现可查看 `git log --all -- eshield/src/dashboard.html`。
 
 ### 3.2 `eshield-ebpf`（内核态数据面）
 
@@ -99,7 +99,7 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 
 主要模块：
 
-- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → GeoIP → TCP（SYN Proxy / SYN Flood）→ UDP Flood → ICMP Flood → L7 扫描 → 速率限制 → 黑名单 → 决策。
+- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 防护项目 → GeoIP → TCP（SYN Proxy / SYN Flood）→ UDP Flood → ICMP Flood → L7 扫描 → 速率限制 → 黑名单 → 决策。
 - `parser.rs`：有界读取 Ethernet / IPv4 / IPv6 / TCP / UDP / ICMP 头部。
 - `maps.rs`：BPF Maps 定义。
 - `blacklist.rs`：LRU Hash 黑名单查询。
@@ -271,7 +271,7 @@ sudo bash scripts/benchmark.sh
 - `[trust_score]`：IP 双向信誉引擎（v0.4.0）。
 - `[danger_signal]`：系统危险信号监测（v0.4.0）。
 - `[port_acl]`：端口/协议级 allow/drop 规则。
-- `[protection_projects]`：控制面策略分组。
+- `[protection_projects]`：防护项目分组（v0.4.6 起 PASS/DROP 数据面生效）。
 - `[hub]`：分布式 Hub 同步配置（v0.4.2）。
 - `[packet_log]`：采样包日志（v0.4.2）。
 
@@ -387,9 +387,9 @@ sync_rules_enabled = true
 ## 10. 已知约束与边界
 
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
-- **SYN Cookie 代理**：仅 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战。
+- **SYN Cookie 代理**：仅 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
 - **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
-- **防护项目**：当前是控制面策略分组，受 XDP verifier 512 字节组合栈限制，尚未在 eBPF 数据面按项目逐包匹配；全局防御模块仍生效。
+- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 动作复用全局防御模块。
 - **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
 - **eBPF 构建**：debug 构建因 `overflow-checks` 与未内联代码容易导致 verifier/bpf-linker 失败，因此工作空间默认 `opt-level = 3`；发布构建使用 `panic = abort`、`lto = true`、`strip = true`。
 

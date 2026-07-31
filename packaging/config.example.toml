@@ -64,7 +64,7 @@ decay_den = 8               # 指数衰减因子 7/8
 block_duration_s = 300      # 触发后封禁时长
 
 [syn_proxy]
-enabled = false             # SYN Flood 场景下启用 SYN Cookie 挑战
+enabled = false             # SYN Flood 源进入 Cookie 挑战（降级式：正常连接直通，合法客户端验证后解除）
 
 [l7_scan]
 enabled = false
@@ -130,6 +130,21 @@ enabled = false
 # protocol = "tcp"
 # dport = "23"
 # action = "drop"
+
+# 防护项目（v0.4.6 起 PASS/DROP 在数据面生效）
+# protocol:   tcp / udp / icmp / icmpv6 / any
+# dport:      端口号或 any
+# target_ips: 精确 IP 或 CIDR（IPv4 下限 /24，由控制面展开为精确 IP；IPv6 目标暂不匹配）
+# action:     pass（放行）/ drop（丢弃）/ defend（复用全局防御模块）
+# enabled_modules: 可绑定模块列表（syn_flood/udp_flood/icmp_flood/rate_limit/adaptive/l7_scan/geoip/tcp_reset/port_acl）
+# [[protection_projects]]
+# name = "web-tier"
+# description = "Web 层防护"
+# protocol = "tcp"
+# dport = "443"
+# target_ips = ["10.10.0.0/24"]
+# enabled_modules = ["syn_flood", "udp_flood", "rate_limit"]
+# action = "defend"
 
 # 采样包日志（v0.4.2，默认关闭）
 # [packet_log]

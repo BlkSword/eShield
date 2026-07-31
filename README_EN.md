@@ -60,7 +60,7 @@ Because eShield intercepts traffic at the earliest possible point, attackers mus
 
 - **Real bandwidth**: Every dropped packet consumes actual egress bandwidth from the attacker.
 - **Real source IPs**: Blacklists, GeoIP, threat intelligence, and the adaptive threshold engine all accumulate per source IP.
-- **Full protocol-stack interaction**: The SYN Cookie proxy forces every spoofed source to complete a full three-way handshake.
+- **Full protocol-stack interaction**: The SYN Cookie proxy challenges every spoofed source: SYN flood sources receive a SYN-ACK cookie they cannot answer, while legitimate clients pass cookie validation and are released.
 - **Continuous effort and compute**: The adaptive engine automatically escalates block duration for repeat offenders.
 
 In short, eShield tilts the offense/defense cost ratio in favor of the defender: a single eBPF map lookup on the defense side can neutralize a complete network packet, a real source address, and a protocol interaction on the attacker side.
@@ -77,7 +77,7 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | Per-IP rate limiting | Exponential-decay sliding-window rate limiting per source IP. |
 | UDP / ICMP flood protection | Per-IP rate suppression for UDP and ICMP/ICMPv6 floods. |
 | Protocol/port ACLs | Supports `tcp`/`udp`/`icmp`/`icmpv6`/`any`, ports, ranges, or `any`, with `allow`/`drop` actions. |
-| SYN Cookie proxy | SYN Cookie proxy for IPv4 TCP SYN flood mitigation; legitimate ACKs are allowed after validation. |
+| SYN Cookie proxy | Degraded SYN Cookie proxy for IPv4 TCP SYN flood mitigation: flood sources are challenged, legitimate ACKs validated and released. |
 | TCP RST on drop | Immediately reply RST for dropped TCP connections to prevent retransmissions. |
 | GeoIP / ASN filtering | Allow or block by country or ASN via custom CSV CIDR lists. |
 | Threat intel integration | Periodic synchronization of custom URL feeds to automatically block known malicious IPs. |
@@ -89,7 +89,9 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | Config hot reload | Reload configuration via `SIGHUP` or `systemctl reload` without restart. |
 | Auth / audit / persistence | Optional Bearer token, audit log, and dynamic rule persistence with redb. |
 | Observability | Prometheus `/metrics`, JSON stats, audit SSE, top attackers. |
-| Console rewrite (v0.4.5) | Native ES modules + modular CSS, dark/light themes, nine pages; legacy console kept at `/legacy` for one release cycle. |
+| Console rewrite (v0.4.5) | Native ES modules + modular CSS, dark/light themes, nine pages. |
+| SYN Cookie restored (v0.4.6) | Degraded SYN Cookie challenge restored: only SYN flood sources are challenged and cleaned, legitimate clients are released after cookie validation, normal connections pass through (temporarily disabled in v0.4.2 due to verifier issues). |
+| Data-plane projects (v0.4.6) | Protection project PASS/DROP take effect in the data plane: target_ips CIDRs are expanded to exact IPs (min /24), any port/protocol supported. |
 | TOP attacker trends (v0.4.5) | Top-5 attacker per-interval drop lines on the attack events page, time range linked with the overview trend. |
 
 > **About protection projects**: In the current version, protection projects are loaded, validated, persisted, and exposed via the Dashboard/API. Due to the XDP verifier's 512-byte combined stack limit, per-project packet matching in the eBPF data path is not yet enabled; global defense modules remain active.
@@ -217,7 +219,7 @@ Default path `/etc/eshield/config.toml`; a full example is available at [packagi
 | `[geoip]` | Country/ASN based CIDR allow/block |
 | `[threat_intel]` | Custom threat-intel feed synchronization |
 | `[port_acl]` | Protocol/port level allow/drop rules |
-| `[protection_projects]` | Control-plane policy grouping |
+| `[protection_projects]` | Protection projects (data-plane PASS/DROP effective since v0.4.6) |
 | `[hub]` | **v0.4.2** Distributed Hub synchronization config |
 
 ### Hot Reload
@@ -262,7 +264,7 @@ Nodes push high-confidence local blocks to the Hub and pull policies from peers 
 
 ### Web Dashboard
 
-After starting the service, open `http://<host>:8720/`. The Dashboard (rewritten in v0.4.5 as modular ES modules with dark/light themes; legacy console kept at `/legacy`) shows real-time packet statistics, defense-module hits, trend charts (15m/1h/6h/24h), top-5 attacker trend lines, top attackers, audit logs, and live control forms.
+After starting the service, open `http://<host>:8720/`. The Dashboard (rewritten in v0.4.5 as modular ES modules with dark/light themes) shows real-time packet statistics, defense-module hits, trend charts (15m/1h/6h/24h), top-5 attacker trend lines, top attackers, audit logs, and live control forms.
 
 ### Prometheus Metrics
 
@@ -366,7 +368,7 @@ See [docs/benchmark.md](docs/benchmark.md) for details.
 - **SYN Cookie proxy**: Currently IPv4 TCP only; all SYNs are challenged when enabled.
 - **L7 scan**: Inspect only the first TCP packet; TCP reassembly is not supported.
 - **Windows**: Cannot build or run directly; use a Linux environment.
-- **Protection projects**: Currently a control-plane policy grouping; per-packet enforcement in eBPF is not yet enabled.
+- **Protection projects**: Exact-match on destination IPv4 + port + protocol (target_ips CIDRs expanded by the control plane, min /24); IPv6 targets not matched yet; DEFEND reuses the global defense modules.
 
 ---
 

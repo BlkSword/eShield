@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased (0.4.6)
+
+### 修复
+
+- **SYN Cookie 代理恢复（降级式挑战）**：v0.4.2 因 eBPF verifier 兼容问题被临时禁用（`handle_syn`/`handle_ack` 空实现），现恢复为 Katran 式降级挑战——SYN Flood 超限源进入 Cookie 挑战模式（XDP_TX 回 SYN-ACK，伪造源无法通过验证，在 XDP 层被清洗），合法客户端响应 Cookie 后自动解除挑战、后续连接直通内核正常握手；未触发阈值的正常连接始终无感直通。「防护策略」页的 SYN Proxy 开关现在真实生效。
+- **防护项目数据面落地**：新增 `PROJECT_POLICY` map，target_ips 的 CIDR 由控制面展开为精确 IP（下限 /24，`eshield check` 阶段校验）后下发；PASS/DROP 在数据面真实生效（支持 any 端口/协议通配），DEFEND 复用全局防御模块；IPv6 目标暂不匹配（控制面跳过并记录日志）。
+- 移除旧版单文件控制台：`/legacy` 路由、`dashboard.html` 嵌入与 `tests/remote/console_verify.sh` 中对应检查。
+- 删除未使用的 eBPF Map（`RULE_HITS`、`SYN_PROXY_CONN`）；清理 `sync_trust_scores` 中自存自读的 `danger_level` 残留代码。
+- `port_acl.rs` 双重匹配去重（热路径少一次重复判断，统一由 `match_port_acl_entry` 判定）。
+
+### 改进
+
+- Trust Score 分布同步由每秒降频为每 5 秒（TRUST_MAP 最多 10 万条，降低全局 Ebpf 锁占用）。
+- 自适应引擎滑动窗口改用 `CLOCK_MONOTONIC`（原 `SystemTime`，避免 NTP 校时导致窗口错乱）。
+- GeoIP LPM Trie 容量预警：IPv4/IPv6 条目达到上限 80% 时输出告警日志。
+- 文档同步：ROADMAP 标注 WAF/Challenge 已于 v0.3.4 移除、SYN Cookie 与防护项目状态；修正 `config.rs` 中 Hub 配置注释版本号。
+
 ## 0.4.5 (2026-07-18)
 
 ### 新增

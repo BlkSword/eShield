@@ -95,10 +95,12 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | **时序持久化（v0.4.2）** | 分钟级 PPS/DPS/拦截趋势写入 redb，进程重启后自动加载，支持保留天数配置。 |
 | **包日志采样（v0.4.2）** | 仅对 DROP 包按 `sample_rate` 采样，控制台可按源 IP 过滤，辅助溯源取证。 |
 | **IP 详情页（v0.4.2）** | 点击任意攻击源 IP 进入详情页，查看统计、采样包、时序曲线与一键封禁。 |
-| **控制台重写（v0.4.5）** | 原生 ES modules + 模块化 CSS，暗/亮双主题，九个页面；旧版控制台保留在 `/legacy` 一个版本周期。 |
+| **控制台重写（v0.4.5）** | 原生 ES modules + 模块化 CSS，暗/亮双主题，九个页面。 |
 | **TOP 攻击源趋势（v0.4.5）** | 攻击事件页 TOP5 攻击源逐间隔丢包数多线图，时间范围与总览趋势联动。 |
+| **SYN Cookie 恢复（v0.4.6）** | 恢复 IPv4 TCP SYN Cookie 降级式挑战：仅 SYN Flood 源受挑战，伪造源被清洗，合法客户端响应 Cookie 后解除挑战，正常连接直通（v0.4.2 曾因 verifier 问题临时禁用）。 |
+| **防护项目数据面化（v0.4.6）** | 防护项目 PASS/DROP 在数据面真实生效：target_ips CIDR 展开为精确 IP 下发（下限 /24），支持 any 端口/协议。 |
 
-> **关于防护项目**：当前版本中，防护项目作为控制面策略分组被加载、校验、持久化并展示在 Dashboard/API 中；受 XDP verifier 组合栈 512 字节限制，暂不在 eBPF 数据面对每条连接按项目独立匹配。全局防御模块仍照常生效。
+> **关于防护项目**：target_ips 的 CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块；IPv6 目标暂不匹配。
 >
 > **关于 L7 防御**：当前 L7 模块为轻量 TCP 首包指纹扫描，可识别扫描/探测行为，但不具备 HTTP Flood / CC / 慢速攻击的应用层防御能力。
 
@@ -227,7 +229,7 @@ eshield reset-token
 | `[trust_score]` | **v0.4.0** IP 双向信誉引擎开关 |
 | `[danger_signal]` | **v0.4.0** 系统危险信号监测 |
 | `[port_acl]` | 端口/协议级 allow/drop 规则 |
-| `[protection_projects]` | 控制面策略分组 |
+| `[protection_projects]` | 防护项目（v0.4.6 起数据面 PASS/DROP 生效） |
 | `[hub]` | **v0.4.2** 分布式 Hub 同步配置 |
 | `timeseries_retention_days` | **v0.4.2** 时序指标 redb 保留天数 |
 | `[packet_log]` | **v0.4.2** DROP 包采样日志配置 |
@@ -389,7 +391,7 @@ sudo bash scripts/benchmark.sh
 - **SYN Cookie 代理**：当前仅支持 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战。
 - **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
 - **Windows**：无法直接编译或运行，请使用 Linux 环境。
-- **防护项目**：当前为控制面配置分组，尚未在 eBPF 数据面按项目逐包匹配。
+- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips CIDR 由控制面展开，下限 /24）；IPv6 目标暂不匹配；DEFEND 复用全局防御模块。
 
 ---
 

@@ -26,7 +26,6 @@ Authorization: Bearer <token>
 | `/api/auth/check` | GET | 登录状态检查 |
 | `/api/auth/reset-token` | POST | 重置访问令牌 |
 | `/` | GET | Web Dashboard（新版控制台，`eshield/web/` 模块化资源） |
-| `/legacy` | GET | 旧版单文件控制台（保留一个版本周期，v0.6.0 移除） |
 | `/static/*` | GET | 新版控制台静态资源（CSS/JS ES modules，`include_bytes!` 嵌入二进制） |
 | `/api/stats` | GET | 运行统计 |
 | `/api/attack-events` | GET | 攻击事件（DROP），`timestamp_ns` 为 wall-clock Unix 纳秒 |
@@ -41,7 +40,7 @@ Authorization: Bearer <token>
 | `/api/metrics/series` | GET | 时序指标 |
 | `/api/metrics/attacker-series` | GET | 单 IP 时序 |
 | `/api/port-acl` | GET, POST | 端口 ACL |
-| `/api/protection-projects` | GET, POST | 防护项目 |
+| `/api/protection-projects` | GET, POST | 防护项目（v0.4.6 起 PASS/DROP 在数据面生效；target_ips 支持 CIDR，IPv4 下限 /24） |
 | `/api/l7-patterns` | GET, POST | L7 指纹 |
 | `/api/geoip/reload` | POST | 重新加载 GeoIP CSV |
 | `/api/threat-intel/sync` | POST | 手动触发威胁情报同步 |
