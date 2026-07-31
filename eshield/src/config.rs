@@ -201,7 +201,7 @@ fn default_danger_anomaly_multiplier() -> f64 {
     2.0
 }
 
-/// Hub 分布式同步配置（v0.5.0）。
+/// Hub 分布式同步配置（v0.4.2）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct HubConfig {
     #[serde(default = "default_false")]
@@ -832,12 +832,25 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
             }
         }
         for (j, ip) in proj.target_ips.iter().enumerate() {
-            crate::ip::parse_ip_or_cidr(ip).with_context(|| {
+            // 纯 IP 直接合法；CIDR 支持 /24 及以上网段（数据面按精确 IP 匹配，
+            // 控制面展开，过宽网段会撑爆 PROJECT_POLICY map，故拒绝）
+            if crate::ip::parse_ip(ip).is_ok() {
+                continue;
+            }
+            let (key, prefix) = crate::ip::parse_cidr(ip).with_context(|| {
                 format!(
                     "protection_projects[{}].target_ips[{}]: invalid IP/CIDR",
                     i, j
                 )
             })?;
+            if key.family() == Some(eshield_common::IpFamily::Ipv4) && prefix < 24 {
+                anyhow::bail!(
+                    "protection_projects[{}].target_ips[{}]: CIDR /{} too broad (min /24, expanded to exact IPs)",
+                    i,
+                    j,
+                    prefix
+                );
+            }
         }
     }
     Ok(())

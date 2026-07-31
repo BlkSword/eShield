@@ -4,15 +4,16 @@ use aya::{
     Ebpf,
 };
 use eshield_common::{
-    rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey, L7Pattern, PortAclEntry,
-    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6, BLOCK_PERMANENT,
+    project_action, project_modules, rules, BlockEntry, GeoIpKeyV4, GeoIpKeyV6, IpFamily, IpKey,
+    L7Pattern, PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateLimitConfig, RuntimeConfig,
+    TrustEntry, WhitelistKeyV4, WhitelistKeyV6, BLOCK_PERMANENT,
 };
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::adaptive::AdaptiveEngine;
 use crate::audit::{AuditAction, Auditor};
@@ -76,6 +77,7 @@ pub struct RuntimeConfigSnapshot {
     pub hub_urls: Vec<String>,
     pub packet_log_enabled: bool,
     pub packet_log_sample_rate: u16,
+    pub protection_projects_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -493,7 +495,8 @@ impl ControlState {
                     danger_level: 0,
                     packet_log_enabled: u8::from(snapshot.packet_log_enabled),
                     packet_log_sample_rate: snapshot.packet_log_sample_rate,
-                    padding: [0; 3],
+                    project_enabled: u8::from(snapshot.protection_projects_enabled),
+                    padding: [0; 2],
                 },
                 0,
             )?;
@@ -587,6 +590,7 @@ impl ControlState {
         }
 
         self.runtime.write().await.protection_projects = projects.clone();
+        self.runtime.write().await.protection_projects_enabled = !projects.is_empty();
 
         if let Some(store) = &self.store {
             store.save_protection_projects(&projects).await?;
@@ -953,6 +957,7 @@ impl RuntimeConfigSnapshot {
             hub_urls: config.hub.urls.clone(),
             packet_log_enabled: config.packet_log.enabled,
             packet_log_sample_rate: config.packet_log.sample_rate,
+            protection_projects_enabled: !config.protection_projects.is_empty(),
         }
     }
 }
@@ -975,7 +980,8 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         danger_level: 0,
         packet_log_enabled: u8::from(config.packet_log.enabled),
         packet_log_sample_rate: config.packet_log.sample_rate,
-        padding: [0; 3],
+        project_enabled: u8::from(!config.protection_projects.is_empty()),
+        padding: [0; 2],
     };
     tracing::info!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
@@ -1080,17 +1086,146 @@ fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<(
 }
 
 fn init_protection_projects_map(
-    _ebpf: &mut Ebpf,
+    ebpf: &mut Ebpf,
     projects: &[ProtectionProject],
 ) -> anyhow::Result<()> {
-    // 当前 eBPF 栈空间有限，项目策略未在 eBPF 侧实时匹配；
-    // 配置仍由控制面持久化并展示在 Dashboard，后续可启用内核态下发。
+    const MAX_ENTRIES: u32 = 8192;
+
+    let mut map: LruHashMap<_, ProjectPolicyKey, ProjectPolicy> = ebpf
+        .map_mut("PROJECT_POLICY")
+        .context("PROJECT_POLICY map not found")?
+        .try_into()?;
+
+    // 全量清空旧条目后重建（项目数量小，重建比 diff 更简单可靠）
+    let stale: Vec<ProjectPolicyKey> = map.iter().flatten().map(|(k, _)| k).collect();
+    for key in stale {
+        let _ = map.remove(&key);
+    }
+
+    let mut total = 0u32;
+    for (i, proj) in projects.iter().enumerate() {
+        let protocol = match proj.protocol.to_lowercase().as_str() {
+            "any" => 0u8,
+            "tcp" => 6u8,
+            "udp" => 17u8,
+            "icmp" => 1u8,
+            "icmpv6" => 58u8,
+            _ => anyhow::bail!(
+                "protection_projects[{}]: invalid protocol '{}'",
+                i,
+                proj.protocol
+            ),
+        };
+        let dport: u16 = if proj.dport == "any" {
+            0
+        } else {
+            proj.dport
+                .parse()
+                .with_context(|| format!("protection_projects[{}]: invalid dport", i))?
+        };
+        let action = match proj.action.to_lowercase().as_str() {
+            "pass" => project_action::PASS,
+            "drop" => project_action::DROP,
+            "defend" => project_action::DEFEND,
+            _ => anyhow::bail!(
+                "protection_projects[{}]: invalid action '{}'",
+                i,
+                proj.action
+            ),
+        };
+
+        // enabled_modules → 位图；当前数据面仅使用 action，flags 保留供后续扩展
+        let mut flags: u16 = 0;
+        for m in &proj.enabled_modules {
+            let bit = match m.as_str() {
+                "syn_flood" => Some(project_modules::SYN_FLOOD),
+                "udp_flood" => Some(project_modules::UDP_FLOOD),
+                "icmp_flood" => Some(project_modules::ICMP_FLOOD),
+                "rate_limit" => Some(project_modules::RATE_LIMIT),
+                "adaptive" => Some(project_modules::ADAPTIVE),
+                "l7_scan" => Some(project_modules::L7_SCAN),
+                "geoip" => Some(project_modules::GEOIP),
+                "tcp_reset" => Some(project_modules::TCP_RESET),
+                "port_acl" => Some(project_modules::PORT_ACL),
+                _ => None,
+            };
+            if let Some(b) = bit {
+                flags |= b;
+            }
+        }
+
+        for ip in &proj.target_ips {
+            // 纯 IP 视为 /32（IPv6 为 /128），CIDR 按网段展开为精确 IP
+            let (key, prefix) = if let Ok(k) = crate::ip::parse_ip(ip) {
+                (k, 32u32)
+            } else {
+                crate::ip::parse_cidr(ip).with_context(|| {
+                    format!("protection_projects[{}]: invalid target '{}'", i, ip)
+                })?
+            };
+            if key.family() != Some(IpFamily::Ipv4) {
+                info!(
+                    "protection project '{}': IPv6 target {} skipped (data plane IPv4 only)",
+                    proj.name, ip
+                );
+                continue;
+            }
+            if prefix < 24 {
+                anyhow::bail!(
+                    "protection_projects[{}]: target '{}' prefix /{} too broad (min /24)",
+                    i,
+                    ip,
+                    prefix
+                );
+            }
+            let base = key.ipv4();
+            let host_bits = 32 - prefix;
+            let count = 1u32 << host_bits;
+            for h in 0..count {
+                let policy_key = ProjectPolicyKey {
+                    addr: (base | h).to_be(),
+                    dport: dport.to_be(),
+                    protocol,
+                    padding: 0,
+                };
+                map.insert(
+                    policy_key,
+                    ProjectPolicy {
+                        flags,
+                        action,
+                        padding: [0; 5],
+                    },
+                    0,
+                )?;
+                total += 1;
+                if total >= MAX_ENTRIES {
+                    anyhow::bail!(
+                        "protection projects exceed PROJECT_POLICY map capacity ({} entries)",
+                        MAX_ENTRIES
+                    );
+                }
+            }
+        }
+    }
+
     if !projects.is_empty() {
-        tracing::info!(
-            "protection_projects loaded (userspace-only): count={}",
-            projects.len()
+        info!(
+            "protection_projects loaded into data plane: projects={} entries={}",
+            projects.len(),
+            total
         );
     }
+
+    // 同步 project_enabled 标志到 CONFIG map，数据面据此快速跳过空表查询
+    let mut config_array: Array<_, RuntimeConfig> = ebpf
+        .map_mut("CONFIG")
+        .context("CONFIG map not found")?
+        .try_into()?;
+    if let Ok(mut cfg) = config_array.get(&0, 0) {
+        cfg.project_enabled = u8::from(total > 0);
+        let _ = config_array.set(0, cfg, 0);
+    }
+
     Ok(())
 }
 
@@ -1289,7 +1424,7 @@ async fn apply_geoip_map(
             .map_mut("GEOIP_BLOCKED_V4")
             .context("GEOIP_BLOCKED_V4 map not found")?
             .try_into()?;
-        for (addr, prefix) in new_v4 {
+        for &(addr, prefix) in &new_v4 {
             geoip_v4.insert(
                 &LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }),
                 1,
@@ -1302,9 +1437,25 @@ async fn apply_geoip_map(
             .map_mut("GEOIP_BLOCKED_V6")
             .context("GEOIP_BLOCKED_V6 map not found")?
             .try_into()?;
-        for (addr, prefix) in new_v6 {
+        for &(addr, prefix) in &new_v6 {
             geoip_v6.insert(&LpmKey::new(prefix, GeoIpKeyV6 { addr }), 1, 0)?;
         }
+    }
+
+    // 容量预警：LPM Trie 上限 4096 条/族，接近上限时提醒用户收敛网段粒度
+    let v4_used = new_v4.len();
+    let v6_used = new_v6.len();
+    if v4_used > 3276 {
+        warn!(
+            "GeoIP IPv4 LPM trie is {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
+            v4_used
+        );
+    }
+    if v6_used > 3276 {
+        warn!(
+            "GeoIP IPv6 LPM trie is {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
+            v6_used
+        );
     }
 
     Ok(())
