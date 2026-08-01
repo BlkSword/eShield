@@ -23,7 +23,7 @@ use aya_ebpf::{
     programs::XdpContext,
 };
 use eshield_common::{
-    project_action, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample,
+    project_action, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample, ProjectPolicy,
     ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
 };
 use maps::{
@@ -39,7 +39,6 @@ const NO_ACTION: u32 = u32::MAX;
 struct PacketCtx<'a> {
     ctx: &'a XdpContext,
     src: &'a IpKey,
-    dst: &'a IpKey,
     protocol: u8,
     sport: u16,
     dport: u16,
@@ -59,44 +58,52 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         Some(p) => p,
         None => return xdp_action::XDP_PASS,
     };
-    let eth_proto = unsafe { (*eth).proto };
 
     let mut src_key = IpKey::default();
-    let mut dst_key = IpKey::default();
-    let mut protocol: u8 = 0;
-    let mut ip_hdr_len: usize = 0;
-    let mut sport: u16 = 0;
-    let mut dport: u16 = 0;
+    // src 引用经裸指针建立（不参与借用检查），允许 parse 直接写 pc 字段与 src_key，
+    // 消除 protocol/sport/dport/ip_hdr_len 局部变量（BPF 512 字节栈限制）。
+    let src_ptr = &raw mut src_key;
+    let mut pc = PacketCtx {
+        ctx,
+        src: unsafe { &*src_ptr },
+        protocol: 0,
+        sport: 0,
+        dport: 0,
+        ip_hdr_len: 0,
+        tcp_reset_on_drop: 0,
+        now_ns: 0,
+        rule_id: rules::UNKNOWN,
+    };
 
-    if eth_proto == parser::ETH_P_IP {
-        if !parse_ipv4(
-            ctx,
-            &mut src_key,
-            &mut dst_key,
-            &mut protocol,
-            &mut ip_hdr_len,
-            &mut sport,
-            &mut dport,
-        ) {
-            return xdp_action::XDP_PASS;
+    match unsafe { (*eth).proto } {
+        p if p == parser::ETH_P_IP => {
+            if !parse_ipv4(
+                ctx,
+                &mut src_key,
+                &mut pc.protocol,
+                &mut pc.ip_hdr_len,
+                &mut pc.sport,
+                &mut pc.dport,
+            ) {
+                return xdp_action::XDP_PASS;
+            }
         }
-    } else if eth_proto == parser::ETH_P_IPV6 {
-        if !parse_ipv6(
-            ctx,
-            &mut src_key,
-            &mut dst_key,
-            &mut protocol,
-            &mut ip_hdr_len,
-            &mut sport,
-            &mut dport,
-        ) {
-            return xdp_action::XDP_PASS;
+        p if p == parser::ETH_P_IPV6 => {
+            if !parse_ipv6(
+                ctx,
+                &mut src_key,
+                &mut pc.protocol,
+                &mut pc.ip_hdr_len,
+                &mut pc.sport,
+                &mut pc.dport,
+            ) {
+                return xdp_action::XDP_PASS;
+            }
         }
-    } else {
-        return xdp_action::XDP_PASS;
+        _ => return xdp_action::XDP_PASS,
     }
 
-    let now_ns = unsafe { bpf_ktime_get_ns() };
+    pc.now_ns = unsafe { bpf_ktime_get_ns() };
 
     unsafe { with_stats(|s| s.total_packets += 1) };
 
@@ -104,23 +111,11 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         Some(c) => c,
         None => return xdp_action::XDP_PASS,
     };
-
-    let mut pc = PacketCtx {
-        ctx,
-        src: &src_key,
-        dst: &dst_key,
-        protocol,
-        sport,
-        dport,
-        ip_hdr_len,
-        tcp_reset_on_drop: runtime.tcp_reset_on_drop,
-        now_ns,
-        rule_id: rules::UNKNOWN,
-    };
+    pc.tcp_reset_on_drop = runtime.tcp_reset_on_drop;
 
     if is_whitelisted(&src_key) {
         unsafe { with_stats(|s| s.total_passed += 1) };
-        trust::trust_pass(&src_key, now_ns);
+        trust::trust_pass(&src_key, pc.now_ns);
         return xdp_action::XDP_PASS;
     }
 
@@ -144,7 +139,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         return action;
     }
 
-    if protocol == parser::IPPROTO_TCP {
+    if pc.protocol == parser::IPPROTO_TCP {
         action = check_tcp_drop(&mut pc, runtime.syn_proxy_enabled);
         if action != NO_ACTION {
             log_packet_sample(&pc, action);
@@ -185,7 +180,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
     }
 
     unsafe { with_stats(|s| s.total_passed += 1) };
-    trust::trust_pass(&src_key, now_ns);
+    trust::trust_pass(&src_key, pc.now_ns);
     xdp_action::XDP_PASS
 }
 
@@ -248,42 +243,53 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
         return NO_ACTION;
     }
 
-    let Some(eshield_common::IpFamily::Ipv4) = pc.dst.family() else {
+    // 防护项目仅匹配 IPv4 包（src family 与包 family 一致，可作判断依据）
+    let Some(eshield_common::IpFamily::Ipv4) = pc.src.family() else {
         return NO_ACTION;
     };
-    let addr = pc.dst.ipv4().to_be();
+    // 目的 IP 从包内重读（主帧不再维护 dst_key，省 32B BPF 栈）
+    let ip = match unsafe { parser::ptr_at::<IpHdr>(pc.ctx, ETH_HDR_LEN) } {
+        Some(p) => p,
+        None => return NO_ACTION,
+    };
+    let addr = unsafe { (*ip).daddr };
     let dport = pc.dport.to_be();
 
-    let exact = ProjectPolicyKey {
-        addr,
-        dport,
-        protocol: pc.protocol,
-        padding: 0,
-    };
-    let any_proto = ProjectPolicyKey {
-        addr,
-        dport,
-        protocol: 0,
-        padding: 0,
-    };
-    let any_port = ProjectPolicyKey {
-        addr,
-        dport: 0,
-        protocol: pc.protocol,
-        padding: 0,
-    };
-    let any_both = ProjectPolicyKey {
+    // 按精确度降级查找（exact → any 协议 → any 端口 → 双 any）。
+    // 复用单个栈槽构造 key，避免 4 个 key 同时占用栈空间（BPF 512 字节栈限制）。
+    let mut best = ProjectPolicyKey {
         addr,
         dport: 0,
         protocol: 0,
         padding: 0,
     };
-
-    let policy = PROJECT_POLICY
-        .get(&exact)
-        .or_else(|| PROJECT_POLICY.get(&any_proto))
-        .or_else(|| PROJECT_POLICY.get(&any_port))
-        .or_else(|| PROJECT_POLICY.get(&any_both));
+    let mut policy: Option<ProjectPolicy> = None;
+    let mut idx: u64 = 0;
+    while idx < 4 {
+        match idx {
+            0 => {
+                best.dport = dport;
+                best.protocol = pc.protocol;
+            }
+            1 => {
+                best.dport = dport;
+                best.protocol = 0;
+            }
+            2 => {
+                best.dport = 0;
+                best.protocol = pc.protocol;
+            }
+            _ => {
+                best.dport = 0;
+                best.protocol = 0;
+            }
+        }
+        policy = unsafe { PROJECT_POLICY.get(&best).copied() };
+        if policy.is_some() {
+            break;
+        }
+        idx += 1;
+    }
     let policy = match policy {
         Some(p) => p,
         None => return NO_ACTION,
@@ -334,7 +340,17 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             Some(p) => p,
             None => return xdp_action::XDP_PASS,
         };
-        let action = syn_cookie::handle_syn(pc.ctx, ip_ptr, pc.ip_hdr_len);
+        let tcp_ptr = match unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) }
+        {
+            Some(t) => t,
+            None => return NO_ACTION,
+        };
+        let pcr = syn_cookie::PacketCtxRef {
+            ctx: pc.ctx,
+            ip_hdr_len: pc.ip_hdr_len,
+            now_ns: pc.now_ns,
+        };
+        let action = syn_cookie::handle_syn(&pcr, ip_ptr, tcp_ptr);
         if action != NO_ACTION {
             pc.rule_id = rules::SYN_FLOOD;
             unsafe {
@@ -349,7 +365,7 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             }
             return action;
         }
-        let action = syn_cookie::handle_ack(pc.ctx, ip_ptr, pc.ip_hdr_len);
+        let action = syn_cookie::handle_ack(&pcr, ip_ptr, tcp_ptr);
         if action != NO_ACTION {
             unsafe { with_stats(|s| s.total_passed += 1) };
             trust::trust_pass(pc.src, pc.now_ns);
@@ -363,7 +379,7 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
     // SYN Flood 检测（IPv6 或 SYN Proxy 关闭时）
     if let Some(tcp) = unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) } {
         let tcp_flags = unsafe { (*tcp).flags() };
-        if syn_flood::handle_syn_flood(pc.ctx, pc.src, tcp_flags, pc.now_ns) {
+        if syn_flood::handle_syn_flood(pc.src, tcp_flags, pc.now_ns) {
             pc.rule_id = rules::SYN_FLOOD;
             unsafe {
                 with_stats(|s| {
@@ -477,7 +493,6 @@ fn inc_protocol_dropped(stats: &mut GlobalStats, protocol: u8) {
 fn parse_ipv4(
     ctx: &XdpContext,
     src: &mut IpKey,
-    dst: &mut IpKey,
     protocol: &mut u8,
     ip_hdr_len: &mut usize,
     sport: &mut u16,
@@ -493,9 +508,7 @@ fn parse_ipv4(
     }
 
     let saddr = unsafe { (*ip).saddr };
-    let daddr = unsafe { (*ip).daddr };
     *src = IpKey::from_ipv4(saddr.to_ne_bytes());
-    *dst = IpKey::from_ipv4(daddr.to_ne_bytes());
     *protocol = unsafe { (*ip).proto };
     *ip_hdr_len = len;
     if !read_ports(ctx, ETH_HDR_LEN + len, *protocol, sport, dport) {
@@ -507,7 +520,6 @@ fn parse_ipv4(
 fn parse_ipv6(
     ctx: &XdpContext,
     src: &mut IpKey,
-    dst: &mut IpKey,
     protocol: &mut u8,
     ip_hdr_len: &mut usize,
     sport: &mut u16,
@@ -518,7 +530,6 @@ fn parse_ipv6(
         None => return false,
     };
     *src = IpKey::from_ipv6(unsafe { (*ip).saddr });
-    *dst = IpKey::from_ipv6(unsafe { (*ip).daddr });
     *protocol = unsafe { (*ip).next_header };
     *ip_hdr_len = parser::IPV6_HDR_LEN;
     if !read_ports(
@@ -598,13 +609,37 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
     let event = entry.as_mut_ptr() as *mut PacketSample;
     unsafe {
         // 先清零 payload 区域，避免残留旧数据
-        for i in 0..64 {
-            (*event).payload_sample[i] = 0;
+        // while 循环：避免 for-range 迭代器生成 u32→u64 零扩展（<<=）指令，
+        // 该模式在部分内核的 verifier 上被拒绝（pointer arithmetic with <<=）。
+        let mut i: u64 = 0;
+        while i < 64 {
+            (*event).payload_sample[i as usize] = 0;
+            i += 1;
         }
 
         (*event).timestamp_ns = pc.now_ns;
         (*event).src_ip = pc.src.addr;
-        (*event).dst_ip = pc.dst.addr;
+        // 目的 IP 从包内重读（主帧不维护 dst_key）
+        let dst_ip = match pc.src.family() {
+            Some(eshield_common::IpFamily::Ipv4) => {
+                match unsafe { parser::ptr_at::<IpHdr>(pc.ctx, ETH_HDR_LEN) } {
+                    Some(ip) => {
+                        let mut a = [0u8; 16];
+                        a[12..16].copy_from_slice(&(*ip).daddr.to_ne_bytes());
+                        a
+                    }
+                    None => [0u8; 16],
+                }
+            }
+            Some(eshield_common::IpFamily::Ipv6) => {
+                match unsafe { parser::ptr_at::<Ipv6Hdr>(pc.ctx, ETH_HDR_LEN) } {
+                    Some(ip) => (*ip).daddr,
+                    None => [0u8; 16],
+                }
+            }
+            None => [0u8; 16],
+        };
+        (*event).dst_ip = dst_ip;
         (*event).family = pc.src.family;
         (*event).protocol = pc.protocol;
         (*event).src_port = pc.sport;
@@ -617,8 +652,10 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         // 在 verifier 可见的边界检查之后按 copy_len 复制
         if data + 64 <= data_end {
             let src_ptr = data as *const u8;
-            for i in 0..copy_len {
-                (*event).payload_sample[i as usize] = *src_ptr.add(i as usize);
+            let mut j: u64 = 0;
+            while j < copy_len as u64 {
+                (*event).payload_sample[j as usize] = *src_ptr.add(j as usize);
+                j += 1;
             }
         }
     }
@@ -663,6 +700,8 @@ fn is_geoip_blocked(src: &IpKey) -> bool {
     }
 }
 
+/// 独立栈帧：避免 RingBuf 操作局部与 drop_packet 叠加（BPF 512 字节栈限制）。
+#[inline(never)]
 fn emit_drop_event(pc: &PacketCtx) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
         let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;

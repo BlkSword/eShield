@@ -4,6 +4,9 @@ use crate::rate_counter::{update_rate_counter, RateUpdate};
 use eshield_common::{rules, IpKey};
 
 /// 检查并更新 src 的速率计数器；若超限则加入黑名单并返回 true。
+/// 独立栈帧（BPF 512 字节组合栈限制）。
+#[inline(never)]
+
 pub fn check_rate_limit(src: &IpKey, now_ns: u64) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => c,

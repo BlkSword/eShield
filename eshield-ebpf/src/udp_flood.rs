@@ -6,6 +6,9 @@ use crate::rate_counter::{update_rate_counter, RateUpdate};
 use eshield_common::{rules, IpKey};
 
 /// 检测并处理 UDP Flood：对单 IP 的 UDP 包做速率限制，超限即 DROP 并加黑名单。
+/// 独立栈帧（BPF 512 字节组合栈限制）。
+#[inline(never)]
+
 pub fn handle_udp_flood(_ctx: &XdpContext, src: &IpKey, now_ns: u64) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => c,

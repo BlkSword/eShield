@@ -178,6 +178,7 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
 }
 
 /// Compute one's-complement sum of a packet region using the kernel helper.
+/// 保持内联：独立帧会把 ctx 变为入参，触发 LLVM 参数提升 + verifier 指针移位拒绝。
 #[inline(always)]
 fn csum(ctx: &XdpContext, offset: usize, len: usize, seed: u32) -> i64 {
     let start = ctx.data();

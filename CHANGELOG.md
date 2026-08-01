@@ -5,6 +5,17 @@
 ### 修复
 
 - **SYN Cookie 代理恢复（降级式挑战）**：v0.4.2 因 eBPF verifier 兼容问题被临时禁用（`handle_syn`/`handle_ack` 空实现），现恢复为 Katran 式降级挑战——SYN Flood 超限源进入 Cookie 挑战模式（XDP_TX 回 SYN-ACK，伪造源无法通过验证，在 XDP 层被清洗），合法客户端响应 Cookie 后自动解除挑战、后续连接直通内核正常握手；未触发阈值的正常连接始终无感直通。「防护策略」页的 SYN Proxy 开关现在真实生效。
+- **eBPF verifier 兼容性修复（5 类问题，Ubuntu 6.8 kernel 实测验证）**：
+  - 组合栈超限（544 > 512）：主帧瘦身（删除 dst_key，parse 直接写 pc 字段，省 ~72B）、syn cookie 链帧分离与内联优化（is_challenged 内联速率检测，复用 src_key 栈槽）
+  - `pointer arithmetic with <<=`：深层函数不再接收 ctx 入参（LLVM 参数提升把 ctx 展开为 data/data_end 指针，callee prologue 对入参指针做 u32 零扩展被 verifier 拒绝）；ctx 改从 pc 内存读取（verifier 栈追踪保持类型）
+  - 标量内存访问（pc.data 丢失 PTR_TO_PACKET 类型）：回退为 pc.ctx + ptr_at 模式
+  - for-range 循环的 u32 零扩展指令：全部改为 u64 while 循环（port_acl/l7_scan/log_packet_sample）
+  - MSS option 写入越界 1 字节：边界证明改用 ptr_at_mut 返回值传播（防 LLVM 删除存在性检查）
+- 所有 eBPF 循环变量统一为 u64（避免 u32→u64 零扩展指令被 verifier 拒绝）
+
+### 改进
+
+- Trust Score 分布同步由每秒降频为每 5 秒（TRUST_MAP 最多 10 万条，降低全局 Ebpf 锁占用）。
 - **防护项目数据面落地**：新增 `PROJECT_POLICY` map，target_ips 的 CIDR 由控制面展开为精确 IP（下限 /24，`eshield check` 阶段校验）后下发；PASS/DROP 在数据面真实生效（支持 any 端口/协议通配），DEFEND 复用全局防御模块；IPv6 目标暂不匹配（控制面跳过并记录日志）。
 - 移除旧版单文件控制台：`/legacy` 路由、`dashboard.html` 嵌入与 `tests/remote/console_verify.sh` 中对应检查。
 - 删除未使用的 eBPF Map（`RULE_HITS`、`SYN_PROXY_CONN`）；清理 `sync_trust_scores` 中自存自读的 `danger_level` 残留代码。

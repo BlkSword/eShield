@@ -15,7 +15,10 @@ pub struct RateUpdate {
 /// 更新 `RATE_MAP` 中 src 的指数衰减速率计数器，并把结果写入 `out`。
 /// 返回 `true` 表示成功更新；`tick_ns` 为 0 或无法读取配置时返回 `false`。
 ///
-/// `out.threshold` 会结合 Trust Score 与 Danger Level 动态调制。
+/// out.threshold 会结合 Trust Score 与 Danger Level 动态调制。
+/// 独立栈帧（BPF 512 字节组合栈限制，防止内联进调用方导致帧叠加）。
+#[inline(never)]
+
 pub fn update_rate_counter(src: &IpKey, now_ns: u64, out: &mut RateUpdate) -> bool {
     let cfg = match RATE_LIMIT_CFG.get(0) {
         Some(c) => c,

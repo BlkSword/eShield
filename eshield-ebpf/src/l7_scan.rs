@@ -45,9 +45,9 @@ pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8, dpor
     // SAFETY：上面的边界检查保证了 8 字节可读。
     let chunk = unsafe { *payload };
 
-    let mut i: u32 = 0;
-    while i < MAX_PATTERNS {
-        let pat = match L7_PATTERNS.get(i) {
+    let mut i: u64 = 0;
+    while i < MAX_PATTERNS as u64 {
+        let pat = match L7_PATTERNS.get(i as u32) {
             Some(p) => p,
             None => {
                 i += 1;
