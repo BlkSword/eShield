@@ -68,18 +68,20 @@ export function trustFromScore(score) {
   return { label: '可信', cls: 'trust-good' };
 }
 
-/** 规则 ID → 名称/标签样式（与后端 rules 常量一致） */
+/** 规则 ID → 名称/标签样式（与 eshield-common rules 常量一致） */
 export const RULE_MAP = {
   1: { name: '黑名单', tag: 'BLOCK', cls: 'tag-block' },
   2: { name: '速率限制', tag: 'LIMIT', cls: 'tag-limit' },
   3: { name: 'SYN Flood', tag: 'DROP', cls: 'tag-drop' },
   4: { name: 'L7 指纹', tag: 'DROP', cls: 'tag-drop' },
   5: { name: '自适应', tag: 'BLOCK', cls: 'tag-block' },
-  6: { name: '端口 ACL', tag: 'DROP', cls: 'tag-drop' },
-  7: { name: 'UDP Flood', tag: 'DROP', cls: 'tag-drop' },
-  8: { name: 'ICMP Flood', tag: 'DROP', cls: 'tag-drop' },
-  9: { name: 'GeoIP', tag: 'GEO', cls: 'tag-geo' },
-  10: { name: '威胁情报', tag: 'BLOCK', cls: 'tag-block' },
+  6: { name: 'API 封禁', tag: 'BLOCK', cls: 'tag-block' },
+  7: { name: '端口 ACL', tag: 'DROP', cls: 'tag-drop' },
+  8: { name: 'UDP Flood', tag: 'DROP', cls: 'tag-drop' },
+  9: { name: 'ICMP Flood', tag: 'DROP', cls: 'tag-drop' },
+  10: { name: 'GeoIP', tag: 'GEO', cls: 'tag-geo' },
+  11: { name: '威胁情报', tag: 'BLOCK', cls: 'tag-block' },
+  12: { name: '防护项目', tag: 'DROP', cls: 'tag-drop' },
 };
 export const ruleInfo = id => RULE_MAP[id] || { name: `规则 ${id}`, tag: 'DROP', cls: 'tag-drop' };
 
