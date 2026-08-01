@@ -10,11 +10,13 @@ use eshield_common::{rules, DropEvent, IpKey};
 /// - `action == 2 (drop)` 且匹配时立即 DROP 并返回 true。
 /// - `action == 1 (allow)` 且匹配时立即放行并返回 false，后续规则不再评估。
 /// - 无匹配规则时返回 false，交由后续全局模块处理。
-pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16) -> bool {
+///
+/// `count` 为控制面同步的实际规则条数，空表时跳过整个循环（性能优化）。
+pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16, count: u8) -> bool {
     // while 循环：避免 for-range 迭代器生成 u32→u64 零扩展（<<=）指令，
     // 该模式在部分内核的 verifier 上被拒绝（pointer arithmetic with <<=）。
     let mut i: u64 = 0;
-    while i < 128 {
+    while i < count as u64 {
         let entry = match PORT_ACL.get(i as u32) {
             Some(e) => e,
             None => {

@@ -98,9 +98,11 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | **控制台重写（v0.4.5）** | 原生 ES modules + 模块化 CSS，暗/亮双主题，九个页面。 |
 | **TOP 攻击源趋势（v0.4.5）** | 攻击事件页 TOP5 攻击源逐间隔丢包数多线图，时间范围与总览趋势联动。 |
 | **SYN Cookie 恢复（v0.4.6）** | 恢复 IPv4 TCP SYN Cookie 降级式挑战：仅 SYN Flood 源受挑战，伪造源被清洗，合法客户端响应 Cookie 后解除挑战，正常连接直通（v0.4.2 曾因 verifier 问题临时禁用）。 |
-| **防护项目数据面化（v0.4.6）** | 防护项目 PASS/DROP 在数据面真实生效：target_ips CIDR 展开为精确 IP 下发（下限 /24），支持 any 端口/协议。 |
+| **防护项目数据面化（v0.4.6）** | 防护项目 PASS/DROP 在数据面真实生效：target_ips CIDR 展开为精确 IP 下发（下限 /24），支持 any 端口/协议；DEFEND 项目按 `enabled_modules` 位图在数据面过滤全局防御模块。 |
+| **按目的端口限速（v0.4.6）** | `[port_rate_limit]` 按 协议+目的端口 维度固定窗口限速，防换源 IP 绕过 per-IP 限速；超限仅 DROP 不加黑名单。 |
+| **空表快速跳过（v0.4.6）** | PORT_ACL / L7_PATTERNS 空表时数据面跳过整段循环查询，热路径瘦身。 |
 
-> **关于防护项目**：target_ips 的 CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块；IPv6 目标暂不匹配。
+> **关于防护项目**：target_ips 的 CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块并按 `enabled_modules` 过滤（未配置模块视为全开）；IPv6 目标暂不匹配。
 >
 > **关于 L7 防御**：当前 L7 模块为轻量 TCP 首包指纹扫描，可识别扫描/探测行为，但不具备 HTTP Flood / CC / 慢速攻击的应用层防御能力。
 
@@ -220,6 +222,7 @@ eshield reset-token
 | `interface` / `web_bind` | 挂载 XDP 的网卡与 Web/API 监听地址 |
 | `whitelist` / `blacklist` | 启动时加载的静态 CIDR 白名单与永久黑名单 |
 | `[rate_limit]` | per-IP 速率限制与触封时长 |
+| `[port_rate_limit]` | **v0.4.6** 按目的端口（协议+端口）固定窗口限速，防换源 IP 绕过 |
 | `[syn_proxy]` | IPv4 SYN Cookie 代理开关 |
 | `[udp_flood]` / `[icmp_flood]` | 无连接 Flood 防护开关 |
 | `[l7_scan]` | TCP 首包指纹匹配 |

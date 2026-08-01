@@ -4,13 +4,20 @@ use crate::maps::{CONFIG, EVENTS, L7_PATTERNS};
 use crate::parser::{ptr_at, TcpHdr, ETH_HDR_LEN};
 use eshield_common::{rules, DropEvent, IpKey};
 
-const MAX_PATTERNS: u32 = 16;
 const SIGNATURE_BYTES: usize = 8;
 
 /// 读取 TCP 载荷前 8 字节进行轻量指纹匹配。
 /// 返回 true 表示命中并应 DROP。
+/// `pattern_count` 为控制面同步的实际模式条数，空表时跳过整个循环（性能优化）。
 #[inline(always)]
-pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8, dport: u16) -> bool {
+pub fn scan(
+    ctx: &XdpContext,
+    src: &IpKey,
+    ip_hdr_len: usize,
+    protocol: u8,
+    dport: u16,
+    pattern_count: u8,
+) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => *c,
         None => return false,
@@ -46,7 +53,7 @@ pub fn scan(ctx: &XdpContext, src: &IpKey, ip_hdr_len: usize, protocol: u8, dpor
     let chunk = unsafe { *payload };
 
     let mut i: u64 = 0;
-    while i < MAX_PATTERNS as u64 {
+    while i < pattern_count as u64 {
         let pat = match L7_PATTERNS.get(i as u32) {
             Some(p) => p,
             None => {

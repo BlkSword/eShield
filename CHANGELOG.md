@@ -26,6 +26,10 @@
 - Trust Score 分布同步由每秒降频为每 5 秒（TRUST_MAP 最多 10 万条，降低全局 Ebpf 锁占用）。
 - 自适应引擎滑动窗口改用 `CLOCK_MONOTONIC`（原 `SystemTime`，避免 NTP 校时导致窗口错乱）。
 - GeoIP LPM Trie 容量预警：IPv4/IPv6 条目达到上限 80% 时输出告警日志。
+- **按目的端口限速（`[port_rate_limit]`）**：按 协议+目的端口 维度限速，防换源 IP 绕过 per-IP 限速；计数为固定滑动窗口（每 tick 重置，避免指数衰减在包间隔 < tick 时失效误伤低速率流量）；超限仅 DROP 不加黑名单；默认关闭。
+- **防护项目 `enabled_modules` 数据面生效**：DEFEND 项目命中后按模块位图过滤全局防御（SYN_FLOOD / UDP_FLOOD / ICMP_FLOOD / RATE_LIMIT / L7_SCAN / GEOIP）；未配置模块视为全开（与旧版本行为一致）。
+- **空表快速跳过**：`RuntimeConfig` 增加 `port_acl_count` / `l7_pattern_count`，空表时数据面跳过 PORT_ACL 128 次与 L7_PATTERNS 16 次循环查询，热路径瘦身。
+- 修复 `config.example.toml` 结构错误：`whitelist`/`blacklist` 误置于 `[audit]` 表之后被 TOML 归入 `audit.whitelist`，导致示例配置无法解析。
 - 文档同步：ROADMAP 标注 WAF/Challenge 已于 v0.3.4 移除、SYN Cookie 与防护项目状态；修正 `config.rs` 中 Hub 配置注释版本号。
 
 ## 0.4.5 (2026-07-18)

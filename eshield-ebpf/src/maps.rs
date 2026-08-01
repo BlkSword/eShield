@@ -4,8 +4,8 @@ use aya_ebpf::{
 };
 use eshield_common::{
     BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-    ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry,
-    WhitelistKeyV4, WhitelistKeyV6,
+    PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig,
+    TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -57,6 +57,17 @@ pub static RATE_LIMIT_CFG: Array<RateLimitConfig> = Array::with_max_entries(1, 0
 /// Per-CPU Per-IP 速率计数器（LRU Hash）：支持 IPv4 / IPv6
 #[map]
 pub static RATE_MAP: LruHashMap<IpKey, RateCounter> = LruHashMap::with_max_entries(100000, 0);
+
+/// 按目的端口限速参数（复用 RateLimitConfig 结构，block_duration_s 不使用）
+#[map]
+pub static PORT_RATE_LIMIT_CFG: Array<RateLimitConfig> = Array::with_max_entries(1, 0);
+
+/// 按目的端口限速计数器（LRU Hash）：key = 协议 + 目的端口。
+/// 防换源 IP 绕过：源 IP 随机化时 per-IP 限速失效，端口维度仍累计。
+/// 攻击通常打同一端口，条目数很少；容量 4096 足够多端口并发攻击。
+#[map]
+pub static PORT_RATE_MAP: LruHashMap<PortRateKey, RateCounter> =
+    LruHashMap::with_max_entries(4096, 0);
 
 /// SYN Cookie 密钥
 #[map]

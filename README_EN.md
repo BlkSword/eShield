@@ -75,6 +75,7 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | CIDR whitelist | LPM-Trie based whitelist supporting IPv4/IPv6 CIDRs. |
 | Dynamic blacklist | LRU hash for dynamic blacklisting with automatic expiry. |
 | Per-IP rate limiting | Exponential-decay sliding-window rate limiting per source IP. |
+| Per-port rate limiting (v0.4.6) | Fixed sliding-window rate limiting by protocol + destination port via `[port_rate_limit]`; blocks source-spoofing bypass of per-IP limits; drops without blacklisting. |
 | UDP / ICMP flood protection | Per-IP rate suppression for UDP and ICMP/ICMPv6 floods. |
 | Protocol/port ACLs | Supports `tcp`/`udp`/`icmp`/`icmpv6`/`any`, ports, ranges, or `any`, with `allow`/`drop` actions. |
 | SYN Cookie proxy | Degraded SYN Cookie proxy for IPv4 TCP SYN flood mitigation: flood sources are challenged, legitimate ACKs validated and released. |
@@ -84,7 +85,7 @@ In short, eShield tilts the offense/defense cost ratio in favor of the defender:
 | Lightweight L7 fingerprint scan | Inspect the first bytes of TCP payload and drop on pattern match. |
 | Adaptive threshold engine | Escalates repeat offenders to longer block durations automatically. |
 | Distributed Hub (v0.4.2) | Aggregate and share blacklists/trust scores/rules across nodes via `eshield-hub`; nodes degrade gracefully when Hub is unreachable. |
-| Protection projects | Group policies by protocol + port + target IP; persisted in the control plane and managed via Dashboard/API. |
+| Protection projects | Group policies by protocol + port + target IP; persisted in the control plane and managed via Dashboard/API. Since v0.4.6, PASS/DROP and the DEFEND `enabled_modules` mask take effect in the data plane. |
 | Runtime control | REST API + Web Dashboard + CLI + TUI for real-time toggles and tuning. |
 | Config hot reload | Reload configuration via `SIGHUP` or `systemctl reload` without restart. |
 | Auth / audit / persistence | Optional Bearer token, audit log, and dynamic rule persistence with redb. |
@@ -212,6 +213,7 @@ Default path `/etc/eshield/config.toml`; a full example is available at [packagi
 | `interface` / `web_bind` | NIC for XDP attachment and Web/API bind address |
 | `whitelist` / `blacklist` | Static CIDR whitelist and permanent blacklist loaded at startup |
 | `[rate_limit]` | Per-IP rate limiting and block duration |
+| `[port_rate_limit]` | Per-port (protocol + dst port) fixed-window rate limiting; default disabled |
 | `[syn_proxy]` | IPv4 SYN Cookie proxy toggle |
 | `[udp_flood]` / `[icmp_flood]` | Connectionless flood protection toggles |
 | `[l7_scan]` | TCP first-packet fingerprint matching |

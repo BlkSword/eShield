@@ -64,6 +64,7 @@ pub struct RuntimeConfigSnapshot {
     pub trust_enabled: bool,
     pub danger_level: u8,
     pub rate_limit: RateLimitParams,
+    pub port_rate_limit: RateLimitParams,
     pub adaptive: crate::config::AdaptiveConfig,
     pub port_acl: Vec<PortAclItem>,
     pub protection_projects: Vec<ProtectionProject>,
@@ -102,6 +103,7 @@ pub struct RuntimeConfigPatch {
     pub tcp_reset_on_drop: Option<bool>,
     pub trust_enabled: Option<bool>,
     pub rate_limit: Option<RateLimitParams>,
+    pub port_rate_limit: Option<RateLimitParams>,
     pub adaptive: Option<crate::config::AdaptiveConfig>,
 }
 
@@ -134,6 +136,7 @@ impl ControlState {
             let mut guard = state.ebpf.lock().await;
             init_config_map(&mut guard, config)?;
             init_rate_limit_map(&mut guard, config)?;
+            init_port_rate_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
             init_port_acl_map(&mut guard, &config.port_acl)?;
             init_protection_projects_map(&mut guard, &config.protection_projects)?;
@@ -158,6 +161,7 @@ impl ControlState {
 
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
+        init_port_rate_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
         init_port_acl_map(&mut guard, &config.port_acl)?;
         init_protection_projects_map(&mut guard, &config.protection_projects)?;
@@ -475,31 +479,47 @@ impl ControlState {
             )?;
         }
 
+        if let Some(ref prl) = patch.port_rate_limit {
+            snapshot.port_rate_limit = prl.clone();
+            let mut port_rate_cfg: Array<_, RateLimitConfig> = guard
+                .map_mut("PORT_RATE_LIMIT_CFG")
+                .context("PORT_RATE_LIMIT_CFG map not found")?
+                .try_into()?;
+            port_rate_cfg.set(
+                0,
+                RateLimitConfig {
+                    threshold: prl.threshold,
+                    tick_ms: prl.tick_ms,
+                    decay_num: prl.decay_num,
+                    decay_den: prl.decay_den,
+                    block_duration_s: 0,
+                },
+                0,
+            )?;
+        }
+
         {
             let mut config_array: Array<_, RuntimeConfig> = guard
                 .map_mut("CONFIG")
                 .context("CONFIG map not found")?
                 .try_into()?;
-            config_array.set(
-                0,
-                RuntimeConfig {
-                    rate_limit_enabled: u8::from(snapshot.rate_limit_enabled),
-                    syn_proxy_enabled: u8::from(snapshot.syn_proxy_enabled),
-                    l7_scan_enabled: u8::from(snapshot.l7_scan_enabled),
-                    ebpf_debug: u8::from(snapshot.ebpf_debug_enabled),
-                    udp_flood_enabled: u8::from(snapshot.udp_flood_enabled),
-                    icmp_flood_enabled: u8::from(snapshot.icmp_flood_enabled),
-                    geoip_enabled: u8::from(snapshot.geoip_enabled),
-                    tcp_reset_on_drop: u8::from(snapshot.tcp_reset_on_drop),
-                    trust_enabled: u8::from(snapshot.trust_enabled),
-                    danger_level: 0,
-                    packet_log_enabled: u8::from(snapshot.packet_log_enabled),
-                    packet_log_sample_rate: snapshot.packet_log_sample_rate,
-                    project_enabled: u8::from(snapshot.protection_projects_enabled),
-                    padding: [0; 2],
-                },
-                0,
-            )?;
+            // 读取现有值再修改，保留 port_acl_count / l7_pattern_count / project_enabled
+            let mut cfg = config_array.get(&0, 0).unwrap_or_default();
+            cfg.rate_limit_enabled = u8::from(snapshot.rate_limit_enabled);
+            cfg.syn_proxy_enabled = u8::from(snapshot.syn_proxy_enabled);
+            cfg.l7_scan_enabled = u8::from(snapshot.l7_scan_enabled);
+            cfg.ebpf_debug = u8::from(snapshot.ebpf_debug_enabled);
+            cfg.udp_flood_enabled = u8::from(snapshot.udp_flood_enabled);
+            cfg.icmp_flood_enabled = u8::from(snapshot.icmp_flood_enabled);
+            cfg.geoip_enabled = u8::from(snapshot.geoip_enabled);
+            cfg.tcp_reset_on_drop = u8::from(snapshot.tcp_reset_on_drop);
+            cfg.trust_enabled = u8::from(snapshot.trust_enabled);
+            cfg.danger_level = 0;
+            cfg.packet_log_enabled = u8::from(snapshot.packet_log_enabled);
+            cfg.packet_log_sample_rate = snapshot.packet_log_sample_rate;
+            cfg.project_enabled = u8::from(snapshot.protection_projects_enabled);
+            cfg.port_rate_limit_enabled = u8::from(snapshot.port_rate_limit.enabled);
+            config_array.set(0, cfg, 0)?;
         }
 
         *self.runtime.write().await = snapshot;
@@ -945,6 +965,14 @@ impl RuntimeConfigSnapshot {
                 decay_den: config.rate_limit.decay_den,
                 block_duration_s: config.rate_limit.block_duration_s,
             },
+            port_rate_limit: RateLimitParams {
+                enabled: config.port_rate_limit.enabled,
+                threshold: config.port_rate_limit.threshold,
+                tick_ms: config.port_rate_limit.tick_ms,
+                decay_num: config.port_rate_limit.decay_num,
+                decay_den: config.port_rate_limit.decay_den,
+                block_duration_s: 0,
+            },
             port_acl: config.port_acl.clone(),
             protection_projects: config.protection_projects.clone(),
             l7_scan: config.l7_scan.clone(),
@@ -981,7 +1009,10 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         packet_log_enabled: u8::from(config.packet_log.enabled),
         packet_log_sample_rate: config.packet_log.sample_rate,
         project_enabled: u8::from(!config.protection_projects.is_empty()),
-        padding: [0; 2],
+        port_acl_count: (config.port_acl.len() as u8).min(128),
+        l7_pattern_count: (config.l7_scan.patterns.len() as u8).min(16),
+        port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
+        padding: [0; 1],
     };
     tracing::info!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
@@ -1005,6 +1036,25 @@ fn init_rate_limit_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
             decay_num: config.rate_limit.decay_num,
             decay_den: config.rate_limit.decay_den,
             block_duration_s: config.rate_limit.block_duration_s,
+        },
+        0,
+    )?;
+    Ok(())
+}
+
+fn init_port_rate_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
+    let mut rate_cfg: Array<_, RateLimitConfig> = ebpf
+        .map_mut("PORT_RATE_LIMIT_CFG")
+        .context("PORT_RATE_LIMIT_CFG map not found")?
+        .try_into()?;
+    rate_cfg.set(
+        0,
+        RateLimitConfig {
+            threshold: config.port_rate_limit.threshold,
+            tick_ms: config.port_rate_limit.tick_ms,
+            decay_num: config.port_rate_limit.decay_num,
+            decay_den: config.port_rate_limit.decay_den,
+            block_duration_s: 0,
         },
         0,
     )?;
@@ -1058,6 +1108,24 @@ fn init_l7_patterns_map(
         )?;
     }
 
+    // 同步实际模式条数到 CONFIG map，数据面据此跳过空表循环
+    sync_config_count(ebpf, |cfg| {
+        cfg.l7_pattern_count = (pattern_cfgs.len() as u8).min(16);
+    })?;
+
+    Ok(())
+}
+
+/// 在 CONFIG map 上应用计数同步闭包。
+fn sync_config_count(ebpf: &mut Ebpf, f: impl FnOnce(&mut RuntimeConfig)) -> anyhow::Result<()> {
+    let mut config_array: Array<_, RuntimeConfig> = ebpf
+        .map_mut("CONFIG")
+        .context("CONFIG map not found")?
+        .try_into()?;
+    if let Ok(mut cfg) = config_array.get(&0, 0) {
+        f(&mut cfg);
+        let _ = config_array.set(0, cfg, 0);
+    }
     Ok(())
 }
 
@@ -1081,6 +1149,11 @@ fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<(
             .with_context(|| format!("invalid port_acl entry {}", i))?;
         port_acl.set(i as u32, entry, 0)?;
     }
+
+    // 同步实际规则条数到 CONFIG map，数据面据此跳过空表循环
+    sync_config_count(ebpf, |cfg| {
+        cfg.port_acl_count = (items.len() as u8).min(128);
+    })?;
 
     Ok(())
 }

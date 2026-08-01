@@ -48,6 +48,8 @@ pub struct Config {
     #[serde(default)]
     pub rate_limit: RateLimitConfig,
     #[serde(default)]
+    pub port_rate_limit: PortRateLimitConfig,
+    #[serde(default)]
     pub syn_proxy: SynProxyConfig,
     #[serde(default)]
     pub l7_scan: L7ScanConfig,
@@ -545,6 +547,39 @@ fn default_block_duration_s() -> u64 {
     300
 }
 
+/// 按目的端口限速参数：对（协议 + 目的端口）维度做速率限制，
+/// 用于防换源 IP 绕过（源 IP 随机化时 per-IP 限速失效）。
+/// 默认关闭，不影响既有行为；阈值默认高于 per-IP（聚合多源流量）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct PortRateLimitConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    #[serde(default = "default_port_rate_threshold")]
+    pub threshold: u64,
+    #[serde(default = "default_tick_ms")]
+    pub tick_ms: u64,
+    #[serde(default = "default_decay_num")]
+    pub decay_num: u64,
+    #[serde(default = "default_decay_den")]
+    pub decay_den: u64,
+}
+
+impl Default for PortRateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: 2000,
+            tick_ms: 100,
+            decay_num: 7,
+            decay_den: 8,
+        }
+    }
+}
+
+fn default_port_rate_threshold() -> u64 {
+    2000
+}
+
 impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let content = fs::read_to_string(path).context("failed to read config file")?;
@@ -593,6 +628,18 @@ impl Config {
             }
             if self.rate_limit.decay_den == 0 {
                 anyhow::bail!("rate_limit.decay_den must be > 0");
+            }
+        }
+
+        if self.port_rate_limit.enabled {
+            if self.port_rate_limit.threshold == 0 {
+                anyhow::bail!("port_rate_limit.threshold must be > 0");
+            }
+            if self.port_rate_limit.tick_ms == 0 {
+                anyhow::bail!("port_rate_limit.tick_ms must be > 0");
+            }
+            if self.port_rate_limit.decay_den == 0 {
+                anyhow::bail!("port_rate_limit.decay_den must be > 0");
             }
         }
 

@@ -207,7 +207,7 @@ pub struct GlobalStats {
 
 /// 配置运行时快照（内嵌到 CONFIG Map）
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeConfig {
     pub rate_limit_enabled: u8,
     pub syn_proxy_enabled: u8,
@@ -227,7 +227,13 @@ pub struct RuntimeConfig {
     pub packet_log_sample_rate: u16,
     /// 防护项目表非空标志：0=无项目（数据面快速跳过），1=有项目
     pub project_enabled: u8,
-    pub padding: [u8; 2],
+    /// PORT_ACL 实际规则条数：0=空表（数据面跳过 128 次循环）
+    pub port_acl_count: u8,
+    /// L7_PATTERNS 实际模式条数：0=空表（数据面跳过 16 次循环）
+    pub l7_pattern_count: u8,
+    /// 按目的端口限速开关：0=关闭（零开销跳过），1=开启
+    pub port_rate_limit_enabled: u8,
+    pub padding: [u8; 1],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）
@@ -340,6 +346,20 @@ pub mod project_action {
     pub const DEFEND: u8 = 3;
 }
 
+/// 按目的端口限速键：协议 + 目的端口（网络字节序）。
+/// 用于防换源 IP 绕过：不管源 IP 怎么变，打在同一个端口上就累计。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PortRateKey {
+    pub protocol: u8,
+    pub dport: u16,
+    pub padding: u8,
+}
+
+/// 项目策略 flags 哨兵：无项目或 flags 为空（未配置 enabled_modules）时
+/// 视为全模块启用，保持与旧版本 DEFEND 行为一致。
+pub const PROJECT_FLAGS_ALL: u16 = u16::MAX;
+
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
@@ -356,8 +376,8 @@ impl Default for RateLimitConfig {
 mod userspace_impls {
     use super::{
         BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
-        PacketSample, PortAclEntry, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig,
-        RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+        PacketSample, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
+        RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -367,6 +387,7 @@ mod userspace_impls {
     unsafe impl Pod for RateCounter {}
     unsafe impl Pod for L7Pattern {}
     unsafe impl Pod for PortAclEntry {}
+    unsafe impl Pod for PortRateKey {}
     unsafe impl Pod for ProjectPolicy {}
     unsafe impl Pod for ProjectPolicyKey {}
     unsafe impl Pod for WhitelistKeyV4 {}

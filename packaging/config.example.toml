@@ -38,12 +38,6 @@ alert_webhook_type = "generic"
 alert_threshold_dps = 1000
 alert_cooldown_s = 60
 
-# 审计日志持久化（默认关闭；开启后操作审计会写入 JSON Lines 文件）
-[audit]
-enabled = false
-path = "/var/log/eshield/audit.log"
-max_size_mb = 100
-
 # 白名单 CIDR 列表（永不被拦截）
 whitelist = [
     "127.0.0.1/32",
@@ -55,6 +49,12 @@ blacklist = [
     # "192.0.2.1",
 ]
 
+# 审计日志持久化（默认关闭；开启后操作审计会写入 JSON Lines 文件）
+[audit]
+enabled = false
+path = "/var/log/eshield/audit.log"
+max_size_mb = 100
+
 [rate_limit]
 enabled = true
 threshold = 200             # 每个 tick 内允许的最大包数
@@ -62,6 +62,16 @@ tick_ms = 100               # 计数窗口
 decay_num = 7
 decay_den = 8               # 指数衰减因子 7/8
 block_duration_s = 300      # 触发后封禁时长
+
+# 按目的端口限速：对 (协议 + 目的端口) 维度限速，防换源 IP 绕过 per-IP 限速
+# （源 IP 随机化时 per-IP 计数失效，端口维度恒定累计）。
+# 超限仅 DROP 不加黑名单；默认关闭。阈值建议高于 per-IP（聚合多源流量）。
+[port_rate_limit]
+enabled = false
+threshold = 2000            # 每个 tick 内单个目的端口允许的最大包数
+tick_ms = 100
+decay_num = 7
+decay_den = 8
 
 [syn_proxy]
 enabled = false             # SYN Flood 源进入 Cookie 挑战（降级式：正常连接直通，合法客户端验证后解除）

@@ -7,6 +7,7 @@ mod l7_scan;
 mod maps;
 mod parser;
 mod port_acl;
+mod port_rate;
 mod rate_counter;
 mod rate_limit;
 mod syn_cookie;
@@ -23,8 +24,9 @@ use aya_ebpf::{
     programs::XdpContext,
 };
 use eshield_common::{
-    project_action, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, PacketSample, ProjectPolicy,
-    ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
+    project_action, project_modules, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
+    PacketSample, PortRateKey, ProjectPolicy, ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
+    PROJECT_FLAGS_ALL,
 };
 use maps::{
     CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, PACKET_SAMPLES,
@@ -46,6 +48,9 @@ struct PacketCtx<'a> {
     tcp_reset_on_drop: u8,
     now_ns: u64,
     rule_id: u16,
+    /// 防护项目模块位图约束：命中 DEFEND 项目后按位过滤全局防御模块；
+    /// PROJECT_FLAGS_ALL（u16::MAX）表示无约束（无项目或项目未配置模块）。
+    project_flags: u16,
 }
 
 #[xdp]
@@ -73,6 +78,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         tcp_reset_on_drop: 0,
         now_ns: 0,
         rule_id: rules::UNKNOWN,
+        project_flags: PROJECT_FLAGS_ALL,
     };
 
     match unsafe { (*eth).proto } {
@@ -121,7 +127,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
 
     let mut action: u32;
 
-    action = check_port_acl_drop(&mut pc);
+    action = check_port_acl_drop(&mut pc, runtime.port_acl_count);
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
@@ -147,20 +153,28 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         }
     }
 
-    action = check_udp_drop(&mut pc, runtime.udp_flood_enabled);
+    action = check_udp_drop(
+        &mut pc,
+        runtime.udp_flood_enabled,
+        runtime.port_rate_limit_enabled,
+    );
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
     }
 
-    action = check_icmp_drop(&mut pc, runtime.icmp_flood_enabled);
+    action = check_icmp_drop(
+        &mut pc,
+        runtime.icmp_flood_enabled,
+        runtime.port_rate_limit_enabled,
+    );
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
     }
 
     if runtime.l7_scan_enabled != 0 {
-        action = check_l7_drop(&mut pc);
+        action = check_l7_drop(&mut pc, runtime.l7_pattern_count);
         if action != NO_ACTION {
             log_packet_sample(&pc, action);
             return action;
@@ -210,8 +224,11 @@ fn drop_packet(pc: &PacketCtx) -> u32 {
 }
 
 #[inline(never)]
-fn check_port_acl_drop(pc: &mut PacketCtx) -> u32 {
-    if port_acl::check_port_acl(pc.ctx, pc.src, pc.protocol, pc.dport) {
+fn check_port_acl_drop(pc: &mut PacketCtx, acl_count: u8) -> u32 {
+    if acl_count == 0 {
+        return NO_ACTION;
+    }
+    if port_acl::check_port_acl(pc.ctx, pc.src, pc.protocol, pc.dport, acl_count) {
         pc.rule_id = rules::PORT_ACL;
         unsafe {
             with_stats(|s| {
@@ -312,13 +329,26 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
             }
             drop_packet(pc)
         }
+        project_action::DEFEND => {
+            // 记录项目模块位图，后续全局防御模块按位过滤。
+            // flags == 0（未配置 enabled_modules）视为全开，与旧版本 DEFEND 行为一致。
+            pc.project_flags = if policy.flags == 0 {
+                PROJECT_FLAGS_ALL
+            } else {
+                policy.flags
+            };
+            NO_ACTION
+        }
         _ => NO_ACTION,
     }
 }
 
 #[inline(never)]
 fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
-    if geoip_enabled != 0 && is_geoip_blocked(pc.src) {
+    if geoip_enabled != 0
+        && pc.project_flags & project_modules::GEOIP != 0
+        && is_geoip_blocked(pc.src)
+    {
         pc.rule_id = rules::GEOIP;
         unsafe {
             with_stats(|s| {
@@ -335,6 +365,9 @@ fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
 
 #[inline(never)]
 fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
+    if pc.project_flags & project_modules::SYN_FLOOD == 0 {
+        return NO_ACTION;
+    }
     if pc.src.family == (eshield_common::IpFamily::Ipv4 as u8) && syn_proxy_enabled != 0 {
         let ip_ptr = match unsafe { parser::ptr_at::<IpHdr>(pc.ctx, ETH_HDR_LEN) } {
             Some(p) => p,
@@ -395,9 +428,14 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
 }
 
 #[inline(never)]
-fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8) -> u32 {
-    if pc.protocol == parser::IPPROTO_UDP
-        && udp_flood_enabled != 0
+fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8, port_rate_enabled: u8) -> u32 {
+    if pc.protocol != parser::IPPROTO_UDP {
+        return NO_ACTION;
+    }
+
+    // per-IP 限速：超限立即 DROP（短路 per-port 检查，攻击时反而省一次查找）
+    if udp_flood_enabled != 0
+        && pc.project_flags & project_modules::UDP_FLOOD != 0
         && udp_flood::handle_udp_flood(pc.ctx, pc.src, pc.now_ns)
     {
         pc.rule_id = rules::UDP_FLOOD;
@@ -410,13 +448,39 @@ fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8) -> u32 {
         }
         return drop_packet(pc);
     }
+
+    // per-port 限速：防换源 IP 绕过（per-IP 计数随源变化，端口维度恒定累计）
+    if port_rate_enabled != 0 && pc.project_flags & project_modules::UDP_FLOOD != 0 {
+        let key = PortRateKey {
+            protocol: pc.protocol,
+            dport: pc.dport.to_be(),
+            padding: 0,
+        };
+        if port_rate::check_port_rate(&key, pc.now_ns) {
+            pc.rule_id = rules::UDP_FLOOD;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.udp_flood_blocked += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            return drop_packet(pc);
+        }
+    }
+
     NO_ACTION
 }
 
 #[inline(never)]
-fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8) -> u32 {
-    if (pc.protocol == parser::IPPROTO_ICMP || pc.protocol == parser::IPPROTO_ICMPV6)
-        && icmp_flood_enabled != 0
+fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8, port_rate_enabled: u8) -> u32 {
+    if pc.protocol != parser::IPPROTO_ICMP && pc.protocol != parser::IPPROTO_ICMPV6 {
+        return NO_ACTION;
+    }
+
+    // per-IP 限速：超限立即 DROP（短路 per-port 检查）
+    if icmp_flood_enabled != 0
+        && pc.project_flags & project_modules::ICMP_FLOOD != 0
         && icmp_flood::handle_icmp_flood(pc.ctx, pc.src, pc.now_ns, pc.protocol)
     {
         pc.rule_id = rules::ICMP_FLOOD;
@@ -429,12 +493,44 @@ fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8) -> u32 {
         }
         return drop_packet(pc);
     }
+
+    // per-port 限速：ICMP 无端口，key 为 (proto, 0)，等价于按协议总量限速，
+    // 防止 ICMP Flood 换源 IP 绕过 per-IP 计数。
+    if port_rate_enabled != 0 && pc.project_flags & project_modules::ICMP_FLOOD != 0 {
+        let key = PortRateKey {
+            protocol: pc.protocol,
+            dport: 0,
+            padding: 0,
+        };
+        if port_rate::check_port_rate(&key, pc.now_ns) {
+            pc.rule_id = rules::ICMP_FLOOD;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.icmp_flood_blocked += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            return drop_packet(pc);
+        }
+    }
+
     NO_ACTION
 }
 
 #[inline(never)]
-fn check_l7_drop(pc: &mut PacketCtx) -> u32 {
-    if l7_scan::scan(pc.ctx, pc.src, pc.ip_hdr_len, pc.protocol, pc.dport) {
+fn check_l7_drop(pc: &mut PacketCtx, pattern_count: u8) -> u32 {
+    if pattern_count == 0 || pc.project_flags & project_modules::L7_SCAN == 0 {
+        return NO_ACTION;
+    }
+    if l7_scan::scan(
+        pc.ctx,
+        pc.src,
+        pc.ip_hdr_len,
+        pc.protocol,
+        pc.dport,
+        pattern_count,
+    ) {
         pc.rule_id = rules::L7_PATTERN;
         unsafe {
             with_stats(|s| {
@@ -450,6 +546,9 @@ fn check_l7_drop(pc: &mut PacketCtx) -> u32 {
 
 #[inline(never)]
 fn check_rate_limit_drop(pc: &mut PacketCtx) -> u32 {
+    if pc.project_flags & project_modules::RATE_LIMIT == 0 {
+        return NO_ACTION;
+    }
     if rate_limit::check_rate_limit(pc.src, pc.now_ns) {
         pc.rule_id = rules::RATE_LIMIT;
         unsafe {

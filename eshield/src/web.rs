@@ -461,6 +461,21 @@ async fn protection_modules_handler(State(state): State<Arc<WebState>>) -> Json<
             ]
         }),
         serde_json::json!({
+            "id": "port_rate_limit",
+            "name": "按目的端口限速",
+            "category": "DDoS",
+            "description": "按 协议+目的端口 维度限速，防换源 IP 绕过 per-IP 限速；超限仅丢弃，不加黑名单。",
+            "enabled": rt.port_rate_limit.enabled,
+            "stats_key": "udp_flood_blocked",
+            "editable_fields": [
+                field_switch("enabled", "启用限速", rt.port_rate_limit.enabled),
+                field_number("threshold", "阈值（包/窗口）", rt.port_rate_limit.threshold),
+                field_number("tick_ms", "窗口 Tick (ms)", rt.port_rate_limit.tick_ms),
+                field_number("decay_num", "衰减分子", rt.port_rate_limit.decay_num),
+                field_number("decay_den", "衰减分母", rt.port_rate_limit.decay_den)
+            ]
+        }),
+        serde_json::json!({
             "id": "adaptive",
             "name": "自适应黑名单",
             "category": "访问控制",

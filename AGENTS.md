@@ -12,7 +12,7 @@
 - **控制面**：Rust + Tokio + axum，提供 REST API、中文 Web Dashboard、CLI、TUI、审计日志、持久化与告警。
 - **目标产物**：单二进制静态链接（musl），只需要 `eshield` 一个可执行文件即可运行。
 
-> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理仅支持 IPv4 TCP（降级式挑战：仅 SYN Flood 源进入 Cookie 挑战，正常连接直通）；L7 扫描仅检查 TCP 首包；防护项目按精确 IP 匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配，DEFEND 动作复用全局防御模块）。
+> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理仅支持 IPv4 TCP（降级式挑战：仅 SYN Flood 源进入 Cookie 挑战，正常连接直通）；L7 扫描仅检查 TCP 首包；防护项目按精确 IP 匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配，DEFEND 动作复用全局防御模块并按 `enabled_modules` 位图过滤，未配置模块视为全开）。
 
 ---
 
@@ -99,13 +99,13 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 
 主要模块：
 
-- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 防护项目 → GeoIP → TCP（SYN Proxy / SYN Flood）→ UDP Flood → ICMP Flood → L7 扫描 → 速率限制 → 黑名单 → 决策。
+- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP → TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 黑名单 → 决策。
 - `parser.rs`：有界读取 Ethernet / IPv4 / IPv6 / TCP / UDP / ICMP 头部。
 - `maps.rs`：BPF Maps 定义。
 - `blacklist.rs`：LRU Hash 黑名单查询。
-- `port_acl.rs`：端口/协议 ACL。
+- `port_acl.rs`：端口/协议 ACL（按 `RuntimeConfig.port_acl_count` 循环，空表跳过）。
 - `rate_limit.rs` / `rate_counter.rs`：指数衰减滑动窗口速率限制。
-- `syn_cookie.rs` / `syn_flood.rs`：SYN Cookie 代理与 SYN Flood 检测。
+- `port_rate.rs`：按目的端口固定窗口限速（v0.4.6，防换源 IP 绕过；不使用指数衰减——包间隔 < 1 tick 时整数衰减失效，counter 单调增长误伤低速率流量）。
 - `udp_flood.rs` / `icmp_flood.rs`：无连接 Flood 检测。
 - `l7_scan.rs`：TCP 首包指纹扫描。
 - `tcp_reset.rs`：丢弃 TCP 包时回复 RST。
@@ -271,7 +271,8 @@ sudo bash scripts/benchmark.sh
 - `[trust_score]`：IP 双向信誉引擎（v0.4.0）。
 - `[danger_signal]`：系统危险信号监测（v0.4.0）。
 - `[port_acl]`：端口/协议级 allow/drop 规则。
-- `[protection_projects]`：防护项目分组（v0.4.6 起 PASS/DROP 数据面生效）。
+- `[port_rate_limit]`：按目的端口（协议+端口）固定窗口限速，防换源 IP 绕过（v0.4.6，默认关闭）。
+- `[protection_projects]`：防护项目分组（v0.4.6 起 PASS/DROP 数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块）。
 - `[hub]`：分布式 Hub 同步配置（v0.4.2）。
 - `[packet_log]`：采样包日志（v0.4.2）。
 
@@ -389,7 +390,7 @@ sync_rules_enabled = true
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
 - **SYN Cookie 代理**：仅 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
 - **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
-- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 动作复用全局防御模块。
+- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
 - **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
 - **eBPF 构建**：debug 构建因 `overflow-checks` 与未内联代码容易导致 verifier/bpf-linker 失败，因此工作空间默认 `opt-level = 3`；发布构建使用 `panic = abort`、`lto = true`、`strip = true`。
 

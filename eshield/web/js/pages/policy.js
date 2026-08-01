@@ -20,8 +20,8 @@ const MODULE_PATCH_MAP = {
   trust_score: 'trust_enabled',
 };
 
-/* rate_limit / adaptive：参数表单模块，"保存"时提交完整子对象（含当前 enabled） */
-const FORM_MODULES = new Set(['rate_limit', 'adaptive']);
+/* rate_limit / port_rate_limit / adaptive：参数表单模块，"保存"时提交完整子对象（含当前 enabled） */
+const FORM_MODULES = new Set(['rate_limit', 'port_rate_limit', 'adaptive']);
 /* 数值字段最小合法值（decay_den 为除数，不可为 0） */
 const FIELD_MIN = { threshold: 1, tick_ms: 1, decay_num: 0, decay_den: 1, window_s: 1, block_duration_s: 1 };
 
@@ -31,6 +31,7 @@ const CONFIG_ENABLED = {
   udp_flood: c => !!c.udp_flood_enabled,
   icmp_flood: c => !!c.icmp_flood_enabled,
   rate_limit: c => !!c.rate_limit?.enabled,
+  port_rate_limit: c => !!c.port_rate_limit?.enabled,
   adaptive: c => !!c.adaptive?.enabled,
   l7_scan: c => !!c.l7_scan_enabled,
   geoip: c => !!c.geoip_enabled,
