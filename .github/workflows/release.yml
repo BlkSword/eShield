@@ -19,7 +19,7 @@ jobs:
       - name: Install Rust nightly (for eBPF build-std)
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: nightly-2026-07-31
           components: rust-src
 
       - name: Install Rust stable + musl target
@@ -33,10 +33,10 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y llvm clang musl-tools
 
       - name: Install bpf-linker
-        run: cargo +nightly install bpf-linker
+        run: cargo install bpf-linker
 
       - name: Build eBPF
-        run: cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
+        run: cargo +nightly-2026-07-31 build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
 
       - name: Build userspace
         run: cargo build --package eshield --target x86_64-unknown-linux-musl --release

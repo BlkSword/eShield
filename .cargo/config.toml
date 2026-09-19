@@ -3,3 +3,6 @@
 [unstable]
 build-std = ["core"]
 build-std-features = ["compiler-builtins-mem"]
+
+[alias]
+xtask = "run --package xtask --"

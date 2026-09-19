@@ -63,9 +63,12 @@ fn build_ebpf(profile: &str) -> anyhow::Result<()> {
 
     println!("Building eBPF program ({})...", profile);
 
+    // 最新 nightly 的 LLVM 版本可能与 bpf-linker/内核 verifier 不兼容；
+    // 默认使用已验证的 nightly-2026-07-31，可用 ESHIELD_EBPF_TOOLCHAIN 覆盖。
+    let toolchain = std::env::var("ESHIELD_EBPF_TOOLCHAIN")
+        .unwrap_or_else(|_| "nightly-2026-07-31".to_string());
     let mut cmd = Command::new("cargo");
-    cmd.args([
-        "+nightly",
+    cmd.arg(format!("+{}", toolchain)).args([
         "build",
         "--package",
         "eshield-ebpf",
@@ -120,18 +123,32 @@ fn run(iface: &str) -> anyhow::Result<()> {
 }
 
 fn run_tests() -> anyhow::Result<()> {
+    // 用户态 crate 通过 include_bytes_aligned! 嵌入 eBPF 产物，
+    // 因此 clippy/单元测试前必须先构建 release eBPF，否则干净 checkout 会编译失败。
+    build_ebpf("release")?;
+
     println!("Running cargo fmt...");
     let status = Command::new("cargo").args(["fmt", "--check"]).status()?;
     anyhow::ensure!(status.success(), "fmt check failed");
 
-    println!("Running cargo clippy...");
+    println!("Running cargo clippy (userspace)...");
     let status = Command::new("cargo")
-        .args(["clippy", "--", "-D", "warnings"])
+        .args([
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "eshield-ebpf",
+            "--",
+            "-D",
+            "warnings",
+        ])
         .status()?;
     anyhow::ensure!(status.success(), "clippy failed");
 
-    println!("Running cargo test...");
-    let status = Command::new("cargo").arg("test").status()?;
+    println!("Running cargo test (userspace + hub)...");
+    let status = Command::new("cargo")
+        .args(["test", "--workspace", "--exclude", "eshield-ebpf"])
+        .status()?;
     anyhow::ensure!(status.success(), "tests failed");
 
     Ok(())

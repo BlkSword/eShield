@@ -2,6 +2,7 @@
 set -e
 
 CARGO="${CARGO:-/home/ubuntu/.cargo/bin/cargo}"
+EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
 export PATH="/home/ubuntu/.cargo/bin:$PATH"
 export RUSTUP_HOME="${RUSTUP_HOME:-/home/ubuntu/.rustup}"
 export CARGO_HOME="${CARGO_HOME:-/home/ubuntu/.cargo}"
@@ -9,7 +10,7 @@ export CARGO_HOME="${CARGO_HOME:-/home/ubuntu/.cargo}"
 cd "$(dirname "$0")/.."
 
 echo "=== Building ==="
-"$CARGO" +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
+"$CARGO" +"$EBPF_TOOLCHAIN" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
 "$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
 
 echo "=== Setting up netns ==="

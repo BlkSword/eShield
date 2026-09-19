@@ -201,7 +201,7 @@ eshield reset-token
 
 ### Authentication
 
-- When `api_token` is not set, external Web access is anonymous by default. Once set, external access to the Dashboard, `/api/*`, and `/metrics` must include `Authorization: Bearer <token>`.
+- When `api_token` is not set, the daemon generates a random token; there is no anonymous external mode. External access to the Dashboard, `/api/*`, and `/metrics` must include `Authorization: Bearer <token>`. Use local `eshield reset-token` or pass `--token`/`ESHIELD_API_TOKEN` to the CLI/TUI.
 - The CLI runs locally with source address `127.0.0.1/::1`, so it automatically bypasses token checks and does not need `--token`.
 
 ### Configuration File
@@ -367,7 +367,7 @@ See [docs/benchmark.md](docs/benchmark.md) for details.
 
 - **Host-level network scrubbing shield**: Targets SYN/UDP/ICMP Flood and CC attacks that exhaust connections or packet processing rather than raw bandwidth.
 - **Not a DDoS silver bullet**: Terabit-scale bandwidth floods require upstream cloud mitigation; eShield cannot exceed physical network limits.
-- **SYN Cookie proxy**: Currently IPv4 TCP only; all SYNs are challenged when enabled.
+- **SYN Cookie proxy**: IPv4 TCP only. It uses downgrade-style challenge: only sources exceeding the SYN Flood threshold are challenged; normal connections pass through.
 - **L7 scan**: Inspect only the first TCP packet; TCP reassembly is not supported.
 - **Windows**: Cannot build or run directly; use a Linux environment.
 - **Protection projects**: Exact-match on destination IPv4 + port + protocol (target_ips CIDRs expanded by the control plane, min /24); IPv6 targets not matched yet; DEFEND reuses the global defense modules.

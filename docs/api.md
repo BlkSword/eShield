@@ -45,8 +45,7 @@ Authorization: Bearer <token>
 | `/api/geoip/reload` | POST | 重新加载 GeoIP CSV |
 | `/api/threat-intel/sync` | POST | 手动触发威胁情报同步 |
 | `/api/hub/status` | GET | 节点到 Hub 的连接状态 |
-| `/api/hub/proxy/policies` | GET/POST/DELETE | 通过节点代理访问 Hub 策略接口 |
-| `/api/hub/proxy/rules` | GET/POST | 通过节点代理访问 Hub 规则接口 |
+| `/api/hub/proxy/policies` | GET | 通过节点代理访问 Hub 策略查询接口 |
 | `/api/hub/proxy/nodes` | GET | 通过节点代理访问 Hub 节点列表 |
 | `/metrics` | GET | Prometheus 指标 |
 
@@ -229,7 +228,7 @@ Hub 返回：
   "port_acl": [{"protocol": "tcp", "dport": "9999", "action": "drop"}],
   "l7_patterns": [{"pattern": "EVIL"}],
   "protection_projects": [
-    {"name": "hub-test", "protocol": "tcp", "dport": "9999", "target_ips": [], "enabled_modules": ["syn_flood"], "action": "defend"}
+    {"name": "hub-test", "protocol": "tcp", "dport": "9999", "target_ips": ["10.0.0.1/32"], "enabled_modules": ["syn_flood"], "action": "defend"}
   ],
   "updated_at_ns": 1750819200000000000
 }

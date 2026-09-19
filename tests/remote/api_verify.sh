@@ -5,11 +5,12 @@ set -o pipefail
 export PATH=/root/.cargo/bin:$PATH
 export RUSTUP_HOME=/root/.rustup
 export CARGO_HOME=/root/.cargo
+EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
 
 cd /tmp/eshield-sync
 
 echo "=== Building ==="
-cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
+cargo +"$EBPF_TOOLCHAIN" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
 cargo build --package eshield --target x86_64-unknown-linux-musl --release -q
 
 echo "=== Setup test environment ==="

@@ -102,7 +102,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | **按目的端口限速（v0.4.6）** | `[port_rate_limit]` 按 协议+目的端口 维度固定窗口限速，防换源 IP 绕过 per-IP 限速；超限仅 DROP 不加黑名单。 |
 | **空表快速跳过（v0.4.6）** | PORT_ACL / L7_PATTERNS 空表时数据面跳过整段循环查询，热路径瘦身。 |
 
-> **关于防护项目**：target_ips 的 CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块并按 `enabled_modules` 过滤（未配置模块视为全开）；IPv6 目标暂不匹配。
+> **关于防护项目**：target_ips 不能为空且至少包含一个 IPv4 目标（数据面仅支持 IPv4 精确匹配）；CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块并按 `enabled_modules` 过滤（未配置模块视为全开）；IPv6 目标暂不匹配。
 >
 > **关于 L7 防御**：当前 L7 模块为轻量 TCP 首包指纹扫描，可识别扫描/探测行为，但不具备 HTTP Flood / CC / 慢速攻击的应用层防御能力。
 
@@ -279,7 +279,7 @@ sync_rules_enabled = true
 
 ### Web Dashboard
 
-启动后访问 `http://<host>:8720/`，中文 Web 控制台提供（v0.4.5 重写为模块化 ES modules，暗/亮双主题；旧版控制台保留在 `/legacy`）：
+启动后访问 `http://<host>:8720/`，中文 Web 控制台提供（v0.4.5 重写为模块化 ES modules，暗/亮双主题）：
 
 - **总览**：实时包统计、DPS/PPS、各防御模块命中数、流量与拦截趋势图（15 分钟 / 1 / 6 / 24 小时四档，折线/堆叠切换）、协议分布、TOP 被攻击端口、TOP 攻击源、最近拦截事件实时流。指标卡片支持点击跳转到对应功能页。
 - **攻击事件**：TOP5 攻击源趋势图（v0.4.5，与总览趋势时间范围联动）+ 历史攻击事件列表，支持客户端过滤（规则/协议/源 IP），点击 IP 打开情报抽屉（信誉分、采样包、攻击趋势、一键封禁）。
@@ -391,10 +391,10 @@ sudo bash scripts/benchmark.sh
 
 - **主机级网络清洗盾**：面向“带宽没满、但连接/包处理被耗尽”的 SYN/UDP/ICMP Flood 与 CC 场景。
 - **不是 DDoS 银弹**：T 级带宽耗尽型攻击需要云厂商黑洞/清洗，eShield 无法突破物理网络天花板。
-- **SYN Cookie 代理**：当前仅支持 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战。
+- **SYN Cookie 代理**：当前仅支持 IPv4 TCP，且采用降级式挑战；只有触发 SYN Flood 阈值的源会进入 Cookie 挑战，正常连接直通。
 - **L7 扫描**：仅检查 TCP 首包，适合首包即携带完整特征的场景；不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
 - **Windows**：无法直接编译或运行，请使用 Linux 环境。
-- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips CIDR 由控制面展开，下限 /24）；IPv6 目标暂不匹配；DEFEND 复用全局防御模块。
+- **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 不能为空且至少一个 IPv4；CIDR 由控制面展开，下限 /24）；IPv6 目标暂不匹配；DEFEND 复用全局防御模块。
 
 ---
 

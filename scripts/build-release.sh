@@ -8,9 +8,10 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
 
 echo "==> Building eBPF object"
-cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
+cargo +"$EBPF_TOOLCHAIN" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
 
 echo "==> Building userspace static binary"
 cargo build --package eshield --target x86_64-unknown-linux-musl --release

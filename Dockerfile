@@ -15,8 +15,8 @@ RUN apt-get update \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --no-modify-path
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup toolchain install nightly --component rust-src \
-    && rustup target add bpfel-unknown-none --toolchain nightly \
+RUN rustup toolchain install nightly-2026-07-31 --component rust-src \
+    && rustup target add bpfel-unknown-none --toolchain nightly-2026-07-31 \
     && rustup target add x86_64-unknown-linux-musl
 
 # Install prebuilt bpf-linker (faster than cargo install)
@@ -27,7 +27,7 @@ RUN curl -LO https://github.com/aya-rs/bpf-linker/releases/latest/download/bpf-l
 WORKDIR /build
 COPY . .
 
-RUN cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release \
+RUN cargo +nightly-2026-07-31 build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release \
     && cargo build --package eshield --target x86_64-unknown-linux-musl --release
 
 # -----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ FROM gcr.io/distroless/static-debian12:latest
 COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/eshield /usr/local/bin/eshield
 COPY --from=builder /build/packaging/config.example.toml /etc/eshield/config.toml
 
-EXPOSE 8443
+EXPOSE 8720
 
 ENTRYPOINT ["/usr/local/bin/eshield"]
 CMD ["start", "--config", "/etc/eshield/config.toml"]

@@ -8,6 +8,7 @@ fi
 
 # 在 sudo 环境下 $HOME 可能变成 /root，因此显式指向 ubuntu 用户的 Rust 环境
 CARGO="${CARGO:-/root/.cargo/bin/cargo}"
+EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
 RUSTUP="${RUSTUP:-/root/.cargo/bin/rustup}"
 export PATH="/root/.cargo/bin:$PATH"
 export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
@@ -17,7 +18,7 @@ cd "$(dirname "$0")/.."
 
 if [ -z "$SKIP_BUILD" ]; then
     echo "=== Building eShield ==="
-    "$CARGO" +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
+    "$CARGO" +"$EBPF_TOOLCHAIN" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
     "$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
 fi
 
@@ -215,7 +216,17 @@ fi
 ip netns exec eshield-client hping3 -S -p 80 -c 20 -i u10000 10.0.0.1 >/dev/null 2>&1 || true
 sleep 0.5
 
-# 挑战模式下的第一次连接：SYN 被 Cookie 挑战，数据无法送达服务器
+# 通过 API 确认挑战确实触发：syn_flood_blocked 必须 > 0。
+SC_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+if ! echo "$SC_STATS" | grep -q '"syn_flood_blocked":[1-9]'; then
+    echo "FAIL: SYN flood challenge was not triggered (stats: $SC_STATS)"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+echo "PASS: SYN flood challenge triggered"
+
+# 挑战模式下的第一次连接：SYN 被 Cookie 挑战；合法客户端可能在同一次连接内
+# 完成 ACK 验证并重传 SYN，因此这里不再强制要求第一次一定失败。
 ip netns exec eshield-server nc -l 10.0.0.1 9002 > /tmp/sc_recv1 2>/dev/null &
 NC_PID=$!
 sleep 0.5
@@ -231,12 +242,14 @@ echo -n "RETRY" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9
 sleep 0.5
 kill $NC_PID 2>/dev/null || true
 
-if [ "$(cat /tmp/sc_recv1 2>/dev/null)" = "" ] && [ "$(cat /tmp/sc_recv2 2>/dev/null)" = "RETRY" ]; then
-    echo "PASS: SYN flood challenged, legitimate retry succeeded after cookie validation"
+FIRST_OUT=$(cat /tmp/sc_recv1 2>/dev/null)
+RETRY_OUT=$(cat /tmp/sc_recv2 2>/dev/null)
+if [ "$RETRY_OUT" = "RETRY" ]; then
+    echo "PASS: SYN flood challenged, legitimate connection succeeded after cookie validation (first='${FIRST_OUT:-<challenged>}')"
 else
     echo "FAIL: SYN Cookie challenge behavior unexpected"
-    echo "first: '$(cat /tmp/sc_recv1 2>/dev/null)'"
-    echo "retry: '$(cat /tmp/sc_recv2 2>/dev/null)'"
+    echo "first: '$FIRST_OUT'"
+    echo "retry: '$RETRY_OUT'"
     kill $ESHIELD_PID 2>/dev/null || true
     exit 1
 fi
@@ -541,8 +554,8 @@ wait $ESHIELD_PID 2>/dev/null || true
 kill $HTTP_PID 2>/dev/null || true
 wait $HTTP_PID 2>/dev/null || true
 rm -rf /tmp/ti-feed
-
-
+# 清理威胁情报产生的持久化黑名单，避免污染后续防护项目测试
+rm -f /var/lib/eshield/rules.redb
 
 echo "=== Test 10: protection project DROP should block matching dst port ==="
 cat > "$mktemp_cfg" <<'TOML'

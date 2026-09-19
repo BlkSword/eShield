@@ -52,7 +52,7 @@ interface = "veth-server"
 log_level = "warn"
 whitelist = ["10.0.0.1/32"]
 blacklist = [$blacklist]
-web_port = 0
+web_bind = "127.0.0.1:18720"   # 避免与宿主 8720 冲突，且 web_port=0 会被配置校验拒绝
 
 [rate_limit]
 enabled = false

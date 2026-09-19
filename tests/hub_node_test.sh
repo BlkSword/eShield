@@ -7,13 +7,14 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 CARGO="${CARGO:-/root/.cargo/bin/cargo}"
+EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
 export PATH="/root/.cargo/bin:$PATH"
 
 cd "$(dirname "$0")/.."
 
 if [ -z "$SKIP_BUILD" ]; then
     echo "=== Building eShield + Hub ==="
-    "$CARGO" +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
+    "$CARGO" +"$EBPF_TOOLCHAIN" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release -q
     "$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
     "$CARGO" build --package eshield-hub --release -q
 fi
@@ -198,7 +199,7 @@ echo "PASS: Hub delete unblocked 10.0.0.3"
 
 echo "=== Test H7: Hub rules (ACL/L7/projects) sync to node ==="
 NOW_NS=$(date +%s%N)
-hub_curl /api/v1/rules -X POST -H "Content-Type: application/json" -d "{\"port_acl\":[{\"protocol\":\"tcp\",\"dport\":\"9999\",\"action\":\"drop\"}],\"l7_patterns\":[{\"pattern\":\"EVIL\"}],\"protection_projects\":[{\"name\":\"hub-test\",\"protocol\":\"tcp\",\"dport\":\"9999\",\"target_ips\":[],\"enabled_modules\":[\"syn_flood\"],\"action\":\"defend\"}],\"updated_at_ns\":$NOW_NS}" | jq .
+hub_curl /api/v1/rules -X POST -H "Content-Type: application/json" -d "{\"port_acl\":[{\"protocol\":\"tcp\",\"dport\":\"9999\",\"action\":\"drop\"}],\"l7_patterns\":[{\"pattern\":\"EVIL\"}],\"protection_projects\":[{\"name\":\"hub-test\",\"protocol\":\"tcp\",\"dport\":\"9999\",\"target_ips\":[\"10.0.0.1/32\"],\"enabled_modules\":[\"syn_flood\"],\"action\":\"defend\"}],\"updated_at_ns\":$NOW_NS}" | jq .
 
 echo "waiting for rules to sync to node..."
 wait_for "port_acl synced" 10 "node_curl /api/port-acl | jq -e '.items[] | select(.protocol == \"tcp\" and .dport == \"9999\" and .action == \"drop\")'"

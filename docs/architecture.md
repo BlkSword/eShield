@@ -5,7 +5,7 @@
 ```text
 ┌──────────────────────────────────────────────────────────────┐
 │ 管理面 (Management Plane)                                    │
-│ Web Dashboard (axum+htmx) │ TUI (ratatui) │ CLI             │
+│ Web Dashboard (axum+ESM)  │ TUI (ratatui) │ CLI             │
 └─────────────────────────────────┬────────────────────────────┘
                                   │ REST API / Config Watch
 ┌─────────────────────────────────▼────────────────────────────┐
@@ -50,7 +50,7 @@
 6. TCP：SYN Proxy（IPv4 SYN-ACK Cookie 挑战 + ACK 校验）→ SYN Flood 速率检测
 7. UDP Flood / ICMP Flood：按协议检测
 8. L7 扫描：读取 TCP 首包载荷前 8 字节模式匹配
-9. 速率限制：Per-CPU LRU Hash + 指数衰减滑动窗口
+9. 速率限制：LRU Hash + 指数衰减滑动窗口（保留不足一个 tick 的时间，避免高速率流量永不衰减）
 10. 黑名单：LRU Hash 查询到期自动解封
 11. 默认放行：XDP_PASS
 
@@ -61,7 +61,7 @@
 | WHITELIST_V4 | LPM Trie | WhitelistKeyV4 | u8 | 1,024 | IPv4 白名单 |
 | WHITELIST_V6 | LPM Trie | WhitelistKeyV6 | u8 | 1,024 | IPv6 白名单 |
 | BLACKLIST | LRU Hash | IpKey | BlockEntry | 100,000 | 动态封禁 |
-| RATE_MAP | Per-CPU LRU Hash | IpKey | RateCounter | 100,000 | 速率计数 |
+| RATE_MAP | LRU Hash | IpKey | RateCounter | 100,000 | 速率计数（SYN/UDP/ICMP 与全局限速共用，避免同包重复计数） |
 | GLOBAL_STATS | Per-CPU Array | u32 | GlobalStats | 1 | 全局统计 |
 | EVENTS | Ring Buffer | — | DropEvent | 4 MB | 事件上报 |
 | PACKET_SAMPLES | Ring Buffer | — | PacketSample | 16 MB | 采样包日志 |

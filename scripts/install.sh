@@ -144,10 +144,10 @@ build_local() {
         echo "错误: 未检测到 rustup，请先安装 Rust"
         exit 1
     fi
-    rustup toolchain install nightly >/dev/null 2>&1 || true
-    rustup target add bpfel-unknown-none --toolchain nightly >/dev/null 2>&1 || true
-    rustup component add rust-src --toolchain nightly >/dev/null 2>&1 || true
-    cargo +nightly build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
+    rustup toolchain install "${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" >/dev/null 2>&1 || true
+    rustup target add bpfel-unknown-none --toolchain "${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" >/dev/null 2>&1 || true
+    rustup component add rust-src --toolchain "${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" >/dev/null 2>&1 || true
+    cargo +"${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
     cargo build --package eshield --target "$TARGET" --release
     cp "target/$TARGET/release/eshield" "$INSTALL_BIN"
 }

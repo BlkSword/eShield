@@ -12,7 +12,7 @@
 - **控制面**：Rust + Tokio + axum，提供 REST API、中文 Web Dashboard、CLI、TUI、审计日志、持久化与告警。
 - **目标产物**：单二进制静态链接（musl），只需要 `eshield` 一个可执行文件即可运行。
 
-> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理仅支持 IPv4 TCP（降级式挑战：仅 SYN Flood 源进入 Cookie 挑战，正常连接直通）；L7 扫描仅检查 TCP 首包；防护项目按精确 IP 匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配，DEFEND 动作复用全局防御模块并按 `enabled_modules` 位图过滤，未配置模块视为全开）。
+> **重要限制**：eShield 是主机级清洗盾，不能突破物理带宽上限；T 级带宽耗尽型攻击需要上游云厂商清洗。SYN Cookie 代理仅支持 IPv4 TCP（降级式挑战：仅 SYN Flood 源进入 Cookie 挑战，正常连接直通）；L7 扫描仅检查 TCP 首包；防护项目按精确 IP 匹配（target_ips 不能为空且至少包含一个 IPv4 目标；CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配，DEFEND 动作复用全局防御模块并按 `enabled_modules` 位图过滤，未配置模块视为全开）。
 
 ---
 
@@ -28,7 +28,7 @@
   `CAP_BPF`、`CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_PERFMON`、`CAP_IPC_LOCK`
 - **Rust**：
   - stable：用于用户态（`x86_64-unknown-linux-musl`）。
-  - nightly：用于 eBPF（`bpfel-unknown-none`，需要 `rust-src`）。
+  - nightly：用于 eBPF（`bpfel-unknown-none`，需要 `rust-src`）。默认使用经验证的 `nightly-2026-07-31`（最新 nightly 的 LLVM 可能与 bpf-linker/内核 verifier 不兼容），可用 `ESHIELD_EBPF_TOOLCHAIN` 覆盖。
 - **构建工具**：LLVM / clang、`bpf-linker`。
 - **注意**：Aya 用户态依赖 Linux API，**无法在 Windows 上直接编译或运行**；代码编辑可以在 Windows 完成，构建和测试必须在 WSL2 / 虚拟机 / 远程 Linux 上执行。
 
@@ -140,8 +140,8 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 ### 4.1 安装依赖
 
 ```bash
-rustup toolchain install nightly --component rust-src
-rustup target add bpfel-unknown-none --toolchain nightly
+rustup toolchain install nightly-2026-07-31 --profile minimal --component rust-src
+rustup target add bpfel-unknown-none --toolchain nightly-2026-07-31
 rustup target add x86_64-unknown-linux-musl
 
 # Debian/Ubuntu
@@ -190,8 +190,8 @@ cargo fmt --check
 # Clippy（用户态）
 cargo clippy --workspace --exclude eshield-ebpf -- -D warnings
 
-# Clippy（eBPF，需要 nightly + bpf target）
-cargo +nightly clippy --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core -- -D warnings
+# Clippy（eBPF，需要 nightly + bpf target；工具链与构建保持一致）
+cargo +nightly-2026-07-31 clippy --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core -- -D warnings
 
 # xtask 一键执行 fmt + clippy + test
 cargo xtask test
@@ -319,7 +319,7 @@ sudo kill -HUP $(pidof eshield)
 - REST API：详见 `docs/api.md`
 - 审计 SSE：`GET /api/audit/stream`
 
-认证：未设置 `api_token` 时外部访问匿名；设置后需要在请求头携带 `Authorization: Bearer <token>`。本机 CLI（`127.0.0.1/::1`）自动跳过校验。
+认证：未设置 `api_token` 时，进程会生成随机 Token 并要求外部请求携带 `Authorization: Bearer <token>`（不存在匿名外部模式）；显式设置 `api_token` 后以其为准。本机 CLI（`127.0.0.1/::1`）自动跳过校验，但带 `X-Forwarded-For`/`X-Real-IP`/`Forwarded` 头的反向代理请求不再享受该豁免。
 
 ---
 
@@ -376,7 +376,7 @@ sync_rules_enabled = true
 ## 9. 安全注意事项
 
 - **必须 root 或高权限 capability**：加载 XDP/eBPF 程序需要 `CAP_BPF` / `CAP_NET_ADMIN` 等，无法以普通用户运行。
-- **Token 管理**：建议显式设置 `api_token`；若未设置，系统会生成随机 Token 并仅在日志中输出前缀，完整 Token 需在 Dashboard 设置页查看。
+- **Token 管理**：建议显式设置 `api_token`；若未设置，系统会生成随机 Token 并只在日志中输出前缀。首次使用可在本机执行 `eshield reset-token` 生成并打印新 Token，或在 CLI/TUI 上用 `--token`/`ESHIELD_API_TOKEN` 访问远程实例。
 - **审计与持久化**：动态规则写入 redb（`store_path`），审计日志可开启文件后端；确保这些目录的权限正确，避免敏感信息泄露。
 - **威胁情报**：feed URL 通过 `reqwest` + `rustls-tls` 拉取，但仍应只使用可信来源。
 - **Hub 通信**：节点与 Hub 之间使用共享 Bearer Token；生产环境务必启用 TLS，并确保 `node_name` 在集群内唯一，避免策略回环。
@@ -388,7 +388,7 @@ sync_rules_enabled = true
 ## 10. 已知约束与边界
 
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
-- **SYN Cookie 代理**：仅 IPv4 TCP；启用后所有 SYN 都会受到 Cookie 挑战（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
+- **SYN Cookie 代理**：仅 IPv4 TCP；采用降级式挑战，只有超过 SYN Flood 阈值的源会被 Cookie 挑战并暂时拉黑，正常连接与合法客户端验证后直通（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
 - **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
 - **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
 - **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
