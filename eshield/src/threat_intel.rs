@@ -100,7 +100,7 @@ async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> 
         }
         "allow" => {
             for (key, prefix) in entries_cidr(entries) {
-                if let Err(e) = control.allow_cidr_raw(key, prefix).await {
+                if let Err(e) = control.allow_cidr_key(key, prefix, "threat_intel").await {
                     tracing::debug!(
                         "skip threat intel allow for {}/{}: {}",
                         format_ip_key(&key),

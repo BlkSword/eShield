@@ -2,7 +2,7 @@ use eshield_common::{IpFamily, IpKey, PacketSample};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::ip::format_ip_key;
 
@@ -221,7 +221,7 @@ pub async fn run(
     }
 
     if !samples.is_empty() {
-        info!(count = samples.len(), "packet_log consumer batch");
+        tracing::debug!(count = samples.len(), "packet_log consumer batch");
     }
 
     // 无论是否有事件，都让出 CPU，避免在高采样率场景下霸占工作线程。

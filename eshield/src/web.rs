@@ -44,6 +44,20 @@ fn api_err_response(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(serde_json::json!({ "error": msg.into() }))).into_response()
 }
 
+/// 计算 wall-clock Unix ns 与 CLOCK_MONOTONIC ns 之间的偏移。
+fn wall_clock_offset_ns() -> i128 {
+    let wall_now_ns = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as i128;
+    wall_now_ns - crate::time::monotonic_ns() as i128
+}
+
+/// 把 eBPF 单调时钟 ns 转为 wall-clock Unix ns。
+fn monotonic_to_wall_ns(ts_ns: u64, offset_ns: i128) -> u64 {
+    (ts_ns as i128 + offset_ns).max(0) as u64
+}
+
 /// HTTP request logging middleware: logs method, path, status, and duration.
 async fn request_logger(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -1035,14 +1049,10 @@ async fn packets_handler(
         to_ns: None,
         limit: q.limit.min(1000),
     };
-    let wall_now_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as i128;
-    let offset_ns = wall_now_ns - crate::time::monotonic_ns() as i128;
+    let offset_ns = wall_clock_offset_ns();
     let mut entries = state.packet_log.query(&query);
     for e in &mut entries {
-        e.timestamp_ns = (e.timestamp_ns as i128 + offset_ns).max(0) as u64;
+        e.timestamp_ns = monotonic_to_wall_ns(e.timestamp_ns, offset_ns);
     }
     Json(serde_json::json!({
         "entries": entries,
@@ -1118,7 +1128,7 @@ async fn ip_detail_handler(
         (blacklisted, hit_count, trust_score, trust_level)
     };
 
-    let samples = state.packet_log.query(&PacketLogQuery {
+    let mut samples = state.packet_log.query(&PacketLogQuery {
         ip: Some(q.ip.clone()),
         port: None,
         protocol: None,
@@ -1128,6 +1138,10 @@ async fn ip_detail_handler(
         to_ns: None,
         limit: 100,
     });
+    let offset_ns = wall_clock_offset_ns();
+    for s in &mut samples {
+        s.timestamp_ns = monotonic_to_wall_ns(s.timestamp_ns, offset_ns);
+    }
 
     let mut drop_count = 0u64;
     let mut pass_count = 0u64;
@@ -1246,11 +1260,7 @@ async fn attack_events_handler(
     axum::extract::Query(q): axum::extract::Query<AuditQuery>,
 ) -> Json<serde_json::Value> {
     // 单调时钟 → wall-clock 偏移，与 /api/ip-series 的换算方式保持一致。
-    let wall_now_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as i128;
-    let offset_ns = wall_now_ns - crate::time::monotonic_ns() as i128;
+    let offset_ns = wall_clock_offset_ns();
 
     let events: Vec<serde_json::Value> = state
         .stats
@@ -1283,7 +1293,7 @@ async fn attack_events_handler(
                 _ => "未知",
             };
             serde_json::json!({
-                "timestamp_ns": (e.timestamp_ns as i128 + offset_ns).max(0) as u64,
+                "timestamp_ns": monotonic_to_wall_ns(e.timestamp_ns, offset_ns),
                 "src_ip": src_ip,
                 "protocol": e.protocol,
                 "rule_id": e.rule_id,

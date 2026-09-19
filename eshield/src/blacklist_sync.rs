@@ -5,6 +5,7 @@ use aya::maps::HashMap as LruHashMap;
 use aya::Ebpf;
 use dashmap::DashMap;
 use eshield_common::{rules, BlockEntry, IpKey};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -26,6 +27,8 @@ pub struct BlacklistSync {
     store: RuleStore,
     interval: Duration,
     cache: DashMap<IpKey, CachedEntry>,
+    /// 上次清理过期持久化黑名单的时间（ns）。
+    last_prune_ns: AtomicU64,
 }
 
 impl BlacklistSync {
@@ -35,6 +38,7 @@ impl BlacklistSync {
             store,
             interval,
             cache: DashMap::new(),
+            last_prune_ns: AtomicU64::new(0),
         }
     }
 
@@ -49,29 +53,28 @@ impl BlacklistSync {
     }
 
     async fn sync_once(&self) -> Result<()> {
-        let mut guard = self.ebpf.lock().await;
-        let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
-            .map_mut("BLACKLIST")
-            .context("BLACKLIST map not found")?
-            .try_into()
-            .context("failed to open BLACKLIST map")?;
+        let now_ns = crate::time::monotonic_ns();
 
-        // 加载当前 store 中的来源信息。Hub 下发的策略在 store 里标记为 Hub，
-        // 但 eBPF 里只保存了原始 rule_id；这里避免把它们覆盖成 Local 来源，
-        // 否则 Hub DELETE 后节点无法识别哪些条目应该解封。
-        let store_origins: std::collections::HashMap<IpKey, BlockOrigin> = self
-            .store
-            .load_blacklist()
-            .await?
-            .into_iter()
-            .map(|(key, _, _, _, origin)| (key, origin))
-            .collect();
+        // 只在锁内做一次快照，随后释放 eBPF Mutex 再做持久化写入，
+        // 避免逐条 redb 事务长期占用锁、阻塞事件消费/控制面。
+        let snapshot: Vec<(IpKey, BlockEntry)> = {
+            let mut guard = self.ebpf.lock().await;
+            let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                .map_mut("BLACKLIST")
+                .context("BLACKLIST map not found")?
+                .try_into()
+                .context("failed to open BLACKLIST map")?;
+            blacklist
+                .iter()
+                .flatten()
+                .map(|(key, entry)| (key, entry))
+                .collect()
+        };
 
-        let mut synced = 0usize;
         let mut skipped = 0usize;
+        let mut changed: Vec<(IpKey, BlockEntry, BlockOrigin, CachedEntry)> = Vec::new();
 
-        for item in blacklist.iter().flatten() {
-            let (key, entry) = (item.0, item.1);
+        for (key, entry) in snapshot {
             let origin = match block_reason_to_origin(entry.block_reason) {
                 Some(o) => o,
                 None => {
@@ -79,21 +82,9 @@ impl BlacklistSync {
                     continue;
                 }
             };
-
             if !origin.publishable() {
                 skipped += 1;
                 continue;
-            }
-
-            // 若 store 中已存在 Hub 来源的条目，保留 Hub 来源，避免本地检测模块
-            // 的 rule_id 把来源覆盖成 Local。
-            if origin != BlockOrigin::Hub {
-                if let Some(&store_origin) = store_origins.get(&key) {
-                    if store_origin == BlockOrigin::Hub {
-                        skipped += 1;
-                        continue;
-                    }
-                }
             }
 
             let cached = CachedEntry {
@@ -101,28 +92,62 @@ impl BlacklistSync {
                 hit_count: entry.hit_count,
                 block_reason: entry.block_reason,
             };
-
             if let Some(existing) = self.cache.get(&key) {
                 if *existing == cached {
                     continue;
                 }
             }
-
-            self.store
-                .save_blacklist(
-                    key,
-                    entry.blocked_until_ns,
-                    entry.block_reason,
-                    entry.first_seen_ns,
-                    origin,
-                )
-                .await?;
-
-            self.cache.insert(key, cached);
-            synced += 1;
+            changed.push((key, entry, origin, cached));
         }
 
-        drop(guard);
+        let mut synced = 0usize;
+        if !changed.is_empty() {
+            // 只有确实存在变更时才加载 store 来源信息；空闲时避免每 5s 全量扫描 redb。
+            let store_origins: std::collections::HashMap<IpKey, BlockOrigin> = self
+                .store
+                .load_blacklist()
+                .await?
+                .into_iter()
+                .map(|(key, _, _, _, origin)| (key, origin))
+                .collect();
+
+            for (key, entry, origin, cached) in changed {
+                // Hub 下发的策略在 store 里标记为 Hub，但 eBPF 只保存 rule_id；
+                // 避免本地检测模块的 rule_id 把来源覆盖成 Local，导致 Hub DELETE 无法解封。
+                if origin != BlockOrigin::Hub {
+                    if let Some(&store_origin) = store_origins.get(&key) {
+                        if store_origin == BlockOrigin::Hub {
+                            skipped += 1;
+                            continue;
+                        }
+                    }
+                }
+
+                self.store
+                    .save_blacklist(
+                        key,
+                        entry.blocked_until_ns,
+                        entry.block_reason,
+                        entry.first_seen_ns,
+                        origin,
+                    )
+                    .await?;
+
+                self.cache.insert(key, cached);
+                synced += 1;
+            }
+        }
+
+        // 每 60s 清理一次已过期的持久化动态黑名单，避免 redb 只增不减。
+        let last_prune = self.last_prune_ns.load(Ordering::Relaxed);
+        if now_ns.saturating_sub(last_prune) >= 60_000_000_000 {
+            match self.store.prune_expired_blacklist(now_ns).await {
+                Ok(pruned) if pruned > 0 => debug!(pruned, "pruned expired persisted blacklist"),
+                Ok(_) => {}
+                Err(e) => warn!("failed to prune persisted blacklist: {}", e),
+            }
+            self.last_prune_ns.store(now_ns, Ordering::Relaxed);
+        }
 
         if synced > 0 {
             debug!(synced, skipped, "blacklist map synced to store");

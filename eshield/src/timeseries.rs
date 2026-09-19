@@ -173,6 +173,20 @@ impl TimeSeriesWindow {
         self.last_total_passed = total_passed;
     }
 
+    /// Timestamp of the newest recorded point (0 if empty).
+    pub fn last_timestamp(&self) -> u64 {
+        self.slots.last().map(|p| p.timestamp).unwrap_or(0)
+    }
+
+    /// Return only points newer than `timestamp` (ascending order).
+    pub fn snapshot_after(&self, timestamp: u64) -> Vec<MetricPoint> {
+        self.slots
+            .iter()
+            .filter(|p| p.timestamp > timestamp)
+            .cloned()
+            .collect()
+    }
+
     /// Return the most recent `duration_s` seconds of data.
     ///
     /// If `duration_s` is 0 or larger than the window capacity allows,

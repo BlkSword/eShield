@@ -154,6 +154,9 @@ impl ControlState {
     /// 从配置文件重新加载全部策略。
     pub async fn reload_config_file(&self) -> anyhow::Result<()> {
         let config = Config::from_file(&self.config_path)?;
+        config
+            .validate()
+            .context("配置校验失败，拒绝热加载以避免部分策略生效")?;
         let mut guard = self.ebpf.lock().await;
         let mut whitelist = self.whitelist.lock().await;
         let mut blacklist = self.blacklist.lock().await;
@@ -169,7 +172,10 @@ impl ControlState {
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
 
-        *self.runtime.write().await = RuntimeConfigSnapshot::from_config(&config);
+        let prev_danger = self.runtime.read().await.danger_level;
+        let mut new_snapshot = RuntimeConfigSnapshot::from_config(&config);
+        new_snapshot.danger_level = prev_danger;
+        *self.runtime.write().await = new_snapshot;
         if let Some(adaptive) = &self.adaptive {
             adaptive.update_config(config.adaptive.clone());
         }
@@ -318,22 +324,28 @@ impl ControlState {
         Ok(())
     }
 
-    /// 实时放行某个 CIDR。
+    /// 实时放行某个 CIDR（API 入口）。
     pub async fn allow_cidr(&self, cidr: &str) -> anyhow::Result<()> {
         let (key, prefix) = parse_cidr(cidr)?;
-        self.allow_cidr_raw(key, prefix).await?;
+        self.allow_cidr_key(key, prefix, "api").await?;
+        info!("API whitelist add: {}", cidr);
+        Ok(())
+    }
 
+    /// 按 IpKey + prefix 添加白名单，并持久化/审计；供 API 与威胁情报共享。
+    pub async fn allow_cidr_key(&self, key: IpKey, prefix: u32, actor: &str) -> anyhow::Result<()> {
+        self.allow_cidr_raw(key, prefix).await?;
         if let Some(store) = &self.store {
             store.save_whitelist(key, prefix).await?;
         }
-
         self.audit(
-            "api",
+            actor,
             AuditAction::AllowCidr,
-            serde_json::json!({ "cidr": cidr }),
+            serde_json::json!({
+                "cidr": format!("{}/{}", format_ip_key(&key), prefix),
+            }),
         )
         .await;
-        info!("API whitelist add: {}", cidr);
         Ok(())
     }
 
@@ -420,6 +432,7 @@ impl ControlState {
 
     /// 热更新部分运行时开关与速率限制参数。
     pub async fn patch_runtime(&self, patch: RuntimeConfigPatch) -> anyhow::Result<()> {
+        validate_runtime_patch(&patch)?;
         let mut snapshot = self.runtime.read().await.clone();
 
         if let Some(enabled) = patch.rate_limit_enabled {
@@ -514,7 +527,7 @@ impl ControlState {
             cfg.geoip_enabled = u8::from(snapshot.geoip_enabled);
             cfg.tcp_reset_on_drop = u8::from(snapshot.tcp_reset_on_drop);
             cfg.trust_enabled = u8::from(snapshot.trust_enabled);
-            cfg.danger_level = 0;
+            // danger_level 由 DangerMonitor 任务维护，PATCH 配置时必须保留当前值。
             cfg.packet_log_enabled = u8::from(snapshot.packet_log_enabled);
             cfg.packet_log_sample_rate = snapshot.packet_log_sample_rate;
             cfg.project_enabled = u8::from(snapshot.protection_projects_enabled);
@@ -533,9 +546,27 @@ impl ControlState {
         Ok(())
     }
 
+    /// 由 DangerMonitor 调用：把全局危险等级同步到运行时快照与 eBPF CONFIG。
+    pub async fn set_danger_level(&self, level: u8) -> anyhow::Result<()> {
+        let level = level.min(2);
+        self.runtime.write().await.danger_level = level;
+        let mut guard = self.ebpf.lock().await;
+        let mut config_array: Array<_, RuntimeConfig> = guard
+            .map_mut("CONFIG")
+            .context("CONFIG map not found")?
+            .try_into()?;
+        let mut cfg = config_array.get(&0, 0).unwrap_or_default();
+        cfg.danger_level = level;
+        config_array.set(0, cfg, 0)?;
+        Ok(())
+    }
+
     /// 重新加载 GeoIP CSV 并应用。
     pub async fn reload_geoip(&self) -> anyhow::Result<()> {
         let config = Config::from_file(&self.config_path)?;
+        config
+            .validate()
+            .context("配置校验失败，拒绝重新加载 GeoIP")?;
         let mut guard = self.ebpf.lock().await;
         let mut geoip_blocks = self.geoip_blocks.lock().await;
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
@@ -555,6 +586,7 @@ impl ControlState {
         &self,
         patterns: Vec<crate::config::L7PatternConfig>,
     ) -> anyhow::Result<()> {
+        crate::config::validate_l7_patterns(&patterns)?;
         {
             let mut guard = self.ebpf.lock().await;
             init_l7_patterns_map(&mut guard, &patterns)?;
@@ -578,6 +610,7 @@ impl ControlState {
 
     /// 完全替换当前端口 ACL，更新 eBPF Map、运行时快照与持久化存储。
     pub async fn set_port_acl(&self, items: Vec<PortAclItem>) -> anyhow::Result<()> {
+        crate::config::validate_port_acl_items(&items)?;
         {
             let mut guard = self.ebpf.lock().await;
             init_port_acl_map(&mut guard, &items)?;
@@ -604,6 +637,7 @@ impl ControlState {
         &self,
         projects: Vec<ProtectionProject>,
     ) -> anyhow::Result<()> {
+        crate::config::validate_protection_projects_list(&projects)?;
         {
             let mut guard = self.ebpf.lock().await;
             init_protection_projects_map(&mut guard, &projects)?;
@@ -726,8 +760,10 @@ impl ControlState {
         let now_ns = crate::time::monotonic_ns();
 
         for (key, blocked_until_ns, reason, _first_seen_ns, _origin, hit_count) in hits {
-            // 命中次数不足且不是永久/长期封禁则跳过
-            if hit_count < min_hits && blocked_until_ns <= now_ns {
+            // 命中次数不足且“已经过期”的条目才跳过；
+            // BLOCK_PERMANENT(0) 和仍然有效的封禁都属于长期策略，应上报。
+            let expired = blocked_until_ns != BLOCK_PERMANENT && blocked_until_ns <= now_ns;
+            if hit_count < min_hits && expired {
                 continue;
             }
             let trust_score = self.lookup_trust_score(&key).await;
@@ -812,8 +848,9 @@ impl ControlState {
                 continue;
             }
 
-            // Hub 下发的共享策略使用 ttl_s 描述希望封禁的时长。
-            let duration_s = policy.ttl_s.max(60); // 至少封禁 60s，避免过期
+            // Hub 下发的共享策略使用 ttl_s 描述希望封禁的时长；
+            // ttl_s == 0 与节点本地语义一致，表示永久封禁。
+            let duration_s = policy.ttl_s;
 
             self.block_ip_key(
                 policy.ip,
@@ -856,12 +893,22 @@ impl ControlState {
                 return;
             }
         };
+        let score = trust_score.min(1000);
+        let level = if score >= 700 {
+            1
+        } else if score >= 300 {
+            2
+        } else if score >= 100 {
+            3
+        } else {
+            4
+        };
         let entry = TrustEntry {
-            trust_score: trust_score.min(1000),
+            trust_score: score,
             pass_count: 0,
             drop_count: 0,
             last_update_ns: crate::time::monotonic_ns(),
-            level: 0,
+            level,
             padding: [0; 3],
         };
         let _ = trust_map.insert(key, entry, 0);
@@ -931,6 +978,31 @@ impl ControlState {
             auditor.log(actor, action, detail, None).await;
         }
     }
+}
+
+/// PATCH /api/config 的字段级校验。配置文件校验在 `Config::validate`，
+/// 但 API/Hub 不经过配置文件，必须在进入 eBPF Map 前拦截非法阈值。
+fn validate_runtime_patch(patch: &RuntimeConfigPatch) -> anyhow::Result<()> {
+    if let Some(rl) = &patch.rate_limit {
+        if rl.enabled {
+            anyhow::ensure!(rl.threshold > 0, "rate_limit.threshold must be > 0");
+            anyhow::ensure!(rl.tick_ms > 0, "rate_limit.tick_ms must be > 0");
+            anyhow::ensure!(rl.decay_den > 0, "rate_limit.decay_den must be > 0");
+        }
+    }
+    if let Some(prl) = &patch.port_rate_limit {
+        if prl.enabled {
+            anyhow::ensure!(prl.threshold > 0, "port_rate_limit.threshold must be > 0");
+            anyhow::ensure!(prl.tick_ms > 0, "port_rate_limit.tick_ms must be > 0");
+        }
+    }
+    if let Some(ad) = &patch.adaptive {
+        anyhow::ensure!(ad.window_s > 0, "adaptive.window_s must be > 0");
+        if ad.enabled {
+            anyhow::ensure!(ad.threshold > 0, "adaptive.threshold must be > 0");
+        }
+    }
+    Ok(())
 }
 
 impl RuntimeConfigSnapshot {
@@ -1014,7 +1086,7 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
         padding: [0; 1],
     };
-    tracing::info!(
+    tracing::debug!(
         "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
         runtime.tcp_reset_on_drop,
         runtime.ebpf_debug

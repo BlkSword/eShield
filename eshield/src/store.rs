@@ -1,7 +1,7 @@
 use crate::config::BlockOrigin;
 use crate::timeseries::MetricPoint;
 use anyhow::Context;
-use eshield_common::IpKey;
+use eshield_common::{IpKey, BLOCK_PERMANENT};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -154,6 +154,46 @@ impl RuleStore {
                 }
             }
             Ok(out)
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    /// 删除已过期的动态黑名单行（永久封禁 blocked_until_ns == 0 不删）。
+    /// 静态/API 规则如果已过期也一并清理，避免 redb 长期膨胀。
+    pub async fn prune_expired_blacklist(&self, now_ns: u64) -> anyhow::Result<usize> {
+        let db = self.db.clone();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            let removed: usize;
+            {
+                let mut table = tx.open_table(BLACKLIST)?;
+                let keys: Vec<Vec<u8>> = table
+                    .iter()?
+                    .filter_map(|item| match item {
+                        Ok((k, v)) => {
+                            let row: BlacklistRow = match serde_json::from_slice(v.value()) {
+                                Ok(r) => r,
+                                Err(_) => return None,
+                            };
+                            if row.blocked_until_ns != BLOCK_PERMANENT
+                                && row.blocked_until_ns <= now_ns
+                            {
+                                Some(k.value().to_vec())
+                            } else {
+                                None
+                            }
+                        }
+                        Err(_) => None,
+                    })
+                    .collect();
+                removed = keys.len();
+                for key in keys {
+                    table.remove(&key[..])?;
+                }
+            }
+            tx.commit()?;
+            Ok(removed)
         })
         .await
         .context("store task panicked")?

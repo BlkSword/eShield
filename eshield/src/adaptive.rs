@@ -1,6 +1,7 @@
 use aya::maps::HashMap as LruHashMap;
 use aya::Ebpf;
 use eshield_common::{rules, BlockEntry, IpKey, BLOCK_PERMANENT};
+use std::sync::atomic::Ordering;
 
 use crate::config::AdaptiveConfig;
 use crate::ip::format_ip_key;
@@ -37,8 +38,8 @@ impl AdaptiveEngine {
         self.config.read().map(|c| c.enabled).unwrap_or(false)
     }
 
-    /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map。
-    pub fn on_event(&self, _stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
+    /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map 并累加统计。
+    pub fn on_event(&self, stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
         let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
         if !cfg.enabled {
             return Ok(());
@@ -83,9 +84,15 @@ impl AdaptiveEngine {
             };
             blacklist.insert(src_ip, entry, 0)?;
 
-            // 记录封禁截止时间，避免重复写入 map
-            self.blocked
-                .insert(src_ip, now_s.saturating_add(block_duration_s));
+            // 记录封禁截止时间，避免重复写入 map；永久封禁用 u64::MAX 标记，
+            // 否则 prune() 会把永久条目当成过期条目清掉。
+            let until = if block_duration_s == 0 {
+                u64::MAX
+            } else {
+                now_s.saturating_add(block_duration_s)
+            };
+            self.blocked.insert(src_ip, until);
+            stats.adaptive_blocked.fetch_add(1, Ordering::Relaxed);
 
             tracing::info!(
                 "adaptive block: src={} threshold={}/{}s duration={}s",
@@ -97,6 +104,64 @@ impl AdaptiveEngine {
         }
 
         Ok(())
+    }
+
+    /// 周期性清理：删除过期的滑动窗口与封禁记录，并给两个 DashMap 设置硬上限，
+    /// 防止伪造源 IP 的攻击把内存无限撑大。
+    pub fn prune(&self, now_s: u64) {
+        const MAX_ENTRIES: usize = 100_000;
+        let window_s = self.config.read().map(|c| c.window_s).unwrap_or(300);
+
+        let stale_windows: Vec<IpKey> = self
+            .windows
+            .iter()
+            .filter_map(|entry| {
+                let alive = entry
+                    .value()
+                    .iter()
+                    .any(|t| now_s.saturating_sub(*t) <= window_s);
+                if alive {
+                    None
+                } else {
+                    Some(*entry.key())
+                }
+            })
+            .collect();
+        for key in stale_windows {
+            self.windows.remove(&key);
+        }
+
+        let expired_blocks: Vec<IpKey> = self
+            .blocked
+            .iter()
+            .filter_map(|entry| {
+                if *entry.value() <= now_s {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for key in expired_blocks {
+            self.blocked.remove(&key);
+        }
+
+        // 硬上限：优先从较大的 map 开始驱逐，直到两个 map 都回到上限内。
+        while self.windows.len() > MAX_ENTRIES || self.blocked.len() > MAX_ENTRIES {
+            let from_windows = self.windows.len() >= self.blocked.len();
+            let key = if from_windows {
+                self.windows.iter().next().map(|e| *e.key())
+            } else {
+                self.blocked.iter().next().map(|e| *e.key())
+            };
+            match key {
+                Some(key) => {
+                    self.windows.remove(&key);
+                    self.blocked.remove(&key);
+                }
+                None => break,
+            }
+        }
     }
 }
 

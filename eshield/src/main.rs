@@ -70,6 +70,9 @@ enum Commands {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
     /// 实时封禁某个 IP
     Block {
@@ -81,6 +84,9 @@ enum Commands {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
     /// 实时解封某个 IP
     Unblock {
@@ -89,12 +95,18 @@ enum Commands {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
     /// 重新加载配置文件
     Reload {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
     /// 校验配置文件
     Check {
@@ -107,12 +119,18 @@ enum Commands {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
     /// 重置控制台访问令牌
     ResetToken {
         /// eShield HTTP API 端点
         #[arg(short, long, default_value = DEFAULT_ENDPOINT)]
         endpoint: String,
+        /// API Token（远程访问必填；也可用 ESHIELD_API_TOKEN 环境变量）
+        #[arg(long)]
+        token: Option<String>,
     },
 }
 
@@ -122,18 +140,52 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Start { config } => start(&config).await,
-        Commands::Status { endpoint } => show_status(&endpoint).await,
+        Commands::Status { endpoint, token } => {
+            show_status(&endpoint, resolve_token(token).as_deref()).await
+        }
         Commands::Block {
             ip,
             duration,
             endpoint,
-        } => send_block(&endpoint, &ip, duration).await,
-        Commands::Unblock { ip, endpoint } => send_unblock(&endpoint, &ip).await,
-        Commands::Reload { endpoint } => send_reload(&endpoint).await,
+            token,
+        } => send_block(&endpoint, &ip, duration, resolve_token(token).as_deref()).await,
+        Commands::Unblock {
+            ip,
+            endpoint,
+            token,
+        } => send_unblock(&endpoint, &ip, resolve_token(token).as_deref()).await,
+        Commands::Reload { endpoint, token } => {
+            send_reload(&endpoint, resolve_token(token).as_deref()).await
+        }
         Commands::Check { config } => check_config(&config).await,
-        Commands::Tui { endpoint } => tui::run(endpoint).await,
-        Commands::ResetToken { endpoint } => send_reset_token(&endpoint).await,
+        Commands::Tui { endpoint, token } => tui::run(endpoint, resolve_token(token)).await,
+        Commands::ResetToken { endpoint, token } => {
+            send_reset_token(&endpoint, resolve_token(token).as_deref()).await
+        }
     }
+}
+
+/// CLI 显式 --token 优先，其次读取 ESHIELD_API_TOKEN 环境变量。
+fn resolve_token(token: Option<String>) -> Option<String> {
+    token.filter(|t| !t.is_empty()).or_else(|| {
+        std::env::var("ESHIELD_API_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty())
+    })
+}
+
+/// 构造带 Bearer Token 的 reqwest Client（无 token 时退化为普通 client）。
+fn api_client(token: Option<&str>) -> reqwest::Client {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token.filter(|t| !t.is_empty()) {
+        if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token)) {
+            headers.insert(reqwest::header::AUTHORIZATION, value);
+        }
+    }
+    reqwest::Client::builder()
+        .default_headers(headers)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 async fn check_config(config_path: &str) -> anyhow::Result<()> {
@@ -288,6 +340,11 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         }
         Err(e) => warn!("failed to load persisted timeseries: {}", e),
     }
+    // 记录已经落盘的最后一个时间点，后续只增量写入新点，避免每 60s 全量重写 redb。
+    let last_persisted_ts = Arc::new(AtomicU64::new({
+        let guard = state.stats.timeseries.read().await;
+        guard.last_timestamp()
+    }));
 
     let alert = AlertManager::new(AlertConfig {
         webhook_url: config.alert_webhook_url.clone(),
@@ -297,15 +354,20 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         interface: config.interface.clone(),
     });
     // 若未配置 api_token，则自动生成随机 Token。
-    // 为降低日志泄露风险，仅输出 token 前缀，完整 token 请在控制台设置页查看。
-    let api_token = config.api_token.clone().or_else(|| {
-        let token = format!("{:032x}", rand::random::<u128>());
-        warn!(
-            "api_token not configured; generated random console access token (prefix): {}...",
-            &token[..8]
-        );
-        Some(token)
-    });
+    // 为降低日志泄露风险，仅输出 token 前缀；完整 Token 可用本机
+    // `eshield reset-token`（自动生成并打印新 Token）获取。
+    let api_token = config
+        .api_token
+        .clone()
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            let token = format!("{:032x}", rand::random::<u128>());
+            warn!(
+                "api_token not configured; generated random console access token (prefix): {}...",
+                &token[..8]
+            );
+            Some(token)
+        });
     let auth = AuthState::new(api_token);
 
     // 控制面：封装所有 eBPF Map 操作，供 Web / CLI / SIGHUP 使用
@@ -410,6 +472,18 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
+    // 启动自适应引擎清理任务：周期清理过期窗口/封禁，并限制 DashMap 上限，防止内存无界增长。
+    let adaptive_prune_handle = {
+        let adaptive = adaptive.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                adaptive.prune(crate::time::monotonic_secs());
+            }
+        })
+    };
+
     // 启动事件消费任务：RingBuf 句柄常驻（见上方说明），Ebpf 锁仅用于自适应引擎写 map
     let event_handle = {
         let stats = state.stats.clone();
@@ -496,7 +570,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     // 启动 Danger Signal 监测任务：按配置周期采样并更新全局危险等级
     let danger_handle = {
         let stats = state.stats.clone();
-        let ebpf = ebpf.clone();
+        let control = control.clone();
         let danger_cfg = config.danger_signal.clone();
         tokio::spawn(async move {
             if danger_cfg.enabled {
@@ -507,13 +581,15 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
                 loop {
                     tick.tick().await;
                     let dps = stats.current_dps.load(Ordering::Relaxed);
-                    let level = monitor.sample(dps);
+                    // 必须先读旧等级再采样；sample 只返回新等级，不再自己写 level。
                     let prev = monitor.level.load(Ordering::Relaxed);
+                    let level = monitor.sample(dps);
                     if level != prev {
                         monitor.level.store(level, Ordering::Relaxed);
-                        let mut guard = ebpf.lock().await;
-                        update_danger_level(&mut guard, level);
-                        drop(guard);
+                        if let Err(e) = control.set_danger_level(level).await {
+                            warn!("failed to apply danger level to eBPF: {}", e);
+                        }
+                        stats.danger_level.store(level as u64, Ordering::Relaxed);
                         info!("danger level changed: {} -> {} (dps={})", prev, level, dps);
                     }
                 }
@@ -536,22 +612,28 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动时序指标持久化任务：每 60 秒写入 redb，并清理超过保留期的数据
+    // 启动时序指标持久化任务：每 60 秒增量写入 redb，并清理超过保留期的数据
     let timeseries_persist_handle = {
         let stats = state.stats.clone();
         let store = store.clone();
         let retention_days = config.timeseries_retention_days;
+        let last_persisted_ts = last_persisted_ts.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(60));
             loop {
                 tick.tick().await;
+                let from_ts = last_persisted_ts.load(Ordering::Relaxed);
                 let points = {
                     let ts = stats.timeseries.clone();
                     let guard = ts.read().await;
-                    guard.snapshot(0)
+                    guard.snapshot_after(from_ts)
                 };
-                if let Err(e) = store.save_timeseries(&points).await {
-                    warn!("failed to persist timeseries: {}", e);
+                if let Some(last) = points.last() {
+                    if let Err(e) = store.save_timeseries(&points).await {
+                        warn!("failed to persist timeseries: {}", e);
+                    } else {
+                        last_persisted_ts.store(last.timestamp, Ordering::Relaxed);
+                    }
                 }
                 let now = crate::time::monotonic_secs();
                 let before = now.saturating_sub(retention_days.saturating_mul(86400));
@@ -612,6 +694,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     trust_sync_handle.abort();
     danger_handle.abort();
     top_attackers_handle.abort();
+    adaptive_prune_handle.abort();
     let _ = trust_sync_handle.await;
     let _ = danger_handle.await;
     let _ = event_handle.await;
@@ -624,14 +707,18 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     let _ = timeseries_persist_handle.await;
     let _ = global_stats_handle.await;
     let _ = top_attackers_handle.await;
+    let _ = adaptive_prune_handle.await;
 
     // 优雅退出前最后保存一次时序指标，避免最近 60 秒内的数据丢失。
     {
+        let from_ts = last_persisted_ts.load(Ordering::Relaxed);
         let guard = state.stats.timeseries.read().await;
-        let points = guard.snapshot(0);
+        let points = guard.snapshot_after(from_ts);
         drop(guard);
-        if let Err(e) = store.save_timeseries(&points).await {
-            warn!("failed to save timeseries on shutdown: {}", e);
+        if !points.is_empty() {
+            if let Err(e) = store.save_timeseries(&points).await {
+                warn!("failed to save timeseries on shutdown: {}", e);
+            }
         }
     }
 
@@ -652,8 +739,8 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn show_status(endpoint: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+async fn show_status(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+    let client = api_client(token);
     let stats: serde_json::Value = client
         .get(format!("{}/api/stats", endpoint))
         .send()
@@ -711,8 +798,13 @@ async fn show_status(endpoint: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn send_block(endpoint: &str, ip: &str, duration: u64) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+async fn send_block(
+    endpoint: &str,
+    ip: &str,
+    duration: u64,
+    token: Option<&str>,
+) -> anyhow::Result<()> {
+    let client = api_client(token);
     let resp = client
         .post(format!("{}/api/blacklist", endpoint))
         .json(&serde_json::json!({ "ip": ip, "duration_s": duration }))
@@ -728,8 +820,8 @@ async fn send_block(endpoint: &str, ip: &str, duration: u64) -> anyhow::Result<(
     Ok(())
 }
 
-async fn send_unblock(endpoint: &str, ip: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+async fn send_unblock(endpoint: &str, ip: &str, token: Option<&str>) -> anyhow::Result<()> {
+    let client = api_client(token);
     let resp = client
         .delete(format!("{}/api/blacklist", endpoint))
         .json(&serde_json::json!({ "ip": ip }))
@@ -745,8 +837,8 @@ async fn send_unblock(endpoint: &str, ip: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn send_reload(endpoint: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+async fn send_reload(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+    let client = api_client(token);
     let resp = client
         .post(format!("{}/api/config/reload", endpoint))
         .send()
@@ -761,8 +853,8 @@ async fn send_reload(endpoint: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn send_reset_token(endpoint: &str) -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+async fn send_reset_token(endpoint: &str, token: Option<&str>) -> anyhow::Result<()> {
+    let client = api_client(token);
     let resp = client
         .post(format!("{}/api/auth/reset-token", endpoint))
         .send()
@@ -888,25 +980,6 @@ async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
     }
 }
 
-/// 将危险等级写入 eBPF CONFIG map，使 eBPF 侧可以据此进一步收紧阈值。
-fn update_danger_level(ebpf: &mut Ebpf, level: u8) {
-    let mut config_array: aya::maps::Array<_, eshield_common::RuntimeConfig> = match ebpf
-        .map_mut("CONFIG")
-        .expect("CONFIG map not found")
-        .try_into()
-    {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("failed to open CONFIG for danger update: {}", e);
-            return;
-        }
-    };
-    if let Ok(mut cfg) = config_array.get(&0, 0) {
-        cfg.danger_level = level;
-        let _ = config_array.set(0, cfg, 0);
-    }
-}
-
 fn random_bytes() -> [u8; 16] {
     let mut bytes = [0u8; 16];
     rand::thread_rng().fill(&mut bytes[..]);
@@ -949,7 +1022,7 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
                         acc.icmp_dropped += v.icmp_dropped;
                         acc.other_dropped += v.other_dropped;
                     }
-                    info!(
+                    tracing::debug!(
                         "sync_global_stats total_packets={} total_dropped={} blacklist_blocked={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
                         acc.total_packets, acc.total_dropped, acc.blacklist_blocked, acc.geoip_blocked,
                         acc.tcp_rst_sent, acc.tcp_rst_fail, acc.tcp_rst_attempt,

@@ -18,12 +18,17 @@ pub struct AuthState {
 
 impl AuthState {
     pub fn new(token: Option<String>) -> Self {
+        // 空字符串 token 等价于未配置：否则外部请求可以用空 Cookie 绕过认证。
+        let token = token.filter(|s| !s.is_empty());
         Self {
             token: Arc::new(RwLock::new(token.map(|s| Arc::from(s.into_boxed_str())))),
         }
     }
 
     pub async fn verify(&self, provided: &str) -> bool {
+        if provided.is_empty() {
+            return false;
+        }
         let guard = self.token.read().await;
         match &*guard {
             None => false,
@@ -37,6 +42,9 @@ impl AuthState {
     }
 
     pub async fn set_token(&self, token: String) {
+        if token.is_empty() {
+            return;
+        }
         let mut guard = self.token.write().await;
         *guard = Some(Arc::from(token.into_boxed_str()));
     }
@@ -58,8 +66,13 @@ pub async fn auth_middleware(
     request: Request,
     next: Next,
 ) -> Response {
-    // 本机请求直接放行，供 CLI 使用
-    if addr.ip().is_loopback() {
+    // 本机请求直接放行，供 CLI 使用；但如果请求带有反向代理头，
+    // 说明对端可能是同机 nginx/Caddy，此时必须按外部请求走 Token 校验，
+    // 否则“127.0.0.1 免认证”会把所有经代理的外部流量变成免认证。
+    let proxy_headers_present = request.headers().contains_key("x-forwarded-for")
+        || request.headers().contains_key("x-real-ip")
+        || request.headers().contains_key("forwarded");
+    if addr.ip().is_loopback() && !proxy_headers_present {
         return next.run(request).await;
     }
 

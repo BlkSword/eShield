@@ -244,7 +244,7 @@ export function mount(el) {
     }
     box.innerHTML = projects.map((p, i) => {
       const [tagCls, tagText] = PROJECT_ACTIONS[p.action] || ['tag-muted', p.action || '—'];
-      const targets = (p.target_ips || []).length ? p.target_ips.join('、') : '任意 IP';
+      const targets = (p.target_ips || []).length ? p.target_ips.join('、') : '未配置（不会生效）';
       const mods = (p.enabled_modules || []).map(mid => PROJECT_MODULES.find(x => x.id === mid)?.name || mid).join('、') || '—';
       return `<div class="card module-card">
         <div class="module-head">
@@ -281,7 +281,7 @@ export function mount(el) {
         <div class="field"><span class="field-label">动作</span>
           <select class="select" id="ppAction">${actions.map(([v, l]) => `<option value="${v}" ${p?.action === v ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
       </div>
-      <div class="field section-gap"><span class="field-label">目标 IP / CIDR（每行一条，留空表示任意 IP；IPv4 CIDR 下限 /24）</span>
+      <div class="field section-gap"><span class="field-label">目标 IP / CIDR *（每行一条，至少一个 IPv4；IPv4 CIDR 下限 /24）</span>
         <textarea class="textarea" id="ppTargets" rows="3" placeholder="10.0.0.1&#10;192.168.1.0/24">${esc((p?.target_ips || []).join('\n'))}</textarea></div>
       <div class="field section-gap"><span class="field-label">绑定防御模块</span>
         <div id="ppModules">${PROJECT_MODULES.map(m => `<label class="switch-row"><span class="field-label">${esc(m.name)}</span>
@@ -312,6 +312,11 @@ export function mount(el) {
       dport = String(n);
     }
     const targets = $('#ppTargets').value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!targets.length) { toast('请至少填写一个目标 IP / CIDR', 'info'); return; }
+    if (!targets.some(t => !t.includes(':'))) {
+      toast('数据面目前仅支持 IPv4 目标，请至少填写一个 IPv4 IP / CIDR', 'info');
+      return;
+    }
     const bad = targets.find(t => !isValidCidr(t) && !t.includes(':'));
     if (bad) { toast(`目标 IP / CIDR 无效：${bad}`, 'info'); return; }
     const badPrefix = targets.find(t => /^\d+\.\d+\.\d+\.\d+\/\d+$/.test(t) && Number(t.split('/')[1]) < 24);

@@ -30,7 +30,7 @@ pub struct Attacker {
     pub count: u64,
 }
 
-pub async fn run(endpoint: String) -> anyhow::Result<()> {
+pub async fn run(endpoint: String, token: Option<String>) -> anyhow::Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
     crossterm::execute!(
@@ -42,7 +42,19 @@ pub async fn run(endpoint: String) -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let client = reqwest::Client::new();
+    let client = {
+        let mut headers = reqwest::header::HeaderMap::new();
+        if let Some(token) = token.as_deref().filter(|t| !t.is_empty()) {
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
+            {
+                headers.insert(reqwest::header::AUTHORIZATION, value);
+            }
+        }
+        reqwest::Client::builder()
+            .default_headers(headers)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    };
     let mut last_draw = Instant::now();
 
     let stats_url = format!("{}/api/stats", endpoint.trim_end_matches('/'));

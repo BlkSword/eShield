@@ -35,7 +35,7 @@ pub struct Config {
     #[allow(dead_code)]
     pub whitelist: Vec<String>,
     pub blacklist: Vec<String>,
-    #[serde(default)]
+    #[serde(default = "default_log_level")]
     pub log_level: String,
     #[serde(default = "default_false")]
     pub ebpf_log_enabled: bool,
@@ -93,6 +93,10 @@ pub struct Config {
     pub hub: HubConfig,
     #[serde(default)]
     pub packet_log: PacketLogConfig,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 fn default_web_port() -> u16 {
@@ -583,7 +587,14 @@ fn default_port_rate_threshold() -> u64 {
 impl Config {
     pub fn from_file<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
         let content = fs::read_to_string(path).context("failed to read config file")?;
-        let config: Config = toml::from_str(&content).context("failed to parse config file")?;
+        let mut config: Config = toml::from_str(&content).context("failed to parse config file")?;
+        // 允许 `cargo xtask run --iface eth0` 通过环境变量覆盖配置文件中的网卡，
+        // 便于在不改动 /etc/eshield/config.toml 的情况下做本地/CI 调试。
+        if let Ok(iface) = std::env::var("ESHIELD_INTERFACE") {
+            if !iface.is_empty() {
+                config.interface = iface;
+            }
+        }
         Ok(config)
     }
 
@@ -617,7 +628,7 @@ impl Config {
             }
         }
 
-        validate_port_acl(self)?;
+        validate_port_acl_items(&self.port_acl)?;
 
         if self.rate_limit.enabled {
             if self.rate_limit.threshold == 0 {
@@ -643,22 +654,34 @@ impl Config {
             }
         }
 
-        if self.adaptive.enabled && self.adaptive.threshold == 0 {
-            anyhow::bail!("adaptive.threshold must be > 0");
+        if self.adaptive.enabled {
+            if self.adaptive.threshold == 0 {
+                anyhow::bail!("adaptive.threshold must be > 0");
+            }
+            if self.adaptive.window_s == 0 {
+                anyhow::bail!("adaptive.window_s must be > 0");
+            }
         }
 
-        for (i, pat) in self.l7_scan.patterns.iter().enumerate() {
-            let bytes = pat.pattern.as_bytes();
-            if bytes.is_empty() {
-                anyhow::bail!("L7 pattern {} cannot be empty", i);
+        validate_l7_patterns(&self.l7_scan.patterns)?;
+
+        if self.danger_signal.enabled {
+            if self.danger_signal.sample_interval_s == 0 {
+                anyhow::bail!("danger_signal.sample_interval_s must be > 0");
             }
-            if bytes.len() > 8 {
-                anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
+            if !(self.danger_signal.anomaly_multiplier.is_finite()
+                && self.danger_signal.anomaly_multiplier > 0.0)
+            {
+                anyhow::bail!("danger_signal.anomaly_multiplier must be a positive finite number");
             }
-            if let Some(mask) = &pat.mask {
-                if mask.len() != bytes.len() {
-                    anyhow::bail!("L7 pattern {} mask length mismatch", i);
-                }
+        }
+
+        if self.packet_log.enabled {
+            if self.packet_log.sample_rate == 0 {
+                anyhow::bail!("packet_log.sample_rate must be > 0 when enabled");
+            }
+            if self.packet_log.memory_max_entries == 0 {
+                anyhow::bail!("packet_log.memory_max_entries must be > 0 when enabled");
             }
         }
 
@@ -668,7 +691,7 @@ impl Config {
 
         validate_geoip(self)?;
         validate_threat_intel(self)?;
-        validate_protection_projects(self)?;
+        validate_protection_projects_list(&self.protection_projects)?;
         validate_hub(self)?;
 
         Ok(())
@@ -683,8 +706,12 @@ impl Config {
     }
 }
 
-fn validate_port_acl(config: &Config) -> anyhow::Result<()> {
-    for (i, entry) in config.port_acl.iter().enumerate() {
+/// 端口 ACL 条目校验，供配置文件、Web API 与 Hub 规则包共用。
+pub fn validate_port_acl_items(items: &[PortAclItem]) -> anyhow::Result<()> {
+    if items.len() > 128 {
+        anyhow::bail!("too many port_acl entries (max 128)");
+    }
+    for (i, entry) in items.iter().enumerate() {
         let protocol = entry.protocol.to_lowercase();
         if !matches!(protocol.as_str(), "tcp" | "udp" | "icmp" | "icmpv6" | "any") {
             anyhow::bail!(
@@ -821,7 +848,32 @@ fn validate_hub(config: &Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
+/// L7 指纹校验，供配置文件、Web API 与 Hub 规则包共用。
+pub fn validate_l7_patterns(patterns: &[L7PatternConfig]) -> anyhow::Result<()> {
+    if patterns.len() > 16 {
+        anyhow::bail!("too many L7 patterns (max 16)");
+    }
+    for (i, pat) in patterns.iter().enumerate() {
+        if pat.pattern.is_empty() {
+            anyhow::bail!("L7 pattern {} cannot be empty", i);
+        }
+        if pat.pattern.as_bytes().len() > 8 {
+            anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
+        }
+        if let Some(mask) = &pat.mask {
+            if mask.as_bytes().len() != pat.pattern.as_bytes().len() {
+                anyhow::bail!("L7 pattern {} mask length mismatch", i);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 防护项目校验，供配置文件、Web API 与 Hub 规则包共用。
+pub fn validate_protection_projects_list(projects: &[ProtectionProject]) -> anyhow::Result<()> {
+    if projects.len() > 256 {
+        anyhow::bail!("too many protection projects (max 256)");
+    }
     let valid_modules: std::collections::HashSet<&str> = [
         "syn_flood",
         "udp_flood",
@@ -835,7 +887,7 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
     ]
     .into_iter()
     .collect();
-    for (i, proj) in config.protection_projects.iter().enumerate() {
+    for (i, proj) in projects.iter().enumerate() {
         if proj.name.is_empty() {
             anyhow::bail!("protection_projects[{}]: name cannot be empty", i);
         }
@@ -878,10 +930,20 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
                 );
             }
         }
+        if proj.target_ips.is_empty() {
+            anyhow::bail!(
+                "protection_projects[{}]: target_ips cannot be empty (data plane matches exact IPv4 only)",
+                i
+            );
+        }
+        let mut has_ipv4_target = false;
         for (j, ip) in proj.target_ips.iter().enumerate() {
             // 纯 IP 直接合法；CIDR 支持 /24 及以上网段（数据面按精确 IP 匹配，
             // 控制面展开，过宽网段会撑爆 PROJECT_POLICY map，故拒绝）
-            if crate::ip::parse_ip(ip).is_ok() {
+            if let Ok(key) = crate::ip::parse_ip(ip) {
+                if key.family() == Some(eshield_common::IpFamily::Ipv4) {
+                    has_ipv4_target = true;
+                }
                 continue;
             }
             let (key, prefix) = crate::ip::parse_cidr(ip).with_context(|| {
@@ -890,14 +952,23 @@ fn validate_protection_projects(config: &Config) -> anyhow::Result<()> {
                     i, j
                 )
             })?;
-            if key.family() == Some(eshield_common::IpFamily::Ipv4) && prefix < 24 {
-                anyhow::bail!(
-                    "protection_projects[{}].target_ips[{}]: CIDR /{} too broad (min /24, expanded to exact IPs)",
-                    i,
-                    j,
-                    prefix
-                );
+            if key.family() == Some(eshield_common::IpFamily::Ipv4) {
+                has_ipv4_target = true;
+                if prefix < 24 {
+                    anyhow::bail!(
+                        "protection_projects[{}].target_ips[{}]: CIDR /{} too broad (min /24, expanded to exact IPs)",
+                        i,
+                        j,
+                        prefix
+                    );
+                }
             }
+        }
+        if !has_ipv4_target {
+            anyhow::bail!(
+                "protection_projects[{}]: at least one IPv4 target is required (data plane does not support IPv6 targets yet)",
+                i
+            );
         }
     }
     Ok(())
@@ -1025,5 +1096,30 @@ mod tests {
         assert_eq!(entry.dport_low, 0);
         assert_eq!(entry.dport_high, 0);
         assert_eq!(entry.action, 2);
+    }
+
+    #[test]
+    fn test_validate_projects_rejects_empty_targets() {
+        let project = ProtectionProject {
+            name: "p".to_string(),
+            description: String::new(),
+            protocol: "tcp".to_string(),
+            dport: "80".to_string(),
+            target_ips: Vec::new(),
+            enabled_modules: Vec::new(),
+            action: "defend".to_string(),
+        };
+        assert!(validate_protection_projects_list(&[project]).is_err());
+    }
+
+    #[test]
+    fn test_validate_l7_patterns_rejects_too_many() {
+        let patterns: Vec<L7PatternConfig> = (0..17)
+            .map(|i| L7PatternConfig {
+                pattern: format!("P{}", i % 10),
+                mask: None,
+            })
+            .collect();
+        assert!(validate_l7_patterns(&patterns).is_err());
     }
 }

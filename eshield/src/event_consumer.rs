@@ -100,7 +100,7 @@ pub async fn run(
     stats.add_dropped_batch(&by_reason, &by_port);
 
     if !events.is_empty() {
-        tracing::info!(
+        tracing::debug!(
             events_len = events.len(),
             ?by_reason,
             ?by_port,

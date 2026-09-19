@@ -7,7 +7,7 @@
 //! 等级 1 (elevated) → 速率阈值打 75 折
 //! 等级 2 (critical) → 速率阈值打 5 折
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::AtomicU8;
 use std::sync::Mutex;
 
 /// 全局危险等级（写 eBPF CONFIG map 前，先在此缓存）。
@@ -57,7 +57,8 @@ impl DangerMonitor {
             0 // normal
         };
 
-        self.level.store(level, Ordering::Relaxed);
+        // 只返回采样结果，不在函数内部写 self.level：
+        // 调用方需要先读取旧等级才能检测到“发生变化”，由调用方统一写入。
         level
     }
 
