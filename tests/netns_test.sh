@@ -662,4 +662,61 @@ rm -f /var/lib/eshield/rules.redb /tmp/sc_base
 
 
 
+echo "=== Test 12: GeoIP allowlist + default_action=drop + fragmented traffic ==="
+cat > /tmp/geoip_allow.csv <<'EOF'
+network,country_iso
+10.0.0.2/32,CN
+EOF
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[geoip]
+enabled = true
+country_blocks_csv = "/tmp/geoip_allow.csv"
+allow_countries = ["CN"]
+default_action = "drop"
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 2
+
+# 10.0.0.2 在 allow 列表（10.0.0.0/24,CN）内：普通包与大包分片都应放行
+if ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1 &&    ip netns exec eshield-client ping -s 2000 -c 2 -W 2 10.0.0.1 >/dev/null 2>&1; then
+    echo "PASS: GeoIP allowlist permitted listed source (including fragments)"
+else
+    echo "FAIL: GeoIP allowlist dropped listed source or fragmented traffic"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+# 10.0.0.3 不在 allow 列表：default_action=drop 应丢弃
+ip netns exec eshield-client ip addr add 10.0.0.3/24 dev veth-client 2>/dev/null || true
+if ip netns exec eshield-client ping -I 10.0.0.3 -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
+    echo "FAIL: GeoIP default_action=drop did not drop non-allowlisted source"
+    ip netns exec eshield-client ip addr del 10.0.0.3/24 dev veth-client 2>/dev/null || true
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+else
+    echo "PASS: GeoIP default_action=drop blocked non-allowlisted source"
+fi
+ip netns exec eshield-client ip addr del 10.0.0.3/24 dev veth-client 2>/dev/null || true
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+rm -f /var/lib/eshield/rules.redb /tmp/geoip_allow.csv
+
 echo "=== All Phase 1+2+3 integration tests passed ==="

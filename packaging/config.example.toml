@@ -90,14 +90,14 @@ block_duration_s = 300
 
 [geoip]
 enabled = false
-# db_path = "/usr/share/GeoIP/GeoLite2-Country.mmdb"   # MaxMind MMDB（预留）
+# db_path = "/usr/share/GeoIP/GeoLite2-Country.mmdb"   # 预留：当前仅支持 CSV，MMDB 尚未接入
 country_blocks_csv = "/etc/eshield/geoip_country.csv"   # 自定义国家 CSV
 # asn_blocks_csv = "/etc/eshield/geoip_asn.csv"         # 自定义 ASN CSV
 block_countries = ["XX"]                                # 阻止的国家代码
-# allow_countries = ["CN"]                              # 仅允许指定国家（与 block 互斥时使用）
+# allow_countries = ["CN"]                              # 仅允许指定国家（default_action="drop" 时生效）
 # block_asns = [12345]
 # allow_asns = []
-default_action = "pass"
+# default_action = "pass"  # pass=仅按 block 列表拦截；drop=仅放行 allow 列表
 
 [threat_intel]
 enabled = false
@@ -118,8 +118,8 @@ enabled = false
 # Trust Score IP 双向信誉引擎（v0.4.0，默认关闭）
 [trust_score]
 enabled = false
-# add_divisor = 100       # PASS: trust += (1000 - trust) / divisor
-# sub_divisor = 3         # DROP: trust -= trust / divisor
+# add_divisor = 100       # PASS: trust += (1000 - trust) / divisor（已接入数据面）
+# sub_divisor = 3         # DROP: trust -= trust / divisor（已接入数据面）
 
 # Danger Signal 系统危险信号监测（v0.4.0，默认关闭）
 [danger_signal]

@@ -74,6 +74,13 @@ PRIVATE_KEY = load_private_key()
 PASSWORD = load_password() if PRIVATE_KEY is None else ""
 
 EXCLUDES = {".git", "target", ".claude", ".remote_pass"}
+# 需要同步的隐藏目录：.cargo/config.toml 提供 xtask alias，缺了会导致
+# `cargo xtask ...` 在远端不可用。
+HIDDEN_ALLOWED = {".cargo"}
+
+
+def _hidden_ok(part: str) -> bool:
+    return part in HIDDEN_ALLOWED
 
 
 def should_upload(rel_path: str) -> bool:
@@ -81,7 +88,9 @@ def should_upload(rel_path: str) -> bool:
     for part in parts:
         if not part:
             continue
-        if part in EXCLUDES or part.startswith("."):
+        if part in EXCLUDES:
+            return False
+        if part.startswith(".") and not _hidden_ok(part):
             return False
     return True
 
@@ -99,7 +108,9 @@ def scan_local(root: str):
             continue
 
         dirnames[:] = [
-            d for d in dirnames if not d.startswith(".") and d not in EXCLUDES
+            d
+            for d in dirnames
+            if (not d.startswith(".") or _hidden_ok(d)) and d not in EXCLUDES
         ]
 
         for f in filenames:
@@ -128,7 +139,7 @@ def scan_remote(sftp, root: str):
             return
         for attr in attrs:
             name = attr.filename
-            if name.startswith("."):
+            if name.startswith(".") and not _hidden_ok(name):
                 continue
             rel = (rel_prefix + "/" + name) if rel_prefix else name
             if not should_upload(rel):

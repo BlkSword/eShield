@@ -45,8 +45,8 @@
 1. 包解析：有界读取 Eth / IP(v4/v6) / TCP / UDP / ICMP 头部
 2. 白名单：LPM Trie 查询 CIDR（IPv4 / IPv6）
 3. 端口/协议 ACL：按目的端口与协议匹配 allow/drop 规则
-4. 防护项目：按 目的 IPv4 + 端口 + 协议 查 `PROJECT_POLICY`（PASS 放行 / DROP 丢弃 / DEFEND 继续全局防御）
-5. GeoIP/ASN：LPM Trie CIDR 匹配，支持自定义 CSV 或 MaxMind MMDB
+4. 黑名单：源 IP LRU 查询前移，避免已封禁源被后续 PASS 规则放行；随后按 目的 IPv4 + 端口 + 协议 查 `PROJECT_POLICY`（PASS/DROP/DEFEND）
+5. GeoIP/ASN：LPM Trie CIDR 匹配，支持 CSV block 列表与 default_action=drop 的 allow 列表；非首片 IPv4 分片跳过端口/L4 模块
 6. TCP：SYN Proxy（IPv4 SYN-ACK Cookie 挑战 + ACK 校验）→ SYN Flood 速率检测
 7. UDP Flood / ICMP Flood：按协议检测
 8. L7 扫描：读取 TCP 首包载荷前 8 字节模式匹配
@@ -72,6 +72,8 @@
 | PROJECT_POLICY | LRU Hash | ProjectPolicyKey | ProjectPolicy | 8,192 | 防护项目策略（精确 IP 展开） |
 | GEOIP_BLOCKED_V4 | LPM Trie | GeoIpKeyV4 | u8 | 4,096 | GeoIP IPv4 拦截 CIDR |
 | GEOIP_BLOCKED_V6 | LPM Trie | GeoIpKeyV6 | u8 | 4,096 | GeoIP IPv6 拦截 CIDR |
+| GEOIP_ALLOWED_V4 | LPM Trie | GeoIpKeyV4 | u8 | 4,096 | GeoIP IPv4 放行 CIDR（default_action=drop） |
+| GEOIP_ALLOWED_V6 | LPM Trie | GeoIpKeyV6 | u8 | 4,096 | GeoIP IPv6 放行 CIDR（default_action=drop） |
 | CONFIG | Array | u32 | RuntimeConfig | 1 | 运行时配置 |
 
 ## 控制面数据流

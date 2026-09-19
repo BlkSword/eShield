@@ -129,7 +129,15 @@ echo ""
 
 # 5. 正常 HTTP 基线测试
 echo "--- 测试 1: 正常 HTTP 请求基线 (wrk -> /) ---"
-ip netns exec "$CLIENT_NS" wrk -t2 -c50 -d${DURATION}s "http://${SERVER_IP}/" || true
+if command -v wrk >/dev/null 2>&1; then
+    ip netns exec "$CLIENT_NS" wrk -t2 -c50 -d${DURATION}s "http://${SERVER_IP}/" || true
+else
+    echo "wrk 未安装，使用 curl 串行基线（${DURATION:-3}s）"
+    end=$(( $(date +%s) + ${DURATION:-3} ))
+    while [ "$(date +%s)" -lt "$end" ]; do
+        ip netns exec "$CLIENT_NS" curl -fs -o /dev/null "http://${SERVER_IP}/" || true
+    done
+fi
 sleep 2
 echo "测试后状态: $(api_stats)"
 echo ""

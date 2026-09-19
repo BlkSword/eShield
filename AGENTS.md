@@ -99,7 +99,7 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 
 主要模块：
 
-- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP → TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 黑名单 → 决策。
+- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 黑名单 → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP（block/allow + default_action）→ TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 决策；非首片 IPv4 分片跳过端口/L4 模块。
 - `parser.rs`：有界读取 Ethernet / IPv4 / IPv6 / TCP / UDP / ICMP 头部。
 - `maps.rs`：BPF Maps 定义。
 - `blacklist.rs`：LRU Hash 黑名单查询。
@@ -266,9 +266,9 @@ sudo bash scripts/benchmark.sh
 - `udp_flood_enabled` / `icmp_flood_enabled`：无连接 Flood 防护顶层开关。
 - `[l7_scan]`：TCP 首包指纹匹配。
 - `[adaptive]`：重复触发自动提升封禁时长。
-- `[geoip]`：国家/ASN CIDR 放行/封禁。
+- `[geoip]`：国家/ASN CIDR 封禁（block 列表）；`default_action="drop"` 时仅放行 allow_countries/allow_asns。
 - `[threat_intel]`：自定义威胁情报 feed。
-- `[trust_score]`：IP 双向信誉引擎（v0.4.0）。
+- `[trust_score]`：IP 双向信誉引擎（v0.4.0）；`add_divisor`/`sub_divisor` 已接入数据面。
 - `[danger_signal]`：系统危险信号监测（v0.4.0）。
 - `[port_acl]`：端口/协议级 allow/drop 规则。
 - `[port_rate_limit]`：按目的端口（协议+端口）固定窗口限速，防换源 IP 绕过（v0.4.6，默认关闭）。
@@ -389,7 +389,7 @@ sync_rules_enabled = true
 
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
 - **SYN Cookie 代理**：仅 IPv4 TCP；采用降级式挑战，只有超过 SYN Flood 阈值的源会被 Cookie 挑战并暂时拉黑，正常连接与合法客户端验证后直通（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
-- **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
+- **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击；非首片 IPv4 分片会跳过端口/L4 模块，仅保留黑名单/限速/GeoIP 等源地址级判断。
 - **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
 - **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
 - **eBPF 构建**：debug 构建因 `overflow-checks` 与未内联代码容易导致 verifier/bpf-linker 失败，因此工作空间默认 `opt-level = 3`；发布构建使用 `panic = abort`、`lto = true`、`strip = true`。

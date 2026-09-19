@@ -79,7 +79,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | 端口/协议 ACL | 支持 `tcp`/`udp`/`icmp`/`icmpv6`/`any`，端口、范围或 `any`，动作 `allow`/`drop`。 |
 | SYN Cookie 代理 | IPv4 TCP SYN Flood 场景下回复 SYN-ACK Cookie，合法 ACK 验证后放行。 |
 | TCP RST 回包 | 对丢弃的 TCP 连接立即回复 RST，避免客户端重传堆积。 |
-| GeoIP / ASN 过滤 | 基于自定义 CSV CIDR 列表按国家或 ASN 放行/封禁。 |
+| GeoIP / ASN 过滤 | 基于自定义 CSV CIDR 列表按国家或 ASN 封禁；`default_action="drop"` 时仅放行 allow 列表。 |
 | 威胁情报联动 | 定时同步自定义 URL feed，自动拦截已知恶意 IP。 |
 | L7 轻量指纹扫描 | 检查 TCP 载荷前若干字节，匹配特征即 DROP。 |
 | 自适应阈值引擎 | 重复触发规则的 IP 自动提升为更长时间封禁。 |
@@ -89,7 +89,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | 认证 / 审计 / 持久化 | 可选 Bearer Token；审计日志；动态规则持久化到 redb。 |
 | 可观测性 | Prometheus `/metrics`、JSON 统计、审计 SSE、TOP 攻击源/端口、协议分布、IP 信誉分布、24 小时时序趋势。 |
 | 版本管理 | 控制台页脚与设置页自动同步后端运行版本。 |
-| **Trust Score（v0.4.0）** | IP 双向信誉评估——PASS 缓慢加分，DROP 快速减分，信誉分动态调制速率阈值。 |
+| **Trust Score（v0.4.0）** | IP 双向信誉评估——PASS 缓慢加分，DROP 快速减分，信誉分动态调制速率阈值；加分/减分除数可配置。 |
 | **Danger Signal（v0.4.0）** | 系统级危险信号监测——CPU/内存/DPS 异常时自动提高全局防御等级（正常/警戒/危险）。 |
 | **分布式 Hub（v0.4.2）** | 多节点通过 `eshield-hub` 聚合共享黑名单/信誉/规则；节点自治，Hub 故障时自动降级。 |
 | **时序持久化（v0.4.2）** | 分钟级 PPS/DPS/拦截趋势写入 redb，进程重启后自动加载，支持保留天数配置。 |

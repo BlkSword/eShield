@@ -16,7 +16,6 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --default-toolchain stable --no-modify-path
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup toolchain install nightly-2026-07-31 --component rust-src \
-    && rustup target add bpfel-unknown-none --toolchain nightly-2026-07-31 \
     && rustup target add x86_64-unknown-linux-musl
 
 # Install prebuilt bpf-linker (faster than cargo install)
