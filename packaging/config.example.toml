@@ -69,9 +69,7 @@ block_duration_s = 300      # 触发后封禁时长
 [port_rate_limit]
 enabled = false
 threshold = 2000            # 每个 tick 内单个目的端口允许的最大包数
-tick_ms = 100
-decay_num = 7
-decay_den = 8
+tick_ms = 100                # 固定窗口；该模块不使用 decay_num/decay_den
 
 [syn_proxy]
 enabled = false             # SYN Flood 源进入 Cookie 挑战（降级式：正常连接直通，合法客户端验证后解除）

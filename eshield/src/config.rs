@@ -697,6 +697,14 @@ impl Config {
         if self.web_port == 0 {
             anyhow::bail!("web_port cannot be 0");
         }
+        if let Some(bind) = &self.web_bind {
+            if bind.trim().is_empty() {
+                anyhow::bail!("web_bind cannot be empty");
+            }
+            if bind.parse::<std::net::SocketAddr>().is_err() {
+                anyhow::bail!("web_bind must be in host:port form, got '{}'", bind);
+            }
+        }
 
         validate_geoip(self)?;
         validate_threat_intel(self)?;
