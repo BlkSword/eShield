@@ -141,8 +141,15 @@ impl Store {
             return Ok((policies, cursor));
         }
 
+        // 从 since_ns+1 开始做范围扫描，跳过所有更旧的历史行。
+        let start = {
+            let mut key = [0u8; 25];
+            key[0..8].copy_from_slice(&since_ns.saturating_add(1).to_be_bytes());
+            key
+        };
+
         let mut cutoff: Option<u64> = None;
-        for result in table.iter()? {
+        for result in table.range::<&[u8; 25]>(&start..)? {
             let (k, v) = result?;
             let key = k.value();
             let last_seen_ns = u64::from_be_bytes(key[0..8].try_into().unwrap());
@@ -291,8 +298,13 @@ impl Store {
         if limit == 0 {
             return Ok((ips, cursor));
         }
+        let start = {
+            let mut key = [0u8; 25];
+            key[0..8].copy_from_slice(&since_ns.saturating_add(1).to_be_bytes());
+            key
+        };
         let mut cutoff: Option<u64> = None;
-        for result in table.iter()? {
+        for result in table.range::<&[u8; 25]>(&start..)? {
             let (k, _) = result?;
             let key = k.value();
             let deleted_at = u64::from_be_bytes(key[0..8].try_into().unwrap());
