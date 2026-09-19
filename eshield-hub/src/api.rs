@@ -85,7 +85,8 @@ async fn pull_policies(
     State(state): State<Arc<AppState>>,
     Query(params): Query<PullParams>,
 ) -> Result<Json<PolicyPull>, StatusCode> {
-    let limit = params.limit.unwrap_or(1000);
+    // 限制单次拉取上限，避免单个客户端请求把整个策略库加载进内存。
+    let limit = params.limit.unwrap_or(1000).clamp(1, 10_000);
     match state.store.query_since(params.since, limit) {
         Ok((policies, cursor)) => Ok(Json(PolicyPull {
             policies,
@@ -158,7 +159,7 @@ async fn deleted_policies(
     State(state): State<Arc<AppState>>,
     Query(params): Query<DeletedParams>,
 ) -> Result<Json<DeletedPolicies>, StatusCode> {
-    let limit = params.limit.unwrap_or(1000);
+    let limit = params.limit.unwrap_or(1000).clamp(1, 10_000);
     match state.store.query_tombstones_since(params.since, limit) {
         Ok((ips, cursor)) => Ok(Json(DeletedPolicies {
             ips,

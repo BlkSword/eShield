@@ -140,14 +140,27 @@ fn parse_text_feed(text: &str) -> Result<Vec<IpKey>> {
         if ip_str.is_empty() {
             continue;
         }
-        // 去掉 CIDR 后缀，只取网络地址（/32 与 /128 即主机本身）
-        let ip_str = ip_str.split_once('/').map(|(ip, _)| ip).unwrap_or(ip_str);
         add_ip(&mut result, ip_str);
     }
     Ok(result)
 }
 
 fn add_ip(out: &mut Vec<IpKey>, s: &str) {
+    // 威胁情报只支持精确主机地址：普通 IP 或 /32、/128。
+    // 旧实现会把 1.2.3.0/24 的 CIDR 后缀直接剥掉，错误地封禁网络地址。
+    if let Some((ip, prefix)) = s.split_once('/') {
+        let is_host_prefix = prefix == "32" || prefix == "128";
+        if !is_host_prefix {
+            tracing::debug!("skip non-host CIDR in hub threat feed: {}", s);
+            return;
+        }
+        match ip.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) if prefix == "32" => out.push(IpKey::from_ipv4(v4.octets())),
+            Ok(IpAddr::V6(v6)) if prefix == "128" => out.push(IpKey::from_ipv6(v6.octets())),
+            _ => tracing::debug!("skip invalid threat intel entry '{}'", s),
+        }
+        return;
+    }
     match s.parse::<IpAddr>() {
         Ok(IpAddr::V4(v4)) => out.push(IpKey::from_ipv4(v4.octets())),
         Ok(IpAddr::V6(v6)) => out.push(IpKey::from_ipv6(v6.octets())),

@@ -95,6 +95,31 @@ async fn main() -> Result<()> {
         .clone()
         .cleanup_task(args.node_timeout_s * 1_000_000_000);
 
+    // 周期清理过期策略与 tombstone，避免策略库长期运行后只增不减。
+    {
+        let prune_store = Arc::clone(&store);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                tick.tick().await;
+                let now = crate::time::now_ns();
+                // tombstone 保留 7 天，确保节点有充足时间同步解封。
+                let tombstone_ttl_ns = 7 * 24 * 3600 * 1_000_000_000u64;
+                match prune_store.prune(now, tombstone_ttl_ns) {
+                    Ok((policies, tombstones)) if policies + tombstones > 0 => {
+                        tracing::info!(
+                            policies,
+                            tombstones,
+                            "pruned expired hub policies/tombstones"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("failed to prune hub store: {e}"),
+                }
+            }
+        });
+    }
+
     if let Some(feed_url) = args.threat_feed_url.clone() {
         feed::spawn_feed_sync(
             feed::FeedConfig {
