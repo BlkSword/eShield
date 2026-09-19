@@ -108,9 +108,11 @@ pub mod rules {
 #[derive(Clone, Copy, Debug)]
 pub struct BlockEntry {
     pub blocked_until_ns: u64,
-    pub block_reason: u8,
-    pub hit_count: u32,
     pub first_seen_ns: u64,
+    pub hit_count: u32,
+    pub block_reason: u8,
+    /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
+    pub padding: [u8; 3],
 }
 
 /// `blocked_until_ns == 0` 表示永久封禁。使用常量避免与 unix epoch 混淆。
@@ -124,16 +126,17 @@ pub const BLOCK_PERMANENT: u64 = 0;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TrustEntry {
+    /// 最后一次更新时间（ns，CLOCK_MONOTONIC）
+    pub last_update_ns: u64,
     /// 0-1000，1000 = 完全可信，0 = 确认恶意
     pub trust_score: u32,
     /// 累计通过包数（供用户态统计展示）
     pub pass_count: u32,
     /// 累计丢弃包数
     pub drop_count: u32,
-    /// 最后一次更新时间（ns，CLOCK_MONOTONIC）
-    pub last_update_ns: u64,
     /// 信誉等级缓存：0=unknown, 1=trusted, 2=neutral, 3=suspicious, 4=malicious
     pub level: u8,
+    /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
     pub padding: [u8; 3],
 }
 
@@ -261,6 +264,8 @@ pub struct PacketSample {
     /// payload_sample 中有效字节数
     pub payload_bytes: u8,
     pub payload_sample: [u8; 64],
+    /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
+    pub padding: [u8; 4],
 }
 
 /// 速率限制参数（内嵌到 RATE_LIMIT_CFG Map）
@@ -291,6 +296,8 @@ pub struct L7Pattern {
     pub mask: u64,
     pub length: u8,
     pub action: u8,
+    /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
+    pub padding: [u8; 6],
 }
 
 /// 端口/协议 ACL 规则条目（内嵌到 PORT_ACL Map）
@@ -304,7 +311,8 @@ pub struct PortAclEntry {
     pub dport_high: u16,
     /// 1 = allow, 2 = drop
     pub action: u8,
-    pub padding: [u8; 11],
+    /// 显式填充，使结构大小对齐到 18 字节且无隐式尾部 padding
+    pub padding: [u8; 12],
 }
 
 /// 防护项目策略键：按目的 IPv4 + 协议 + 端口匹配。
@@ -358,8 +366,8 @@ pub mod project_action {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PortRateKey {
-    pub protocol: u8,
     pub dport: u16,
+    pub protocol: u8,
     pub padding: u8,
 }
 

@@ -803,6 +803,7 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         (*event).rule_id = pc.rule_id;
         (*event).packet_len = packet_len;
         (*event).payload_bytes = copy_len;
+        (*event).padding = [0; 4];
 
         // has_full_payload 已提供 verifier 边界证明，此处按固定 64B 复制。
         if copy_len == 64 {

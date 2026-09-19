@@ -81,6 +81,7 @@ impl AdaptiveEngine {
                 block_reason: rules::ADAPTIVE as u8,
                 hit_count: 0,
                 first_seen_ns: crate::time::monotonic_ns(),
+                padding: [0; 3],
             };
             blacklist.insert(src_ip, entry, 0)?;
 

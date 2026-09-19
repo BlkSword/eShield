@@ -293,6 +293,7 @@ impl ControlState {
                 block_reason: reason,
                 hit_count: 0,
                 first_seen_ns: crate::time::monotonic_ns(),
+                padding: [0; 3],
             },
             0,
         )?;
@@ -1215,6 +1216,7 @@ fn init_l7_patterns_map(
                 mask: u64::from_le_bytes(mask),
                 length: pattern_bytes.len() as u8,
                 action: 0, // DROP
+                padding: [0; 6],
             },
             0,
         )?;
@@ -1531,6 +1533,7 @@ async fn apply_blacklist_map(
                 block_reason: rules::BLACKLIST as u8,
                 hit_count: 0,
                 first_seen_ns: 0,
+                padding: [0; 3],
             };
             blacklist.insert(*key, entry, 0)?;
             info!("added static blacklist entry: {}", format_ip_key(key));

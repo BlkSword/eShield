@@ -1016,7 +1016,7 @@ impl PortAclItem {
             dport_low: u16::to_be(low),
             dport_high: u16::to_be(high),
             action,
-            padding: [0; 11],
+            padding: [0; 12],
         })
     }
 }

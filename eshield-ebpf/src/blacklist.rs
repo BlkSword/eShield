@@ -42,6 +42,7 @@ pub fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64, reason:
         block_reason: reason,
         hit_count: 0,
         first_seen_ns: now_ns,
+        padding: [0; 3],
     };
 
     let _ = BLACKLIST.insert(src, &entry, 0);
