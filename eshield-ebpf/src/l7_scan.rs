@@ -1,23 +1,16 @@
 use aya_ebpf::programs::XdpContext;
 
-use crate::maps::{CONFIG, EVENTS, L7_PATTERNS};
+use crate::maps::{CONFIG, L7_PATTERNS};
 use crate::parser::{ptr_at, TcpHdr, ETH_HDR_LEN};
-use eshield_common::{rules, DropEvent, IpKey};
 
 const SIGNATURE_BYTES: usize = 8;
 
 /// 读取 TCP 载荷前 8 字节进行轻量指纹匹配。
-/// 返回 true 表示命中并应 DROP。
+/// 返回 true 表示命中并应 DROP；DROP 事件由主流程 `drop_packet` 统一写入 EVENTS，
+/// 本函数不再重复发事件。
 /// `pattern_count` 为控制面同步的实际模式条数，空表时跳过整个循环（性能优化）。
 #[inline(always)]
-pub fn scan(
-    ctx: &XdpContext,
-    src: &IpKey,
-    ip_hdr_len: usize,
-    protocol: u8,
-    dport: u16,
-    pattern_count: u8,
-) -> bool {
+pub fn scan(ctx: &XdpContext, ip_hdr_len: usize, protocol: u8, pattern_count: u8) -> bool {
     let runtime = match CONFIG.get(0) {
         Some(c) => *c,
         None => return false,
@@ -68,7 +61,6 @@ pub fn scan(
         }
 
         if (chunk & pat.mask) == (pat.signature & pat.mask) {
-            emit_l7_event(ctx, src, dport);
             return true;
         }
 
@@ -76,22 +68,4 @@ pub fn scan(
     }
 
     false
-}
-
-fn emit_l7_event(_ctx: &XdpContext, src: &IpKey, dst_port: u16) {
-    unsafe {
-        if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
-            let event = DropEvent {
-                timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip: src.addr,
-                family: src.family,
-                protocol: 6,
-                rule_id: rules::L7_PATTERN,
-                dst_port,
-                padding: [0; 2],
-            };
-            entry.write(event);
-            entry.submit(0);
-        }
-    }
 }

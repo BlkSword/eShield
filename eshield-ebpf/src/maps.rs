@@ -32,7 +32,7 @@ pub static BLACKLIST: LruHashMap<IpKey, BlockEntry> = LruHashMap::with_max_entri
 #[map]
 pub static GLOBAL_STATS: PerCpuArray<GlobalStats> = PerCpuArray::with_max_entries(1, 0);
 
-/// 高频攻击源热榜（LRU Hash）：eBPF 数据面在命中黑名单时直接维护，
+/// 高频攻击源热榜（LRU Hash）：eBPF 数据面在所有 DROP 路径统一维护，
 /// 用户态无需每秒全量扫描 BLACKLIST Map，降低控制面开销。
 /// 容量大于展示 Top-N（20）以留出 LRU 抖动余量。
 #[map]

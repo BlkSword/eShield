@@ -48,6 +48,9 @@ struct PacketCtx<'a> {
     tcp_reset_on_drop: u8,
     now_ns: u64,
     rule_id: u16,
+    /// 本包是否已被 SYN/UDP/ICMP Flood 模块计入 RATE_MAP。
+    /// 这些模块与全局速率限制共用同一张计数表，若不标记会导致同一包被计数两次。
+    rate_counted: bool,
     /// 防护项目模块位图约束：命中 DEFEND 项目后按位过滤全局防御模块；
     /// PROJECT_FLAGS_ALL（u16::MAX）表示无约束（无项目或项目未配置模块）。
     project_flags: u16,
@@ -78,6 +81,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         tcp_reset_on_drop: 0,
         now_ns: 0,
         rule_id: rules::UNKNOWN,
+        rate_counted: false,
         project_flags: PROJECT_FLAGS_ALL,
     };
 
@@ -208,7 +212,9 @@ unsafe fn with_stats(f: impl FnOnce(&mut GlobalStats)) {
 
 #[inline(never)]
 fn drop_packet(pc: &PacketCtx) -> u32 {
-    unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
+    if pc.protocol == parser::IPPROTO_TCP {
+        unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
+    }
     trust::trust_drop(pc.src, pc.now_ns);
     // 在 eBPF 数据面统一维护高频攻击源热榜，覆盖所有丢弃路径。
     // 黑名单命中原来的 TOP_ATTACKERS 写入已移除，避免重复计数。
@@ -228,7 +234,7 @@ fn check_port_acl_drop(pc: &mut PacketCtx, acl_count: u8) -> u32 {
     if acl_count == 0 {
         return NO_ACTION;
     }
-    if port_acl::check_port_acl(pc.ctx, pc.src, pc.protocol, pc.dport, acl_count) {
+    if port_acl::check_port_acl(pc.protocol, pc.dport, acl_count) {
         pc.rule_id = rules::PORT_ACL;
         unsafe {
             with_stats(|s| {
@@ -378,6 +384,9 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             Some(t) => t,
             None => return NO_ACTION,
         };
+        if unsafe { (*tcp_ptr).is_syn() } {
+            pc.rate_counted = true;
+        }
         let pcr = syn_cookie::PacketCtxRef {
             ctx: pc.ctx,
             ip_hdr_len: pc.ip_hdr_len,
@@ -411,8 +420,10 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
 
     // SYN Flood 检测（IPv6 或 SYN Proxy 关闭时）
     if let Some(tcp) = unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) } {
-        let tcp_flags = unsafe { (*tcp).flags() };
-        if syn_flood::handle_syn_flood(pc.src, tcp_flags, pc.now_ns) {
+        if unsafe { (*tcp).is_syn() } {
+            pc.rate_counted = true;
+        }
+        if syn_flood::handle_syn_flood(pc.src, unsafe { (*tcp).flags() }, pc.now_ns) {
             pc.rule_id = rules::SYN_FLOOD;
             unsafe {
                 with_stats(|s| {
@@ -434,19 +445,20 @@ fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8, port_rate_enabled: 
     }
 
     // per-IP 限速：超限立即 DROP（短路 per-port 检查，攻击时反而省一次查找）
-    if udp_flood_enabled != 0
-        && pc.project_flags & project_modules::UDP_FLOOD != 0
-        && udp_flood::handle_udp_flood(pc.ctx, pc.src, pc.now_ns)
-    {
-        pc.rule_id = rules::UDP_FLOOD;
-        unsafe {
-            with_stats(|s| {
-                s.total_dropped += 1;
-                s.udp_flood_blocked += 1;
-                inc_protocol_dropped(s, pc.protocol);
-            });
+    if udp_flood_enabled != 0 && pc.project_flags & project_modules::UDP_FLOOD != 0 {
+        // 该包由此模块计入共享 RATE_MAP；后续全局速率限制不再重复计数。
+        pc.rate_counted = true;
+        if udp_flood::handle_udp_flood(pc.ctx, pc.src, pc.now_ns) {
+            pc.rule_id = rules::UDP_FLOOD;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.udp_flood_blocked += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            return drop_packet(pc);
         }
-        return drop_packet(pc);
     }
 
     // per-port 限速：防换源 IP 绕过（per-IP 计数随源变化，端口维度恒定累计）
@@ -479,19 +491,20 @@ fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8, port_rate_enabled
     }
 
     // per-IP 限速：超限立即 DROP（短路 per-port 检查）
-    if icmp_flood_enabled != 0
-        && pc.project_flags & project_modules::ICMP_FLOOD != 0
-        && icmp_flood::handle_icmp_flood(pc.ctx, pc.src, pc.now_ns, pc.protocol)
-    {
-        pc.rule_id = rules::ICMP_FLOOD;
-        unsafe {
-            with_stats(|s| {
-                s.total_dropped += 1;
-                s.icmp_flood_blocked += 1;
-                inc_protocol_dropped(s, pc.protocol);
-            });
+    if icmp_flood_enabled != 0 && pc.project_flags & project_modules::ICMP_FLOOD != 0 {
+        // 该包由此模块计入共享 RATE_MAP；后续全局速率限制不再重复计数。
+        pc.rate_counted = true;
+        if icmp_flood::handle_icmp_flood(pc.ctx, pc.src, pc.now_ns, pc.protocol) {
+            pc.rule_id = rules::ICMP_FLOOD;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.icmp_flood_blocked += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            return drop_packet(pc);
         }
-        return drop_packet(pc);
     }
 
     // per-port 限速：ICMP 无端口，key 为 (proto, 0)，等价于按协议总量限速，
@@ -523,14 +536,7 @@ fn check_l7_drop(pc: &mut PacketCtx, pattern_count: u8) -> u32 {
     if pattern_count == 0 || pc.project_flags & project_modules::L7_SCAN == 0 {
         return NO_ACTION;
     }
-    if l7_scan::scan(
-        pc.ctx,
-        pc.src,
-        pc.ip_hdr_len,
-        pc.protocol,
-        pc.dport,
-        pattern_count,
-    ) {
+    if l7_scan::scan(pc.ctx, pc.ip_hdr_len, pc.protocol, pattern_count) {
         pc.rule_id = rules::L7_PATTERN;
         unsafe {
             with_stats(|s| {
@@ -547,6 +553,10 @@ fn check_l7_drop(pc: &mut PacketCtx, pattern_count: u8) -> u32 {
 #[inline(never)]
 fn check_rate_limit_drop(pc: &mut PacketCtx) -> u32 {
     if pc.project_flags & project_modules::RATE_LIMIT == 0 {
+        return NO_ACTION;
+    }
+    // 协议 Flood 模块已用同一阈值对 RATE_MAP 计数并完成判断，避免重复计数/重复封禁。
+    if pc.rate_counted {
         return NO_ACTION;
     }
     if rate_limit::check_rate_limit(pc.src, pc.now_ns) {
@@ -677,6 +687,7 @@ fn read_ports(
 
 /// 按采样率将被丢弃/放行的包元数据写入 PACKET_SAMPLES Ring Buffer。
 /// 仅由主流程的提前返回路径调用（当前仅 DROP 与防护项目 PASS）；action 标记 0=drop / 1=pass。
+/// payload_sample 复制的是 L7 载荷前 64 字节；载荷不足 64B 时 payload_bytes=0。
 #[inline(never)]
 fn log_packet_sample(pc: &PacketCtx, action: u32) {
     let runtime = match CONFIG.get(0) {
@@ -690,11 +701,6 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         return;
     }
 
-    let mut entry = match PACKET_SAMPLES.reserve::<PacketSample>(0) {
-        Some(e) => e,
-        None => return,
-    };
-
     let data = pc.ctx.data();
     let data_end = pc.ctx.data_end();
     let packet_len = if data_end > data {
@@ -702,8 +708,31 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
     } else {
         0
     };
-    // 最多复制 64 字节；短包按实际长度复制。
-    let copy_len = if packet_len >= 64 { 64 } else { packet_len };
+
+    // 真正的 L7 载荷起始偏移：以太网 + IP + 传输层头。
+    // 旧实现从帧首复制，采到的是 Ethernet/IP/TCP 头，而不是应用层载荷。
+    // 注意：所有可能 return 的包解析都必须放在 RingBuf.reserve 之前，
+    // 否则 verifier 会判定 reserve 引用在提前返回路径上未 submit/discard。
+    let l4_hdr_len = match pc.protocol {
+        parser::IPPROTO_TCP => {
+            match unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) } {
+                Some(t) => (unsafe { (*t).doff() } as usize) * 4,
+                None => return,
+            }
+        }
+        parser::IPPROTO_UDP | parser::IPPROTO_ICMP | parser::IPPROTO_ICMPV6 => 8,
+        _ => 0,
+    };
+    let payload_off = ETH_HDR_LEN + pc.ip_hdr_len + l4_hdr_len;
+    // eBPF verifier 可见的边界证明：只有 64B 完整载荷可读时才复制，
+    // 否则 payload_bytes=0（宁可不采样，也不返回伪造/清零的假载荷）。
+    let has_full_payload = data + payload_off + 64 <= data_end;
+    let copy_len: u8 = if has_full_payload { 64 } else { 0 };
+
+    let mut entry = match PACKET_SAMPLES.reserve::<PacketSample>(0) {
+        Some(e) => e,
+        None => return,
+    };
 
     let event = entry.as_mut_ptr() as *mut PacketSample;
     unsafe {
@@ -721,7 +750,7 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         // 目的 IP 从包内重读（主帧不维护 dst_key）
         let dst_ip = match pc.src.family() {
             Some(eshield_common::IpFamily::Ipv4) => {
-                match unsafe { parser::ptr_at::<IpHdr>(pc.ctx, ETH_HDR_LEN) } {
+                match parser::ptr_at::<IpHdr>(pc.ctx, ETH_HDR_LEN) {
                     Some(ip) => {
                         let mut a = [0u8; 16];
                         a[12..16].copy_from_slice(&(*ip).daddr.to_ne_bytes());
@@ -731,7 +760,7 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
                 }
             }
             Some(eshield_common::IpFamily::Ipv6) => {
-                match unsafe { parser::ptr_at::<Ipv6Hdr>(pc.ctx, ETH_HDR_LEN) } {
+                match parser::ptr_at::<Ipv6Hdr>(pc.ctx, ETH_HDR_LEN) {
                     Some(ip) => (*ip).daddr,
                     None => [0u8; 16],
                 }
@@ -746,13 +775,13 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         (*event).action = if action == xdp_action::XDP_PASS { 1 } else { 0 };
         (*event).rule_id = pc.rule_id;
         (*event).packet_len = packet_len;
-        (*event).payload_bytes = copy_len as u8;
+        (*event).payload_bytes = copy_len;
 
-        // 在 verifier 可见的边界检查之后按 copy_len 复制
-        if data + 64 <= data_end {
-            let src_ptr = data as *const u8;
+        // has_full_payload 已提供 verifier 边界证明，此处按固定 64B 复制。
+        if copy_len == 64 {
+            let src_ptr = (data + payload_off) as *const u8;
             let mut j: u64 = 0;
-            while j < copy_len as u64 {
+            while j < 64 {
                 (*event).payload_sample[j as usize] = *src_ptr.add(j as usize);
                 j += 1;
             }

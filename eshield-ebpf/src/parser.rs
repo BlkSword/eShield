@@ -19,6 +19,17 @@ pub const IPPROTO_UDP: u8 = 17;
 pub const IPPROTO_ICMP: u8 = 1;
 pub const IPPROTO_ICMPV6: u8 = 58;
 
+/// TCP flags：SYN / ACK。
+pub const TCP_FLAG_SYN: u8 = 0x02;
+pub const TCP_FLAG_ACK: u8 = 0x10;
+
+/// 是否为“纯 SYN”（含 SYN+ECE/CWR 等变体，但不含 SYN+ACK），
+/// 用于 Flood 计数与 SYN Cookie 挑战，避免只认 0x02 被变体绕过。
+#[inline(always)]
+pub const fn is_syn_flags(flags: u8) -> bool {
+    flags & TCP_FLAG_SYN != 0 && flags & TCP_FLAG_ACK == 0
+}
+
 #[repr(C)]
 pub struct EthHdr {
     pub dst: [u8; 6],
@@ -80,6 +91,12 @@ impl TcpHdr {
     #[inline]
     pub fn flags(&self) -> u8 {
         (u16::from_be(self.doff_flags) & 0x3f) as u8
+    }
+
+    #[inline]
+    #[allow(dead_code)]
+    pub fn is_syn(&self) -> bool {
+        is_syn_flags(self.flags())
     }
 }
 

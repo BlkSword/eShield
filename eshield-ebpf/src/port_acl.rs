@@ -1,18 +1,17 @@
-use aya_ebpf::programs::XdpContext;
-
-use crate::maps::{EVENTS, PORT_ACL};
+use crate::maps::PORT_ACL;
 use eshield_common::pure::{match_port_acl_entry, AclMatch};
-use eshield_common::{rules, DropEvent, IpKey};
 
 /// 检查端口/协议 ACL 规则表。
 ///
 /// 规则按数组顺序进行 first-match 评估：
-/// - `action == 2 (drop)` 且匹配时立即 DROP 并返回 true。
-/// - `action == 1 (allow)` 且匹配时立即放行并返回 false，后续规则不再评估。
+/// - `action == 2 (drop)` 且匹配时返回 true，由主流程统一 DROP/发事件。
+/// - `action == 1 (allow)` 且匹配时返回 false，停止继续匹配 ACL，
+///   但该包仍会经过 GeoIP/Flood/L7/限速/黑名单等全局模块。
 /// - 无匹配规则时返回 false，交由后续全局模块处理。
 ///
+/// DROP 事件由主流程 `drop_packet` 统一写入 EVENTS；本函数不再重复发事件。
 /// `count` 为控制面同步的实际规则条数，空表时跳过整个循环（性能优化）。
-pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16, count: u8) -> bool {
+pub fn check_port_acl(protocol: u8, dport: u16, count: u8) -> bool {
     // while 循环：避免 for-range 迭代器生成 u32→u64 零扩展（<<=）指令，
     // 该模式在部分内核的 verifier 上被拒绝（pointer arithmetic with <<=）。
     let mut i: u64 = 0;
@@ -36,10 +35,7 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16, 
             dport_high,
             entry.action,
         ) {
-            Some(AclMatch::Drop) => {
-                emit_port_acl_event(_ctx, src, protocol, dport);
-                return true;
-            }
+            Some(AclMatch::Drop) => return true,
             Some(AclMatch::Allow) => return false,
             None => {}
         }
@@ -47,22 +43,4 @@ pub fn check_port_acl(_ctx: &XdpContext, src: &IpKey, protocol: u8, dport: u16, 
     }
 
     false
-}
-
-fn emit_port_acl_event(_ctx: &XdpContext, src: &IpKey, protocol: u8, dst_port: u16) {
-    unsafe {
-        if let Some(mut entry) = EVENTS.reserve::<DropEvent>(0) {
-            let event = DropEvent {
-                timestamp_ns: aya_ebpf::helpers::gen::bpf_ktime_get_ns(),
-                src_ip: src.addr,
-                family: src.family,
-                protocol,
-                rule_id: rules::PORT_ACL,
-                dst_port,
-                padding: [0; 2],
-            };
-            entry.write(event);
-            entry.submit(0);
-        }
-    }
 }

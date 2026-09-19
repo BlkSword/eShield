@@ -49,7 +49,16 @@ pub fn update_rate_counter(src: &IpKey, now_ns: u64, out: &mut RateUpdate) -> bo
         );
 
         counter = decayed.saturating_add(1);
-        last_decay_ns = now_ns;
+        // 只推进“完整 tick”的时间，保留不足一个 tick 的小数部分。
+        // 旧实现每次都把 last_decay_ns 设为 now_ns，包间隔小于 tick_ms 时
+        // elapsed/tick 恒为 0，counter 只会单调增长，正常低速流量也会被误封。
+        let ticks = elapsed_ns / tick_ns;
+        // wrapping_*：避免 LLVM 为“检查乘法溢出”生成 128 位 __multi3 调用；
+        // ticks * tick_ns 必然 <= elapsed_ns，不会真正溢出。
+        last_decay_ns = entry
+            .last_decay_ns
+            .wrapping_add(ticks.wrapping_mul(tick_ns))
+            .min(now_ns);
     }
 
     let updated = RateCounter {

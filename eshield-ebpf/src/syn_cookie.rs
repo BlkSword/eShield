@@ -2,7 +2,7 @@ use aya_ebpf::{bindings::xdp_action, helpers::gen::bpf_csum_diff, programs::XdpC
 use core::mem;
 
 use crate::maps::{COOKIE_SECRETS, SYN_PROXY_CONN};
-use crate::parser::{ptr_at, ptr_at_mut, EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN};
+use crate::parser::{is_syn_flags, ptr_at, ptr_at_mut, EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN};
 use crate::rate_counter::{update_rate_counter, RateUpdate};
 use eshield_common::pure::{build_cookie, mss_to_idx};
 use eshield_common::IpKey;
@@ -43,8 +43,7 @@ const MSS_TABLE: [(u8, u16); 3] = [(0, 536), (1, 1300), (2, 1460)];
 /// `ip`/`tcp` 指针由调用方完成边界检查。
 #[inline(never)]
 pub fn handle_syn(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u32 {
-    let flags = unsafe { (*tcp).flags() };
-    if flags != TCP_FLAG_SYN {
+    if !is_syn_flags(unsafe { (*tcp).flags() }) {
         return NO_ACTION;
     }
 
@@ -317,16 +316,13 @@ fn send_synack(
         // 使用 ptr_at_mut 的返回值作为基址：其边界证明（r>=58）随指针传播，
         // 避免 LLVM 优化删除仅用于存在性检查的边界验证。
         if new_tcp_hdr_len == 24 {
-            let base =
-                unsafe { ptr_at_mut::<[u8; 24]>(ctx, ETH_HDR_LEN + pc.ip_hdr_len).ok_or(())? };
+            let base = ptr_at_mut::<[u8; 24]>(ctx, ETH_HDR_LEN + pc.ip_hdr_len).ok_or(())?;
             let opt = (base as *mut u8).add(20);
-            unsafe {
-                *opt.add(0) = TCP_OPT_MSS;
-                *opt.add(1) = 4;
-                let mss_val = MSS_TABLE[mss_idx as usize].1;
-                *opt.add(2) = (mss_val >> 8) as u8;
-                *opt.add(3) = (mss_val & 0xff) as u8;
-            }
+            *opt.add(0) = TCP_OPT_MSS;
+            *opt.add(1) = 4;
+            let mss_val = MSS_TABLE[mss_idx as usize].1;
+            *opt.add(2) = (mss_val >> 8) as u8;
+            *opt.add(3) = (mss_val & 0xff) as u8;
         }
     }
 
