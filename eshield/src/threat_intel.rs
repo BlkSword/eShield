@@ -1,7 +1,8 @@
+use crate::config::BlockOrigin;
 use crate::control::ControlState;
 use crate::ip::{format_ip_key, parse_ip_or_cidr};
 use anyhow::{Context, Result};
-use eshield_common::IpKey;
+use eshield_common::{rules, IpKey};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -89,12 +90,20 @@ async fn sync_feed(control: &ControlState, feed: &crate::config::ThreatFeed) -> 
         "drop" => {
             // 存活时间：默认 24 小时，确保在下次同步前不过期
             let duration_s = feed.interval_s.saturating_mul(3).max(3600);
-            for key in entries {
-                if let Err(e) = control.block_ip_threat_intel(key, duration_s).await {
-                    tracing::debug!("skip threat intel block for {}: {}", format_ip_key(&key), e);
+            let total = entries.len();
+            match control
+                .block_ip_keys_batch(
+                    entries,
+                    duration_s,
+                    rules::THREAT_INTEL as u8,
+                    BlockOrigin::ThreatIntel,
+                )
+                .await
+            {
+                Ok(count) => added += count as u64,
+                Err(e) => {
+                    tracing::warn!("threat intel batch block failed ({} entries): {}", total, e);
                     skipped += 1;
-                } else {
-                    added += 1;
                 }
             }
         }

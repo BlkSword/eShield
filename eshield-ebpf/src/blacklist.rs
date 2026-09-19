@@ -1,5 +1,15 @@
-use crate::maps::{BLACKLIST, TRUST_MAP};
+use crate::maps::{BLACKLIST, GLOBAL_STATS, TRUST_MAP};
 use eshield_common::{BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
+
+/// 黑名单内容发生变化时递增全局代数，供用户态增量同步判断。
+#[inline(always)]
+fn bump_blacklist_gen() {
+    unsafe {
+        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+            (*stats).blacklist_gen = (*stats).blacklist_gen.wrapping_add(1);
+        }
+    }
+}
 
 pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
     match unsafe { BLACKLIST.get(src) } {
@@ -11,6 +21,7 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
                 let mut updated = *entry;
                 updated.hit_count = updated.hit_count.saturating_add(1);
                 let _ = BLACKLIST.insert(src, &updated, 0);
+                bump_blacklist_gen();
                 return true;
             }
         }
@@ -46,6 +57,7 @@ pub fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64, reason:
     };
 
     let _ = BLACKLIST.insert(src, &entry, 0);
+    bump_blacklist_gen();
 
     // Trust Score 归零：一旦被判定为攻击源，之前积累的信任全部作废
     let trust_entry = TrustEntry {

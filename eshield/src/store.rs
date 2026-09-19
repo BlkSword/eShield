@@ -4,6 +4,7 @@ use anyhow::Context;
 use eshield_common::{IpKey, BLOCK_PERMANENT};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -73,6 +74,45 @@ impl RuleStore {
             {
                 let mut table = tx.open_table(BLACKLIST)?;
                 table.insert(&ip[..], value.as_slice())?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    /// 批量写入同一封禁参数的黑名单（一个 redb 事务）。
+    pub async fn save_blacklist_many(
+        &self,
+        keys: &[IpKey],
+        blocked_until_ns: u64,
+        block_reason: u8,
+        first_seen_ns: u64,
+        origin: BlockOrigin,
+    ) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let db = self.db.clone();
+        let keys: Vec<IpKey> = keys.to_vec();
+        let last_updated_ns = crate::time::monotonic_ns();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_write()?;
+            {
+                let mut table = tx.open_table(BLACKLIST)?;
+                for key in keys {
+                    let row = BlacklistRow {
+                        blocked_until_ns,
+                        block_reason,
+                        first_seen_ns,
+                        origin,
+                        last_updated_ns,
+                    };
+                    let value = serde_json::to_vec(&row)?;
+                    let ip = Self::ip_key_bytes(&key);
+                    table.insert(&ip[..], value.as_slice())?;
+                }
             }
             tx.commit()?;
             Ok(())
@@ -151,6 +191,35 @@ impl RuleStore {
                         row.first_seen_ns,
                         row.origin,
                     ));
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .context("store task panicked")?
+    }
+
+    /// 批量读取指定 IP 在 store 中的来源，用于 blacklist_sync 判断 Hub 来源，
+    /// 避免为了少量变更而全量加载整个黑名单表。
+    pub async fn load_blacklist_origins(
+        &self,
+        keys: &[IpKey],
+    ) -> anyhow::Result<HashMap<IpKey, BlockOrigin>> {
+        let db = self.db.clone();
+        let keys: Vec<IpKey> = keys.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let tx = db.begin_read()?;
+            let table = match tx.open_table(BLACKLIST) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(HashMap::new()),
+                Err(e) => return Err(e.into()),
+            };
+            let mut out = HashMap::with_capacity(keys.len());
+            for key in keys {
+                let bytes = Self::ip_key_bytes(&key);
+                if let Some(value) = table.get(&bytes[..])? {
+                    let row: BlacklistRow = serde_json::from_slice(value.value())?;
+                    out.insert(key, row.origin);
                 }
             }
             Ok(out)

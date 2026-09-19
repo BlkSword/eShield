@@ -215,21 +215,63 @@ impl ControlState {
         Ok(())
     }
 
-    /// 通过威胁情报 feed 封禁某个 IP。
-    pub async fn block_ip_threat_intel(&self, key: IpKey, duration_s: u64) -> anyhow::Result<()> {
-        self.block_ip_key(
-            key,
-            duration_s,
-            rules::THREAT_INTEL as u8,
-            crate::config::BlockOrigin::ThreatIntel,
+    /// 批量封禁同一时长/来源的 IP（威胁情报 feed 使用）。
+    /// eBPF map 只加一次锁，redb 只写一个事务，审计只记一条汇总。
+    pub async fn block_ip_keys_batch(
+        &self,
+        keys: Vec<IpKey>,
+        duration_s: u64,
+        reason: u8,
+        origin: crate::config::BlockOrigin,
+    ) -> anyhow::Result<usize> {
+        if keys.is_empty() {
+            return Ok(0);
+        }
+        let now_ns = crate::time::monotonic_ns();
+        let blocked_until_ns = if duration_s == 0 {
+            BLOCK_PERMANENT
+        } else {
+            now_ns.saturating_add(duration_s.saturating_mul(1_000_000_000))
+        };
+
+        {
+            let mut guard = self.ebpf.lock().await;
+            let mut blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                .map_mut("BLACKLIST")
+                .context("BLACKLIST map not found")?
+                .try_into()?;
+            for key in &keys {
+                blacklist.insert(
+                    *key,
+                    BlockEntry {
+                        blocked_until_ns,
+                        block_reason: reason,
+                        hit_count: 0,
+                        first_seen_ns: now_ns,
+                        padding: [0; 3],
+                    },
+                    0,
+                )?;
+            }
+        }
+
+        if let Some(store) = &self.store {
+            store
+                .save_blacklist_many(&keys, blocked_until_ns, reason, now_ns, origin)
+                .await?;
+        }
+
+        self.audit(
+            origin_actor(origin),
+            AuditAction::BlockIp,
+            serde_json::json!({
+                "count": keys.len(),
+                "duration_s": duration_s,
+                "origin": origin,
+            }),
         )
-        .await?;
-        info!(
-            "threat intel block: {} duration={}s",
-            format_ip_key(&key),
-            duration_s
-        );
-        Ok(())
+        .await;
+        Ok(keys.len())
     }
 
     /// 通用封禁接口，供 API / 自适应 / 威胁情报 / Hub 下发使用。
@@ -255,15 +297,8 @@ impl ControlState {
                 .await?;
         }
 
-        let actor = match origin {
-            crate::config::BlockOrigin::Api => "api",
-            crate::config::BlockOrigin::Adaptive => "adaptive",
-            crate::config::BlockOrigin::ThreatIntel => "threat_intel",
-            crate::config::BlockOrigin::Hub => "hub",
-            crate::config::BlockOrigin::Local => "local",
-        };
         self.audit(
-            actor,
+            origin_actor(origin),
             AuditAction::BlockIp,
             serde_json::json!({ "ip": format_ip_key(&key), "duration_s": duration_s, "origin": origin }),
         )
@@ -1092,6 +1127,16 @@ impl RuntimeConfigSnapshot {
             packet_log_sample_rate: config.packet_log.sample_rate,
             protection_projects_enabled: !config.protection_projects.is_empty(),
         }
+    }
+}
+
+fn origin_actor(origin: crate::config::BlockOrigin) -> &'static str {
+    match origin {
+        crate::config::BlockOrigin::Api => "api",
+        crate::config::BlockOrigin::Adaptive => "adaptive",
+        crate::config::BlockOrigin::ThreatIntel => "threat_intel",
+        crate::config::BlockOrigin::Hub => "hub",
+        crate::config::BlockOrigin::Local => "local",
     }
 }
 

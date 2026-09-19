@@ -131,11 +131,14 @@ impl PacketLog {
     }
 
     pub fn query(&self, opts: &PacketLogQuery) -> Vec<PacketSampleEntry> {
-        let entries = self.entries.lock().unwrap();
+        // 先在锁内做一次快照，释放锁后再做过滤与格式化，避免阻塞采样写入。
+        let snapshot: Vec<PacketSample> = {
+            let entries = self.entries.lock().unwrap();
+            entries.iter().rev().copied().collect()
+        };
         let ip_filter = opts.ip.as_deref().map(|s| s.to_lowercase());
-        entries
-            .iter()
-            .rev()
+        snapshot
+            .into_iter()
             .filter(|s| {
                 if let Some(ip) = &ip_filter {
                     let src = format_ip_for_filter(&s.src_ip, s.family);
@@ -177,7 +180,7 @@ impl PacketLog {
                 true
             })
             .take(opts.limit)
-            .map(|s| (*s).into())
+            .map(Into::into)
             .collect()
     }
 

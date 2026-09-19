@@ -2,9 +2,10 @@ use crate::config::BlockOrigin;
 use crate::store::RuleStore;
 use anyhow::{Context, Result};
 use aya::maps::HashMap as LruHashMap;
+use aya::maps::PerCpuArray;
 use aya::Ebpf;
 use dashmap::DashMap;
-use eshield_common::{rules, BlockEntry, IpKey};
+use eshield_common::{rules, BlockEntry, GlobalStats, IpKey};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,6 +30,8 @@ pub struct BlacklistSync {
     cache: DashMap<IpKey, CachedEntry>,
     /// 上次清理过期持久化黑名单的时间（ns）。
     last_prune_ns: AtomicU64,
+    /// 上次同步时 eBPF 黑名单代数；未变化时跳过全量 map 扫描。
+    last_gen: AtomicU64,
 }
 
 impl BlacklistSync {
@@ -39,6 +42,7 @@ impl BlacklistSync {
             interval,
             cache: DashMap::new(),
             last_prune_ns: AtomicU64::new(0),
+            last_gen: AtomicU64::new(0),
         }
     }
 
@@ -55,16 +59,24 @@ impl BlacklistSync {
     async fn sync_once(&self) -> Result<()> {
         let now_ns = crate::time::monotonic_ns();
 
-        // 只在锁内做一次快照，随后释放 eBPF Mutex 再做持久化写入，
-        // 避免逐条 redb 事务长期占用锁、阻塞事件消费/控制面。
-        let snapshot: Vec<(IpKey, BlockEntry)> = {
+        // 读取 eBPF 黑名单代数；无变化且已有缓存时跳过全量 map 扫描。
+        // 有变化时只在锁内做一次快照，随后释放锁再做持久化写入。
+        let (gen, snapshot): (Option<u64>, Vec<(IpKey, BlockEntry)>) = {
             let mut guard = self.ebpf.lock().await;
-            let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
-                .map_mut("BLACKLIST")
-                .context("BLACKLIST map not found")?
-                .try_into()
-                .context("failed to open BLACKLIST map")?;
-            blacklist.iter().flatten().collect()
+            let gen = read_blacklist_gen(&mut guard);
+            if gen.is_some()
+                && gen == Some(self.last_gen.load(Ordering::Relaxed))
+                && !self.cache.is_empty()
+            {
+                (gen, Vec::new())
+            } else {
+                let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+                    .map_mut("BLACKLIST")
+                    .context("BLACKLIST map not found")?
+                    .try_into()
+                    .context("failed to open BLACKLIST map")?;
+                (gen, blacklist.iter().flatten().collect())
+            }
         };
 
         let mut skipped = 0usize;
@@ -99,13 +111,8 @@ impl BlacklistSync {
         let mut synced = 0usize;
         if !changed.is_empty() {
             // 只有确实存在变更时才加载 store 来源信息；空闲时避免每 5s 全量扫描 redb。
-            let store_origins: std::collections::HashMap<IpKey, BlockOrigin> = self
-                .store
-                .load_blacklist()
-                .await?
-                .into_iter()
-                .map(|(key, _, _, _, origin)| (key, origin))
-                .collect();
+            let changed_keys: Vec<IpKey> = changed.iter().map(|(key, _, _, _)| *key).collect();
+            let store_origins = self.store.load_blacklist_origins(&changed_keys).await?;
 
             for (key, entry, origin, cached) in changed {
                 // Hub 下发的策略在 store 里标记为 Hub，但 eBPF 只保存 rule_id；
@@ -134,6 +141,10 @@ impl BlacklistSync {
             }
         }
 
+        if let Some(gen) = gen {
+            self.last_gen.store(gen, Ordering::Relaxed);
+        }
+
         // 每 60s 清理一次已过期的持久化动态黑名单，避免 redb 只增不减。
         let last_prune = self.last_prune_ns.load(Ordering::Relaxed);
         if now_ns.saturating_sub(last_prune) >= 60_000_000_000 {
@@ -150,6 +161,14 @@ impl BlacklistSync {
         }
         Ok(())
     }
+}
+
+/// 读取 eBPF GLOBAL_STATS 中所有 CPU 的黑名单变更代数之和。
+fn read_blacklist_gen(ebpf: &mut Ebpf) -> Option<u64> {
+    let map = ebpf.map_mut("GLOBAL_STATS")?;
+    let global: PerCpuArray<_, GlobalStats> = map.try_into().ok()?;
+    let values = global.get(&0, 0).ok()?;
+    Some(values.iter().map(|v| v.blacklist_gen).sum())
 }
 
 fn block_reason_to_origin(reason: u8) -> Option<BlockOrigin> {
