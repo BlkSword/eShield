@@ -450,38 +450,10 @@ fn default_adaptive_block_duration_s() -> u64 {
     300
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SynProxyConfig {
     #[serde(default = "default_false")]
     pub enabled: bool,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub backend_ports: Vec<u16>,
-    #[allow(dead_code)]
-    #[serde(default = "default_syn_max_conns")]
-    pub max_conns: u32,
-    #[allow(dead_code)]
-    #[serde(default = "default_syn_conn_timeout_s")]
-    pub conn_timeout_s: u32,
-}
-
-impl Default for SynProxyConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            backend_ports: Vec::new(),
-            max_conns: 1024 * 1024,
-            conn_timeout_s: 60,
-        }
-    }
-}
-
-fn default_syn_max_conns() -> u32 {
-    1024 * 1024
-}
-
-fn default_syn_conn_timeout_s() -> u32 {
-    60
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -562,10 +534,6 @@ pub struct PortRateLimitConfig {
     pub threshold: u64,
     #[serde(default = "default_tick_ms")]
     pub tick_ms: u64,
-    #[serde(default = "default_decay_num")]
-    pub decay_num: u64,
-    #[serde(default = "default_decay_den")]
-    pub decay_den: u64,
 }
 
 impl Default for PortRateLimitConfig {
@@ -574,8 +542,6 @@ impl Default for PortRateLimitConfig {
             enabled: false,
             threshold: 2000,
             tick_ms: 100,
-            decay_num: 7,
-            decay_den: 8,
         }
     }
 }
@@ -648,9 +614,6 @@ impl Config {
             }
             if self.port_rate_limit.tick_ms == 0 {
                 anyhow::bail!("port_rate_limit.tick_ms must be > 0");
-            }
-            if self.port_rate_limit.decay_den == 0 {
-                anyhow::bail!("port_rate_limit.decay_den must be > 0");
             }
         }
 

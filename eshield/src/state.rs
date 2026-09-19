@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use eshield_common::{rules, DropEvent, IpKey};
+use eshield_common::{DropEvent, IpKey};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -96,29 +96,12 @@ impl Stats {
     ///
     /// 注意：Top 攻击源已由 eBPF 数据面通过 `TOP_ATTACKERS` Map 直接维护，
     /// 并通过 `sync_top_attackers` 每秒同步，事件侧不再重复聚合来源维度。
-    pub fn add_dropped_batch(&self, by_reason: &HashMap<u16, u64>, by_port: &HashMap<u16, u64>) {
-        if by_reason.is_empty() && by_port.is_empty() {
+    /// 批量聚合目的端口计数。黑名单/限速/自适应计数分别由 eBPF
+    /// GLOBAL_STATS 与 AdaptiveEngine 维护，事件侧不再重复累加。
+    pub fn add_dropped_batch(&self, by_port: &HashMap<u16, u64>) {
+        if by_port.is_empty() {
             return;
         }
-
-        // 总包数/总丢包数以及 SYN/UDP/ICMP/L7/GeoIP 等分类计数
-        // 从 eBPF GLOBAL_STATS 同步；事件侧只更新没有独立全局计数器的
-        // 黑名单、速率限制、自适应以及协议/端口维度。
-        for (&reason, &count) in by_reason {
-            match reason {
-                r if r == rules::BLACKLIST => {
-                    self.blacklist_blocked.fetch_add(count, Ordering::Relaxed)
-                }
-                r if r == rules::RATE_LIMIT => {
-                    self.rate_limited.fetch_add(count, Ordering::Relaxed)
-                }
-                r if r == rules::ADAPTIVE => {
-                    self.adaptive_blocked.fetch_add(count, Ordering::Relaxed)
-                }
-                _ => continue,
-            };
-        }
-
         for (&port, &count) in by_port {
             if port == 0 {
                 continue;
@@ -143,13 +126,18 @@ impl Stats {
         self.process_hist[idx].fetch_add(1, Ordering::Relaxed);
     }
 
-    /// 追加一条攻击事件到环形缓冲（最多保留 1000 条）。
-    pub fn push_attack_event(&self, event: DropEvent) {
-        let mut buf = self.recent_attacks.lock().unwrap();
-        if buf.len() >= 1000 {
-            buf.pop_front();
+    /// 批量追加攻击事件到环形缓冲（最多保留 1000 条），一次加锁完成。
+    pub fn push_attack_events(&self, events: &[DropEvent]) {
+        if events.is_empty() {
+            return;
         }
-        buf.push_back(event);
+        let mut buf = self.recent_attacks.lock().unwrap();
+        for event in events {
+            if buf.len() >= 1000 {
+                buf.pop_front();
+            }
+            buf.push_back(*event);
+        }
     }
 
     /// 返回最近的攻击事件快照。
@@ -177,19 +165,27 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
 
+    fn event(port: u16) -> DropEvent {
+        DropEvent {
+            timestamp_ns: 1,
+            src_ip: [0u8; 16],
+            family: 4,
+            protocol: 6,
+            rule_id: 1,
+            dst_port: port,
+            padding: [0u8; 2],
+        }
+    }
+
     #[test]
-    fn test_add_dropped_batch_aggregates_totals() {
+    fn test_add_dropped_batch_aggregates_ports() {
         let stats = Stats::default();
-        let mut by_reason = HashMap::new();
-        by_reason.insert(rules::BLACKLIST, 3);
-        by_reason.insert(rules::RATE_LIMIT, 2);
         let mut by_port = HashMap::new();
         by_port.insert(443, 5);
+        by_port.insert(80, 3);
 
-        stats.add_dropped_batch(&by_reason, &by_port);
+        stats.add_dropped_batch(&by_port);
 
-        assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 3);
-        assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 2);
         assert_eq!(
             stats
                 .port_dropped
@@ -198,30 +194,26 @@ mod tests {
                 .load(Ordering::Relaxed),
             5
         );
+        assert_eq!(
+            stats.port_dropped.get(&80).unwrap().load(Ordering::Relaxed),
+            3
+        );
     }
 
     #[test]
     fn test_add_dropped_batch_empty_is_noop() {
         let stats = Stats::default();
-        stats.add_dropped_batch(&HashMap::new(), &HashMap::new());
+        stats.add_dropped_batch(&HashMap::new());
         assert!(stats.port_dropped.is_empty());
     }
 
     #[test]
-    fn test_add_dropped_batch_unknown_reason_ignored() {
+    fn test_push_attack_events_batches() {
         let stats = Stats::default();
-        let mut by_reason = HashMap::new();
-        by_reason.insert(0xFFFF, 7);
-        let mut by_port = HashMap::new();
-        by_port.insert(80, 7);
-
-        stats.add_dropped_batch(&by_reason, &by_port);
-
-        assert_eq!(stats.blacklist_blocked.load(Ordering::Relaxed), 0);
-        assert_eq!(stats.rate_limited.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            stats.port_dropped.get(&80).unwrap().load(Ordering::Relaxed),
-            7
-        );
+        stats.push_attack_events(&[event(80), event(443)]);
+        let events = stats.attack_events(10);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].dst_port, 443);
+        assert_eq!(events[1].dst_port, 80);
     }
 }

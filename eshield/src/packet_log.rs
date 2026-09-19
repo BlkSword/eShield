@@ -116,12 +116,18 @@ impl PacketLog {
         }
     }
 
-    pub fn push(&self, sample: PacketSample) {
-        let mut entries = self.entries.lock().unwrap();
-        if entries.len() >= self.max_entries {
-            entries.pop_front();
+    /// 批量写入采样包，整个批次只加一次锁。
+    pub fn push_many(&self, samples: &[PacketSample]) {
+        if samples.is_empty() {
+            return;
         }
-        entries.push_back(sample);
+        let mut entries = self.entries.lock().unwrap();
+        for sample in samples {
+            if entries.len() >= self.max_entries {
+                entries.pop_front();
+            }
+            entries.push_back(*sample);
+        }
     }
 
     pub fn query(&self, opts: &PacketLogQuery) -> Vec<PacketSampleEntry> {
@@ -216,9 +222,7 @@ pub async fn run(
         samples
     };
 
-    for sample in &samples {
-        packet_log.push(*sample);
-    }
+    packet_log.push_many(&samples);
 
     if !samples.is_empty() {
         tracing::debug!(count = samples.len(), "packet_log consumer batch");

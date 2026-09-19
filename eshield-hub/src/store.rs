@@ -3,10 +3,12 @@ use crate::time::now_ns;
 use anyhow::{Context, Result};
 use eshield_common::IpKey;
 use redb::{Database, ReadableTable, TableDefinition};
-use std::collections::HashMap;
 use std::path::Path;
 
 const POLICIES_TABLE: TableDefinition<&[u8; 25], &[u8]> = TableDefinition::new("policies");
+/// 源 IP -> 当前复合键的二级索引，避免每次 push 全量扫描策略表。
+const POLICY_INDEX_TABLE: TableDefinition<&[u8; 17], &[u8; 25]> =
+    TableDefinition::new("policy_index");
 const TOMBSTONES_TABLE: TableDefinition<&[u8; 25], &[u8]> = TableDefinition::new("tombstones");
 const RULES_TABLE: TableDefinition<u32, &[u8]> = TableDefinition::new("rules");
 
@@ -17,6 +19,13 @@ fn composite_key(last_seen_ns: u64, ip: &IpKey) -> [u8; 25] {
     key[0..8].copy_from_slice(&last_seen_ns.to_be_bytes());
     key[8] = ip.family;
     key[9..25].copy_from_slice(&ip.addr);
+    key
+}
+
+fn ip_index_key(ip: &IpKey) -> [u8; 17] {
+    let mut key = [0u8; 17];
+    key[0] = ip.family;
+    key[1..].copy_from_slice(&ip.addr);
     key
 }
 
@@ -38,21 +47,35 @@ impl Store {
             let mut table = write_txn
                 .open_table(POLICIES_TABLE)
                 .context("open policies table")?;
+            let mut index = write_txn
+                .open_table(POLICY_INDEX_TABLE)
+                .context("open policy index table")?;
 
-            // Load current persisted state keyed by IP so we can merge in memory.
-            let mut existing: HashMap<IpKey, (SharedPolicy, [u8; 25])> = HashMap::new();
-            for result in table.iter()? {
-                let (k, v) = result?;
-                let key = k.value();
-                let policy: SharedPolicy =
-                    serde_json::from_slice(v.value()).context("deserialize stored policy")?;
-                existing.insert(policy.ip, (policy, *key));
+            // 旧库迁移：index 为空但已有策略时，先重建一次 IP -> 复合键索引。
+            if index.len()? == 0 && table.len()? > 0 {
+                let mut rebuilt: Vec<([u8; 17], [u8; 25])> = Vec::new();
+                for item in table.iter()? {
+                    let (k, v) = item?;
+                    let policy: SharedPolicy =
+                        serde_json::from_slice(v.value()).context("deserialize stored policy")?;
+                    rebuilt.push((ip_index_key(&policy.ip), *k.value()));
+                }
+                for (index_key, composite) in rebuilt {
+                    index.insert(&index_key, &composite)?;
+                }
             }
 
             for node in policies {
-                let (policy, old_key) =
-                    if let Some((existing_policy, old_key)) = existing.remove(&node.ip) {
-                        let mut p = existing_policy;
+                let index_key = ip_index_key(&node.ip);
+                let old_key = index.get(&index_key)?.map(|v| *v.value());
+
+                let policy = match old_key {
+                    Some(composite) => {
+                        let value = table
+                            .get(&composite)?
+                            .context("policy index points to missing row")?;
+                        let mut p: SharedPolicy =
+                            serde_json::from_slice(value.value()).context("deserialize policy")?;
                         p.reason = node.reason;
                         p.hit_count = p.hit_count.max(node.hit_count);
                         p.trust_score = p.trust_score.min(node.trust_score);
@@ -67,20 +90,19 @@ impl Store {
                         };
                         p.last_seen_ns = p.last_seen_ns.max(now_ns);
                         p.first_seen_ns = p.first_seen_ns.min(now_ns);
-                        (p, Some(old_key))
-                    } else {
-                        let p = SharedPolicy {
-                            ip: node.ip,
-                            reason: node.reason,
-                            hit_count: node.hit_count,
-                            trust_score: node.trust_score,
-                            first_seen_ns: now_ns,
-                            last_seen_ns: now_ns,
-                            source_nodes: vec![node_name.to_string()],
-                            ttl_s: node.ttl_s,
-                        };
-                        (p, None)
-                    };
+                        p
+                    }
+                    None => SharedPolicy {
+                        ip: node.ip,
+                        reason: node.reason,
+                        hit_count: node.hit_count,
+                        trust_score: node.trust_score,
+                        first_seen_ns: now_ns,
+                        last_seen_ns: now_ns,
+                        source_nodes: vec![node_name.to_string()],
+                        ttl_s: node.ttl_s,
+                    },
+                };
 
                 let new_key = composite_key(policy.last_seen_ns, &policy.ip);
                 if let Some(old_key) = old_key {
@@ -91,7 +113,7 @@ impl Store {
 
                 let bytes = serde_json::to_vec(&policy).context("serialize policy")?;
                 table.insert(&new_key, bytes.as_slice())?;
-                existing.insert(policy.ip, (policy, new_key));
+                index.insert(&index_key, &new_key)?;
                 merged += 1;
             }
         }
@@ -165,6 +187,7 @@ impl Store {
         let (policies_removed, tombstones_removed);
         {
             let mut policies = write_txn.open_table(POLICIES_TABLE)?;
+            let mut index = write_txn.open_table(POLICY_INDEX_TABLE)?;
             let mut stale = Vec::new();
             for result in policies.iter()? {
                 let (k, v) = result?;
@@ -174,13 +197,14 @@ impl Store {
                         .last_seen_ns
                         .saturating_add(policy.ttl_s.saturating_mul(1_000_000_000));
                     if expire_at < now_ns {
-                        stale.push(*k.value());
+                        stale.push((*k.value(), policy.ip));
                     }
                 }
             }
             policies_removed = stale.len();
-            for key in stale {
+            for (key, ip) in stale {
                 policies.remove(&key)?;
+                index.remove(&ip_index_key(&ip))?;
             }
         }
         {
@@ -207,23 +231,41 @@ impl Store {
     pub fn delete_policy(&self, ip: &IpKey) -> Result<bool> {
         let now_ns = now_ns();
         let write_txn = self.db.begin_write()?;
-
-        let mut policies = write_txn.open_table(POLICIES_TABLE)?;
         let mut removed = false;
-        // 按 IP 查找并删除现有策略（ policies 表按键是复合键，需遍历匹配）。
-        let mut to_remove = Vec::new();
-        for result in policies.iter()? {
-            let (k, v) = result?;
-            let stored: SharedPolicy = serde_json::from_slice(v.value())?;
-            if stored.ip == *ip {
-                to_remove.push(*k.value());
+        {
+            let mut policies = write_txn.open_table(POLICIES_TABLE)?;
+            let mut index = write_txn.open_table(POLICY_INDEX_TABLE)?;
+            let index_key = ip_index_key(ip);
+
+            let existing = {
+                let guard = index.get(&index_key)?;
+                guard.map(|v| *v.value())
+            };
+            match existing {
+                Some(composite) => {
+                    if policies.remove(&composite)?.is_some() {
+                        removed = true;
+                    }
+                    index.remove(&index_key)?;
+                }
+                None => {
+                    // 旧库没有索引时退化为一次扫描，并顺手补齐索引删除。
+                    let mut to_remove = Vec::new();
+                    for result in policies.iter()? {
+                        let (k, v) = result?;
+                        let stored: SharedPolicy = serde_json::from_slice(v.value())?;
+                        if stored.ip == *ip {
+                            to_remove.push(*k.value());
+                        }
+                    }
+                    for key in to_remove {
+                        policies.remove(&key)?;
+                        removed = true;
+                    }
+                    let _ = index.remove(&index_key);
+                }
             }
         }
-        for key in to_remove {
-            policies.remove(&key)?;
-            removed = true;
-        }
-        drop(policies);
 
         let mut tombstones = write_txn.open_table(TOMBSTONES_TABLE)?;
         let tkey = composite_key(now_ns, ip);

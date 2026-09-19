@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::Ordering;
 
 use crate::time::monotonic_secs as monotonic_now_secs;
@@ -49,7 +49,7 @@ pub struct MetricPoint {
 /// Default capacity 8640 slots at 10s interval retains 24 hours of data.
 #[derive(Debug)]
 pub struct TimeSeriesWindow {
-    slots: Vec<MetricPoint>,
+    slots: VecDeque<MetricPoint>,
     capacity: usize,
     interval_s: u64,
     /// Timestamp of the most recently written slot (0 if none).
@@ -68,7 +68,7 @@ impl TimeSeriesWindow {
     /// filter snapshots by duration.
     pub fn new(capacity: usize, interval_s: u64) -> Self {
         Self {
-            slots: Vec::with_capacity(capacity),
+            slots: VecDeque::with_capacity(capacity),
             capacity,
             interval_s,
             head_timestamp: 0,
@@ -163,9 +163,9 @@ impl TimeSeriesWindow {
         };
 
         if self.slots.len() == self.capacity {
-            self.slots.remove(0);
+            self.slots.pop_front();
         }
-        self.slots.push(point);
+        self.slots.push_back(point);
 
         self.head_timestamp = now;
         self.last_total_packets = total_packets;
@@ -175,7 +175,7 @@ impl TimeSeriesWindow {
 
     /// Timestamp of the newest recorded point (0 if empty).
     pub fn last_timestamp(&self) -> u64 {
-        self.slots.last().map(|p| p.timestamp).unwrap_or(0)
+        self.slots.back().map(|p| p.timestamp).unwrap_or(0)
     }
 
     /// Return only points newer than `timestamp` (ascending order).
@@ -195,7 +195,7 @@ impl TimeSeriesWindow {
         let cutoff = monotonic_now_secs().saturating_sub(duration_s);
 
         if duration_s == 0 {
-            return self.slots.clone();
+            return self.slots.iter().cloned().collect();
         }
 
         self.slots
@@ -216,7 +216,7 @@ impl TimeSeriesWindow {
         self.slots.clear();
         let start = points.len().saturating_sub(self.capacity);
         self.slots.extend(points.into_iter().skip(start));
-        if let Some(last) = self.slots.last() {
+        if let Some(last) = self.slots.back() {
             self.head_timestamp = last.timestamp;
             self.last_total_packets = 0;
             self.last_total_dropped = 0;

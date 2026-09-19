@@ -36,25 +36,26 @@ pub async fn run(
         events
     };
 
-    // 批量聚合后再更新全局 Stats，减少原子操作和 DashMap 竞争。
-    // Top 攻击源由 eBPF TOP_ATTACKERS Map 直接维护，事件侧不再聚合来源维度。
-    let mut by_reason: HashMap<u16, u64> = HashMap::new();
-    let mut by_port: HashMap<u16, u64> = HashMap::new();
-
     let process_start = std::time::Instant::now();
     let program_start_ns = stats.program_start_ns.load(Ordering::Relaxed);
 
-    for event in &events {
-        // 过滤 Ring Buffer 中残留的 stale 事件（来自前一次测试/进程的事件）。
-        // eBPF 的 bpf_ktime_get_ns 与用户态 CLOCK_MONOTONIC 都是自系统启动以来的
-        // 单调时间，允许 1 秒容差。
-        if program_start_ns != 0
-            && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns
-        {
-            continue;
-        }
-        // 所有有效 DROP 事件写入环形缓冲供控制台「攻击事件」页使用
-        stats.push_attack_event(*event);
+    // 先过滤 stale 事件，得到本批有效事件；攻击事件一次性写入环形缓冲，
+    // 避免每个事件都拿一次 Stats 的 Mutex。
+    let valid_events: Vec<DropEvent> = events
+        .into_iter()
+        .filter(|event| {
+            !(program_start_ns != 0
+                && event.timestamp_ns.saturating_add(1_000_000_000) < program_start_ns)
+        })
+        .collect();
+    stats.push_attack_events(&valid_events);
+
+    // 按目的端口聚合；Top 攻击源由 eBPF TOP_ATTACKERS Map 直接维护。
+    let mut by_port: HashMap<u16, u64> = HashMap::new();
+    // 自适应引擎按源 IP 聚合本批事件，避免逐事件写 DashMap。
+    let mut adaptive_counts: HashMap<IpKey, u64> = HashMap::new();
+
+    for event in &valid_events {
         let src_key = match IpFamily::from_u8(event.family) {
             Some(IpFamily::Ipv4) => IpKey::from_ipv4([
                 event.src_ip[12],
@@ -66,7 +67,6 @@ pub async fn run(
             None => continue,
         };
 
-        *by_reason.entry(event.rule_id).or_insert(0) += 1;
         *by_port.entry(event.dst_port).or_insert(0) += 1;
 
         // GeoIP / SYN Flood / UDP Flood / ICMP Flood / Blacklist 事件
@@ -80,9 +80,7 @@ pub async fn run(
             && event.rule_id != eshield_common::rules::ICMP_FLOOD
             && event.rule_id != eshield_common::rules::BLACKLIST
         {
-            if let Err(e) = adaptive.on_event(&stats, src_key, ebpf) {
-                debug!("adaptive engine error: {}", e);
-            }
+            *adaptive_counts.entry(src_key).or_insert(0) += 1;
         }
 
         debug!(
@@ -97,12 +95,17 @@ pub async fn run(
         );
     }
 
-    stats.add_dropped_batch(&by_reason, &by_port);
+    for (src_key, count) in adaptive_counts {
+        if let Err(e) = adaptive.on_events(&stats, src_key, count, ebpf) {
+            debug!("adaptive engine error: {}", e);
+        }
+    }
 
-    if !events.is_empty() {
+    stats.add_dropped_batch(&by_port);
+
+    if !valid_events.is_empty() {
         tracing::debug!(
-            events_len = events.len(),
-            ?by_reason,
+            events_len = valid_events.len(),
             ?by_port,
             "event_consumer batch"
         );
@@ -111,11 +114,11 @@ pub async fn run(
     let elapsed_us = process_start.elapsed().as_micros() as u64;
     stats.record_process_time_us(elapsed_us);
 
-    if events.is_empty() {
+    if valid_events.is_empty() {
         // 无事件时让出 CPU，避免空转；使用 interval 保持一致的节奏
         let mut tick = interval(Duration::from_millis(10));
         tick.tick().await;
     }
 
-    Ok(events.len())
+    Ok(valid_events.len())
 }

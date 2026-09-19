@@ -11,8 +11,9 @@ use crate::state::Stats;
 /// 对短时间窗口内多次触发规则的源 IP 追加动态黑名单。
 pub struct AdaptiveEngine {
     config: std::sync::RwLock<AdaptiveConfig>,
-    /// 每个 IP 的最近事件时间戳（秒），用于滑动窗口计数
-    windows: dashmap::DashMap<IpKey, Vec<u64>>,
+    /// 每个 IP 的最近事件窗口：(时间戳秒, 该秒内事件数)，用于滑动窗口计数。
+    /// 使用加权计数避免每个事件都产生一次 DashMap 写入。
+    windows: dashmap::DashMap<IpKey, Vec<(u64, u64)>>,
     /// 已自适应封禁的 IP 及其解封时间戳（秒）
     blocked: dashmap::DashMap<IpKey, u64>,
 }
@@ -38,8 +39,18 @@ impl AdaptiveEngine {
         self.config.read().map(|c| c.enabled).unwrap_or(false)
     }
 
-    /// 处理一条 DROP 事件。如果命中阈值，写入 BLACKLIST map 并累加统计。
-    pub fn on_event(&self, stats: &Stats, src_ip: IpKey, ebpf: &mut Ebpf) -> anyhow::Result<()> {
+    /// 批量处理同一源 IP 的 DROP 事件（count 为事件数）。
+    /// 事件消费端先按源聚合再调用，避免每个事件都写一次 DashMap。
+    pub fn on_events(
+        &self,
+        stats: &Stats,
+        src_ip: IpKey,
+        count: u64,
+        ebpf: &mut Ebpf,
+    ) -> anyhow::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
         let cfg = self.config.read().unwrap_or_else(|e| e.into_inner());
         if !cfg.enabled {
             return Ok(());
@@ -57,12 +68,18 @@ impl AdaptiveEngine {
             }
         }
 
-        // 滑动窗口计数
+        // 滑动窗口加权计数：同一秒内的事件合并成 (timestamp, count)。
         let mut window = self.windows.entry(src_ip).or_default();
-        window.retain(|t| now_s.saturating_sub(*t) <= window_s);
-        window.push(now_s);
+        window.retain(|(t, _)| now_s.saturating_sub(*t) <= window_s);
+        match window.last_mut() {
+            Some(last) if last.0 == now_s => {
+                last.1 = last.1.saturating_add(count);
+            }
+            _ => window.push((now_s, count)),
+        }
+        let total: u64 = window.iter().map(|(_, c)| *c).sum();
 
-        if window.len() as u64 >= threshold {
+        if total >= threshold {
             let blocked_until_ns = if block_duration_s == 0 {
                 BLOCK_PERMANENT
             } else {
@@ -120,7 +137,7 @@ impl AdaptiveEngine {
                 let alive = entry
                     .value()
                     .iter()
-                    .any(|t| now_s.saturating_sub(*t) <= window_s);
+                    .any(|(t, _)| now_s.saturating_sub(*t) <= window_s);
                 if alive {
                     None
                 } else {
