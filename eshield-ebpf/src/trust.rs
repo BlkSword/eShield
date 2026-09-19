@@ -6,12 +6,12 @@
 
 use crate::maps::TRUST_MAP;
 use eshield_common::{
-    IpKey, TrustEntry, TRUST_ADD_DIVISOR, TRUST_DEFAULT, TRUST_MAX, TRUST_MIN, TRUST_SUB_DIVISOR,
+    IpKey, TrustEntry, TRUST_ADD_DIVISOR, TRUST_DEFAULT, TRUST_MAX, TRUST_SUB_DIVISOR,
 };
 
 /// PASS 事件：缓慢增加信任分。
 #[inline(always)]
-pub fn trust_pass(src: &IpKey, now_ns: u64) {
+pub fn trust_pass(src: &IpKey, now_ns: u64, add_divisor: u32) {
     let mut entry = match unsafe { TRUST_MAP.get(src) } {
         Some(e) => *e,
         None => TrustEntry {
@@ -20,7 +20,12 @@ pub fn trust_pass(src: &IpKey, now_ns: u64) {
         },
     };
     entry.pass_count = entry.pass_count.saturating_add(1);
-    let delta = TRUST_MAX.saturating_sub(entry.trust_score) / TRUST_ADD_DIVISOR;
+    let divisor = if add_divisor == 0 {
+        TRUST_ADD_DIVISOR
+    } else {
+        add_divisor
+    };
+    let delta = TRUST_MAX.saturating_sub(entry.trust_score) / divisor;
     entry.trust_score = (entry.trust_score + delta).min(TRUST_MAX);
     entry.last_update_ns = now_ns;
     entry.level = trust_level(entry.trust_score);
@@ -29,7 +34,7 @@ pub fn trust_pass(src: &IpKey, now_ns: u64) {
 
 /// DROP 事件：快速降低信任分。
 #[inline(always)]
-pub fn trust_drop(src: &IpKey, now_ns: u64) {
+pub fn trust_drop(src: &IpKey, now_ns: u64, sub_divisor: u32) {
     let mut entry = match unsafe { TRUST_MAP.get(src) } {
         Some(e) => *e,
         None => TrustEntry {
@@ -38,10 +43,14 @@ pub fn trust_drop(src: &IpKey, now_ns: u64) {
         },
     };
     entry.drop_count = entry.drop_count.saturating_add(1);
+    let divisor = if sub_divisor == 0 {
+        TRUST_SUB_DIVISOR
+    } else {
+        sub_divisor
+    };
     entry.trust_score = entry
         .trust_score
-        .saturating_sub(entry.trust_score / TRUST_SUB_DIVISOR);
-    entry.trust_score = entry.trust_score.max(TRUST_MIN);
+        .saturating_sub(entry.trust_score / divisor);
     entry.last_update_ns = now_ns;
     entry.level = trust_level(entry.trust_score);
     let _ = TRUST_MAP.insert(src, &entry, 0);

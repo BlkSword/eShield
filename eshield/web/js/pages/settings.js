@@ -113,13 +113,7 @@ export function mount(el) {
           ${TRUST_SEGS.map(x => `<span style="display:inline-flex;align-items:center;gap:6px"><span style="width:8px;height:8px;border-radius:2px;background:${x.color}"></span>${x.label} ${fmtCn(stats[x.key] || 0)}</span>`).join('')}
         </div>`
         : '<div class="field-hint">暂无 Trust Score 数据</div>'}
-      <div class="switch-row section-gap" style="justify-content:space-between;border-top:1px solid var(--border);padding-top:14px;margin-top:16px">
-        <div>
-          <div class="field-label">内核调试日志（AYA_LOGS）</div>
-          <div class="field-hint">输出 eBPF 调试日志，仅排查问题时开启</div>
-        </div>
-        <label class="switch"><input type="checkbox" id="stEbpfDebug"${cfg?.ebpf_debug_enabled ? ' checked' : ''}><span class="track"></span></label>
-      </div>`;
+      `;
   }
 
   function renderAbout(c) {
@@ -200,21 +194,6 @@ export function mount(el) {
       const ok = await copyText(token);
       toast(ok ? '已复制到剪贴板' : '复制失败，请手动选择复制', ok ? 'ok' : 'err');
     }
-  });
-
-  /* ebpf_debug_enabled 开关（事件委托，渲染后元素会重建） */
-  el.addEventListener('change', async e => {
-    if (e.target.id !== 'stEbpfDebug') return;
-    const on = e.target.checked;
-    e.target.disabled = true;
-    try {
-      const msg = await apiPatch('/api/config', { ebpf_debug_enabled: on });
-      toast(typeof msg === 'string' ? msg : '配置已更新');
-      if (cfg) cfg.ebpf_debug_enabled = on;
-    } catch (err) {
-      e.target.checked = !on;
-      toast(err.message, 'err');
-    } finally { e.target.disabled = false; }
   });
 
   loadAll();

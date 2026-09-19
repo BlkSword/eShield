@@ -209,13 +209,21 @@ pub struct GlobalStats {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RuntimeConfig {
+    /// Trust Score PASS 加分除数：trust += (1000 - trust) / divisor
+    pub trust_add_divisor: u32,
+    /// Trust Score DROP 减分除数：trust -= trust / divisor
+    pub trust_sub_divisor: u32,
+    /// 包日志采样率：N 表示 1/N；0 等价于关闭
+    pub packet_log_sample_rate: u16,
     pub rate_limit_enabled: u8,
     pub syn_proxy_enabled: u8,
     pub l7_scan_enabled: u8,
-    pub ebpf_debug: u8,
     pub udp_flood_enabled: u8,
     pub icmp_flood_enabled: u8,
+    /// GeoIP 开关
     pub geoip_enabled: u8,
+    /// GeoIP 默认动作：0=pass（仅按 block 列表拦截），1=drop（仅放行 allow 列表）
+    pub geoip_default_action: u8,
     pub tcp_reset_on_drop: u8,
     /// 信任评分开关（v0.4.0）
     pub trust_enabled: u8,
@@ -223,8 +231,6 @@ pub struct RuntimeConfig {
     pub danger_level: u8,
     /// 包日志开关：0=关闭，1=开启
     pub packet_log_enabled: u8,
-    /// 包日志采样率：N 表示 1/N；0 等价于关闭
-    pub packet_log_sample_rate: u16,
     /// 防护项目表非空标志：0=无项目（数据面快速跳过），1=有项目
     pub project_enabled: u8,
     /// PORT_ACL 实际规则条数：0=空表（数据面跳过 128 次循环）
@@ -233,7 +239,8 @@ pub struct RuntimeConfig {
     pub l7_pattern_count: u8,
     /// 按目的端口限速开关：0=关闭（零开销跳过），1=开启
     pub port_rate_limit_enabled: u8,
-    pub padding: [u8; 1],
+    /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
+    pub padding: [u8; 3],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）

@@ -1,10 +1,12 @@
 use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::{self, OpenOptions};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, Mutex};
 use tracing::info;
 
@@ -43,14 +45,14 @@ pub trait AuditBackend: Send + Sync {
 
 /// 内存审计后端（适合测试与默认运行）
 pub struct MemoryAuditBackend {
-    entries: Mutex<Vec<AuditEntry>>,
+    entries: Mutex<VecDeque<AuditEntry>>,
     max_entries: usize,
 }
 
 impl MemoryAuditBackend {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            entries: Mutex::new(Vec::new()),
+            entries: Mutex::new(VecDeque::new()),
             max_entries,
         }
     }
@@ -60,17 +62,16 @@ impl MemoryAuditBackend {
 impl AuditBackend for MemoryAuditBackend {
     async fn append(&self, entry: AuditEntry) -> anyhow::Result<()> {
         let mut guard = self.entries.lock().await;
-        guard.push(entry);
-        if guard.len() > self.max_entries {
-            guard.remove(0);
+        guard.push_back(entry);
+        while guard.len() > self.max_entries {
+            guard.pop_front();
         }
         Ok(())
     }
 
     async fn list(&self, limit: usize) -> anyhow::Result<Vec<AuditEntry>> {
         let guard = self.entries.lock().await;
-        let start = guard.len().saturating_sub(limit);
-        Ok(guard[start..].to_vec())
+        Ok(guard.iter().rev().take(limit).rev().cloned().collect())
     }
 }
 
@@ -166,31 +167,59 @@ impl AuditBackend for FileAuditBackend {
     }
 
     async fn list(&self, limit: usize) -> anyhow::Result<Vec<AuditEntry>> {
-        if !self.path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let file = fs::File::open(&self.path)
+        let path = self.path.clone();
+        tokio::task::spawn_blocking(move || list_tail(&path, limit))
             .await
-            .with_context(|| format!("cannot open audit log: {}", self.path.display()))?;
-        let reader = BufReader::new(file);
-        let mut lines = reader.lines();
-        let mut entries = Vec::new();
-
-        while let Some(line) = lines.next_line().await? {
-            let line: String = line;
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<AuditEntry>(&line) {
-                Ok(entry) => entries.push(entry),
-                Err(e) => tracing::warn!("failed to parse audit log line: {}", e),
-            }
-        }
-
-        let start = entries.len().saturating_sub(limit);
-        Ok(entries[start..].to_vec())
+            .context("audit list task panicked")?
     }
+}
+
+/// 从 JSON Lines 审计文件尾部读取最近 `limit` 条，避免每次请求都全量读盘。
+fn list_tail(path: &Path, limit: usize) -> anyhow::Result<Vec<AuditEntry>> {
+    if limit == 0 || !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("cannot open audit log: {}", path.display()))?;
+    let file_len = file.metadata()?.len();
+    const CHUNK: u64 = 64 * 1024;
+
+    let mut pos = file_len;
+    let mut newlines = 0usize;
+    let mut chunks: Vec<Vec<u8>> = Vec::new();
+    while pos > 0 && newlines < limit + 1 {
+        let read_len = CHUNK.min(pos);
+        pos -= read_len;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut buf = vec![0u8; read_len as usize];
+        file.read_exact(&mut buf)?;
+        newlines += buf.iter().filter(|&&b| b == b'\n').count();
+        chunks.push(buf);
+    }
+    chunks.reverse();
+    let mut data = Vec::with_capacity(chunks.iter().map(|c| c.len()).sum());
+    for chunk in chunks {
+        data.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8_lossy(&data);
+
+    let mut entries: VecDeque<AuditEntry> = VecDeque::with_capacity(limit.min(1024));
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<AuditEntry>(line) {
+            Ok(entry) => {
+                entries.push_front(entry);
+                if entries.len() >= limit {
+                    break;
+                }
+            }
+            Err(e) => tracing::warn!("failed to parse audit log line: {}", e),
+        }
+    }
+    Ok(entries.into_iter().collect())
 }
 
 /// 审计器：业务代码通过它记录操作。
@@ -246,5 +275,47 @@ impl Auditor {
 
     pub async fn list(&self, limit: usize) -> anyhow::Result<Vec<AuditEntry>> {
         self.backend.list(limit).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn entry(actor: &str) -> AuditEntry {
+        AuditEntry {
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            actor: actor.to_string(),
+            action: AuditAction::BlockIp,
+            detail: serde_json::json!({}),
+            source_ip: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_backend_keeps_last_n() {
+        let backend = MemoryAuditBackend::new(2);
+        for name in ["a", "b", "c"] {
+            backend.append(entry(name)).await.unwrap();
+        }
+        let listed = backend.list(10).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].actor, "b");
+        assert_eq!(listed[1].actor, "c");
+    }
+
+    #[tokio::test]
+    async fn file_backend_reads_tail() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("audit.log");
+        let backend = FileAuditBackend::new(&path, 0).unwrap();
+        for name in ["a", "b", "c", "d"] {
+            backend.append(entry(name)).await.unwrap();
+        }
+        let listed = backend.list(2).await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].actor, "c");
+        assert_eq!(listed[1].actor, "d");
     }
 }

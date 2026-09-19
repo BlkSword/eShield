@@ -1645,7 +1645,7 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
                 body.push_str(&format!(
                     "eshield_map_entries{{interface=\"{}\",name=\"BLACKLIST\"}} {}\n",
                     interface,
-                    m.iter().count()
+                    m.iter().take(10_000).count()
                 ));
             }
         }
@@ -1655,7 +1655,7 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
                 body.push_str(&format!(
                     "eshield_map_entries{{interface=\"{}\",name=\"RATE_MAP\"}} {}\n",
                     interface,
-                    m.iter().count()
+                    m.iter().take(10_000).count()
                 ));
             }
         }

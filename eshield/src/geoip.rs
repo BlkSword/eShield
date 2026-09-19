@@ -15,31 +15,41 @@ pub struct GeoIpBlock {
 
 /// 根据配置解析 GeoIP/ASN CSV 并返回需要封禁的 CIDR 列表。
 pub fn load_geoip_blocks(config: &crate::config::GeoIpConfig) -> Result<Vec<GeoIpBlock>> {
+    load_entries(config, &config.block_countries, &config.block_asns, "block")
+}
+
+/// 根据配置解析 GeoIP/ASN CSV 并返回允许放行的 CIDR 列表。
+pub fn load_geoip_allows(config: &crate::config::GeoIpConfig) -> Result<Vec<GeoIpBlock>> {
+    load_entries(config, &config.allow_countries, &config.allow_asns, "allow")
+}
+
+fn load_entries(
+    config: &crate::config::GeoIpConfig,
+    countries: &[String],
+    asns: &[u32],
+    kind: &str,
+) -> Result<Vec<GeoIpBlock>> {
     let mut blocks = Vec::new();
 
-    let block_countries: HashSet<String> = config
-        .block_countries
-        .iter()
-        .map(|s| s.to_ascii_uppercase())
-        .collect();
-    let block_asns: HashSet<u32> = config.block_asns.iter().copied().collect();
+    let countries: HashSet<String> = countries.iter().map(|s| s.to_ascii_uppercase()).collect();
+    let asns: HashSet<u32> = asns.iter().copied().collect();
 
-    if !block_countries.is_empty() {
+    if !countries.is_empty() {
         if let Some(path) = &config.country_blocks_csv {
             let path = Path::new(path);
             if path.exists() {
-                blocks.extend(parse_country_csv(path, &block_countries)?);
+                blocks.extend(parse_country_csv(path, &countries, kind)?);
             } else {
                 warn!("country blocks CSV not found: {}", path.display());
             }
         }
     }
 
-    if !block_asns.is_empty() {
+    if !asns.is_empty() {
         if let Some(path) = &config.asn_blocks_csv {
             let path = Path::new(path);
             if path.exists() {
-                blocks.extend(parse_asn_csv(path, &block_asns)?);
+                blocks.extend(parse_asn_csv(path, &asns, kind)?);
             } else {
                 warn!("ASN blocks CSV not found: {}", path.display());
             }
@@ -47,15 +57,20 @@ pub fn load_geoip_blocks(config: &crate::config::GeoIpConfig) -> Result<Vec<GeoI
     }
 
     debug!(
-        "loaded {} GeoIP/ASN block entries (countries={:?}, asns={:?})",
+        "loaded {} GeoIP/ASN {} entries (countries={:?}, asns={:?})",
         blocks.len(),
-        block_countries,
-        block_asns,
+        kind,
+        countries,
+        asns,
     );
     Ok(blocks)
 }
 
-fn parse_country_csv(path: &Path, block_countries: &HashSet<String>) -> Result<Vec<GeoIpBlock>> {
+fn parse_country_csv(
+    path: &Path,
+    countries: &HashSet<String>,
+    kind: &str,
+) -> Result<Vec<GeoIpBlock>> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_path(path)
@@ -69,14 +84,14 @@ fn parse_country_csv(path: &Path, block_countries: &HashSet<String>) -> Result<V
         }
         let network = record[0].trim();
         let country = record[1].trim().to_ascii_uppercase();
-        if !block_countries.contains(&country) {
+        if !countries.contains(&country) {
             continue;
         }
         match parse_cidr(network) {
             Ok((key, prefix)) => blocks.push(GeoIpBlock {
                 key,
                 prefix,
-                reason: format!("geoip-country-{}", country),
+                reason: format!("geoip-{}-country-{}", kind, country),
             }),
             Err(e) => warn!("skip invalid CIDR {}: {}", network, e),
         }
@@ -84,7 +99,7 @@ fn parse_country_csv(path: &Path, block_countries: &HashSet<String>) -> Result<V
     Ok(blocks)
 }
 
-fn parse_asn_csv(path: &Path, block_asns: &HashSet<u32>) -> Result<Vec<GeoIpBlock>> {
+fn parse_asn_csv(path: &Path, asns: &HashSet<u32>, kind: &str) -> Result<Vec<GeoIpBlock>> {
     let mut rdr = csv::ReaderBuilder::new()
         .has_headers(true)
         .from_path(path)
@@ -101,14 +116,14 @@ fn parse_asn_csv(path: &Path, block_asns: &HashSet<u32>) -> Result<Vec<GeoIpBloc
             Ok(n) => n,
             Err(_) => continue,
         };
-        if !block_asns.contains(&asn) {
+        if !asns.contains(&asn) {
             continue;
         }
         match parse_cidr(network) {
             Ok((key, prefix)) => blocks.push(GeoIpBlock {
                 key,
                 prefix,
-                reason: format!("geoip-asn-{}", asn),
+                reason: format!("geoip-{}-asn-{}", kind, asn),
             }),
             Err(e) => warn!("skip invalid CIDR {}: {}", network, e),
         }

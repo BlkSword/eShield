@@ -5,7 +5,6 @@ use eshield_common::{rules, IpKey};
 
 /// 检测并处理 SYN Flood：对单 IP 的 SYN 包做速率限制，超限即 DROP 并加黑名单。
 /// 不接收 ctx：本函数只做 map 操作，无需包内存访问。
-
 pub fn handle_syn_flood(src: &IpKey, tcp_flags: u8, now_ns: u64) -> bool {
     if !is_syn_flags(tcp_flags) {
         return false;

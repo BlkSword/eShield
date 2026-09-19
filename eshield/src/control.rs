@@ -32,6 +32,7 @@ pub struct ControlState {
     pub whitelist: Mutex<Vec<(IpKey, u32)>>,
     pub blacklist: Mutex<Vec<IpKey>>,
     pub geoip_blocks: Mutex<Vec<(IpKey, u32)>>,
+    pub geoip_allows: Mutex<Vec<(IpKey, u32)>>,
     pub auditor: Option<Auditor>,
     pub store: Option<RuleStore>,
     pub hub_connected: std::sync::atomic::AtomicBool,
@@ -56,12 +57,14 @@ pub struct RuntimeConfigSnapshot {
     pub rate_limit_enabled: bool,
     pub syn_proxy_enabled: bool,
     pub l7_scan_enabled: bool,
-    pub ebpf_debug_enabled: bool,
     pub udp_flood_enabled: bool,
     pub icmp_flood_enabled: bool,
     pub geoip_enabled: bool,
     pub tcp_reset_on_drop: bool,
     pub trust_enabled: bool,
+    pub trust_add_divisor: u32,
+    pub trust_sub_divisor: u32,
+    pub geoip_default_action: u8,
     pub danger_level: u8,
     pub rate_limit: RateLimitParams,
     pub port_rate_limit: RateLimitParams,
@@ -96,12 +99,14 @@ pub struct RuntimeConfigPatch {
     pub rate_limit_enabled: Option<bool>,
     pub syn_proxy_enabled: Option<bool>,
     pub l7_scan_enabled: Option<bool>,
-    pub ebpf_debug_enabled: Option<bool>,
     pub udp_flood_enabled: Option<bool>,
     pub icmp_flood_enabled: Option<bool>,
     pub geoip_enabled: Option<bool>,
     pub tcp_reset_on_drop: Option<bool>,
     pub trust_enabled: Option<bool>,
+    pub trust_add_divisor: Option<u32>,
+    pub trust_sub_divisor: Option<u32>,
+    pub geoip_default_action: Option<u8>,
     pub rate_limit: Option<RateLimitParams>,
     pub port_rate_limit: Option<RateLimitParams>,
     pub adaptive: Option<crate::config::AdaptiveConfig>,
@@ -123,6 +128,7 @@ impl ControlState {
             whitelist: Mutex::new(Vec::new()),
             blacklist: Mutex::new(Vec::new()),
             geoip_blocks: Mutex::new(Vec::new()),
+            geoip_allows: Mutex::new(Vec::new()),
             auditor,
             store,
             hub_connected: std::sync::atomic::AtomicBool::new(false),
@@ -143,9 +149,10 @@ impl ControlState {
             let mut blacklist = state.blacklist.lock().await;
             let mut whitelist = state.whitelist.lock().await;
             let mut geoip_blocks = state.geoip_blocks.lock().await;
+            let mut geoip_allows = state.geoip_allows.lock().await;
             apply_blacklist_map(&mut guard, config, &mut blacklist).await?;
             apply_whitelist_map(&mut guard, config, &mut whitelist).await?;
-            apply_geoip_map(&mut guard, config, &mut geoip_blocks).await?;
+            apply_geoip_map(&mut guard, config, &mut geoip_blocks, &mut geoip_allows).await?;
         }
 
         Ok(state)
@@ -161,6 +168,7 @@ impl ControlState {
         let mut whitelist = self.whitelist.lock().await;
         let mut blacklist = self.blacklist.lock().await;
         let mut geoip_blocks = self.geoip_blocks.lock().await;
+        let mut geoip_allows = self.geoip_allows.lock().await;
 
         init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
@@ -170,7 +178,7 @@ impl ControlState {
         init_protection_projects_map(&mut guard, &config.protection_projects)?;
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
-        apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
+        apply_geoip_map(&mut guard, &config, &mut geoip_blocks, &mut geoip_allows).await?;
 
         let prev_danger = self.runtime.read().await.danger_level;
         let mut new_snapshot = RuntimeConfigSnapshot::from_config(&config);
@@ -445,9 +453,6 @@ impl ControlState {
         if let Some(enabled) = patch.l7_scan_enabled {
             snapshot.l7_scan_enabled = enabled;
         }
-        if let Some(enabled) = patch.ebpf_debug_enabled {
-            snapshot.ebpf_debug_enabled = enabled;
-        }
         if let Some(enabled) = patch.udp_flood_enabled {
             snapshot.udp_flood_enabled = enabled;
         }
@@ -462,6 +467,15 @@ impl ControlState {
         }
         if let Some(enabled) = patch.trust_enabled {
             snapshot.trust_enabled = enabled;
+        }
+        if let Some(divisor) = patch.trust_add_divisor {
+            snapshot.trust_add_divisor = divisor;
+        }
+        if let Some(divisor) = patch.trust_sub_divisor {
+            snapshot.trust_sub_divisor = divisor;
+        }
+        if let Some(action) = patch.geoip_default_action {
+            snapshot.geoip_default_action = action;
         }
         if let Some(ref adaptive_cfg) = patch.adaptive {
             snapshot.adaptive = adaptive_cfg.clone();
@@ -521,12 +535,14 @@ impl ControlState {
             cfg.rate_limit_enabled = u8::from(snapshot.rate_limit_enabled);
             cfg.syn_proxy_enabled = u8::from(snapshot.syn_proxy_enabled);
             cfg.l7_scan_enabled = u8::from(snapshot.l7_scan_enabled);
-            cfg.ebpf_debug = u8::from(snapshot.ebpf_debug_enabled);
             cfg.udp_flood_enabled = u8::from(snapshot.udp_flood_enabled);
             cfg.icmp_flood_enabled = u8::from(snapshot.icmp_flood_enabled);
             cfg.geoip_enabled = u8::from(snapshot.geoip_enabled);
+            cfg.geoip_default_action = snapshot.geoip_default_action;
             cfg.tcp_reset_on_drop = u8::from(snapshot.tcp_reset_on_drop);
             cfg.trust_enabled = u8::from(snapshot.trust_enabled);
+            cfg.trust_add_divisor = snapshot.trust_add_divisor.max(1);
+            cfg.trust_sub_divisor = snapshot.trust_sub_divisor.max(1);
             // danger_level 由 DangerMonitor 任务维护，PATCH 配置时必须保留当前值。
             cfg.packet_log_enabled = u8::from(snapshot.packet_log_enabled);
             cfg.packet_log_sample_rate = snapshot.packet_log_sample_rate;
@@ -569,7 +585,8 @@ impl ControlState {
             .context("配置校验失败，拒绝重新加载 GeoIP")?;
         let mut guard = self.ebpf.lock().await;
         let mut geoip_blocks = self.geoip_blocks.lock().await;
-        apply_geoip_map(&mut guard, &config, &mut geoip_blocks).await?;
+        let mut geoip_allows = self.geoip_allows.lock().await;
+        apply_geoip_map(&mut guard, &config, &mut geoip_blocks, &mut geoip_allows).await?;
         self.runtime.write().await.geoip = config.geoip.clone();
         self.audit(
             "api",
@@ -1002,6 +1019,15 @@ fn validate_runtime_patch(patch: &RuntimeConfigPatch) -> anyhow::Result<()> {
             anyhow::ensure!(ad.threshold > 0, "adaptive.threshold must be > 0");
         }
     }
+    if let Some(d) = patch.trust_add_divisor {
+        anyhow::ensure!(d > 0, "trust_add_divisor must be > 0");
+    }
+    if let Some(d) = patch.trust_sub_divisor {
+        anyhow::ensure!(d > 0, "trust_sub_divisor must be > 0");
+    }
+    if let Some(action) = patch.geoip_default_action {
+        anyhow::ensure!(action <= 1, "geoip_default_action must be 0 or 1");
+    }
     Ok(())
 }
 
@@ -1021,12 +1047,18 @@ impl RuntimeConfigSnapshot {
             rate_limit_enabled: config.rate_limit.enabled,
             syn_proxy_enabled: config.syn_proxy.enabled,
             l7_scan_enabled: config.l7_scan.enabled,
-            ebpf_debug_enabled: config.ebpf_log_enabled,
             udp_flood_enabled: config.udp_flood_enabled,
             icmp_flood_enabled: config.icmp_flood_enabled,
             geoip_enabled: config.geoip.enabled,
             tcp_reset_on_drop: config.tcp_reset_on_drop,
             trust_enabled: config.trust_score.enabled,
+            trust_add_divisor: config.trust_score.add_divisor.max(1),
+            trust_sub_divisor: config.trust_score.sub_divisor.max(1),
+            geoip_default_action: if config.geoip.default_action == "drop" {
+                1
+            } else {
+                0
+            },
             danger_level: 0,
             adaptive: config.adaptive.clone(),
             rate_limit: RateLimitParams {
@@ -1068,28 +1100,36 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         .context("CONFIG map not found")?
         .try_into()?;
     let runtime = RuntimeConfig {
+        trust_add_divisor: config.trust_score.add_divisor.max(1),
+        trust_sub_divisor: config.trust_score.sub_divisor.max(1),
+        packet_log_sample_rate: config.packet_log.sample_rate,
         rate_limit_enabled: u8::from(config.rate_limit.enabled),
         syn_proxy_enabled: u8::from(config.syn_proxy.enabled),
         l7_scan_enabled: u8::from(config.l7_scan.enabled),
-        ebpf_debug: u8::from(config.ebpf_log_enabled),
         udp_flood_enabled: u8::from(config.udp_flood_enabled),
         icmp_flood_enabled: u8::from(config.icmp_flood_enabled),
         geoip_enabled: u8::from(config.geoip.enabled),
+        geoip_default_action: if config.geoip.default_action == "drop" {
+            1
+        } else {
+            0
+        },
         tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
         trust_enabled: u8::from(config.trust_score.enabled),
         danger_level: 0,
         packet_log_enabled: u8::from(config.packet_log.enabled),
-        packet_log_sample_rate: config.packet_log.sample_rate,
         project_enabled: u8::from(!config.protection_projects.is_empty()),
         port_acl_count: (config.port_acl.len() as u8).min(128),
         l7_pattern_count: (config.l7_scan.patterns.len() as u8).min(16),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
-        padding: [0; 1],
+        padding: [0; 3],
     };
     tracing::debug!(
-        "init_config_map: tcp_reset_on_drop={} ebpf_debug={}",
+        "init_config_map: tcp_reset_on_drop={} trust={}/{} geoip_default={}",
         runtime.tcp_reset_on_drop,
-        runtime.ebpf_debug
+        runtime.trust_add_divisor,
+        runtime.trust_sub_divisor,
+        runtime.geoip_default_action
     );
     config_array.set(0, runtime, 0)?;
     Ok(())
@@ -1234,20 +1274,11 @@ fn init_protection_projects_map(
     ebpf: &mut Ebpf,
     projects: &[ProtectionProject],
 ) -> anyhow::Result<()> {
-    const MAX_ENTRIES: u32 = 8192;
+    const MAX_ENTRIES: usize = 8192;
 
-    let mut map: LruHashMap<_, ProjectPolicyKey, ProjectPolicy> = ebpf
-        .map_mut("PROJECT_POLICY")
-        .context("PROJECT_POLICY map not found")?
-        .try_into()?;
-
-    // 全量清空旧条目后重建（项目数量小，重建比 diff 更简单可靠）
-    let stale: Vec<ProjectPolicyKey> = map.iter().flatten().map(|(k, _)| k).collect();
-    for key in stale {
-        let _ = map.remove(&key);
-    }
-
-    let mut total = 0u32;
+    // 先在内存中完成全部展开与校验，确认不超容量后再清空/写入 map，
+    // 避免中途出错把旧策略清掉却只写入一部分新策略。
+    let mut entries: Vec<(ProjectPolicyKey, ProjectPolicy)> = Vec::new();
     for (i, proj) in projects.iter().enumerate() {
         let protocol = match proj.protocol.to_lowercase().as_str() {
             "any" => 0u8,
@@ -1279,7 +1310,7 @@ fn init_protection_projects_map(
             ),
         };
 
-        // enabled_modules → 位图；当前数据面仅使用 action，flags 保留供后续扩展
+        // enabled_modules → 位图；未配置时用全开哨兵，保持旧 DEFEND 行为。
         let mut flags: u16 = 0;
         for m in &proj.enabled_modules {
             let bit = match m.as_str() {
@@ -1300,7 +1331,6 @@ fn init_protection_projects_map(
         }
 
         for ip in &proj.target_ips {
-            // 纯 IP 视为 /32（IPv6 为 /128），CIDR 按网段展开为精确 IP
             let (key, prefix) = if let Ok(k) = crate::ip::parse_ip(ip) {
                 (k, 32u32)
             } else {
@@ -1326,31 +1356,42 @@ fn init_protection_projects_map(
             let base = key.ipv4();
             let host_bits = 32 - prefix;
             let count = 1u32 << host_bits;
+            if entries.len() + count as usize > MAX_ENTRIES {
+                anyhow::bail!(
+                    "protection projects exceed PROJECT_POLICY map capacity ({} entries)",
+                    MAX_ENTRIES
+                );
+            }
             for h in 0..count {
-                let policy_key = ProjectPolicyKey {
-                    addr: (base | h).to_be(),
-                    dport: dport.to_be(),
-                    protocol,
-                    padding: 0,
-                };
-                map.insert(
-                    policy_key,
+                entries.push((
+                    ProjectPolicyKey {
+                        addr: (base | h).to_be(),
+                        dport: dport.to_be(),
+                        protocol,
+                        padding: 0,
+                    },
                     ProjectPolicy {
                         flags,
                         action,
                         padding: [0; 5],
                     },
-                    0,
-                )?;
-                total += 1;
-                if total >= MAX_ENTRIES {
-                    anyhow::bail!(
-                        "protection projects exceed PROJECT_POLICY map capacity ({} entries)",
-                        MAX_ENTRIES
-                    );
-                }
+                ));
             }
         }
+    }
+
+    let mut map: LruHashMap<_, ProjectPolicyKey, ProjectPolicy> = ebpf
+        .map_mut("PROJECT_POLICY")
+        .context("PROJECT_POLICY map not found")?
+        .try_into()?;
+    // 全量清空旧条目后重建（项目数量小，重建比 diff 更简单可靠）
+    let stale: Vec<ProjectPolicyKey> = map.iter().flatten().map(|(k, _)| k).collect();
+    for key in stale {
+        let _ = map.remove(&key);
+    }
+    let total = entries.len();
+    for (key, policy) in entries {
+        map.insert(key, policy, 0)?;
     }
 
     if !projects.is_empty() {
@@ -1504,55 +1545,90 @@ async fn apply_blacklist_map(
 async fn apply_geoip_map(
     ebpf: &mut Ebpf,
     config: &Config,
-    current: &mut Vec<(IpKey, u32)>,
+    current_blocks: &mut Vec<(IpKey, u32)>,
+    current_allows: &mut Vec<(IpKey, u32)>,
 ) -> anyhow::Result<()> {
-    // 先分类旧条目，避免同时借用两个 map。
-    let mut old_v4 = Vec::new();
-    let mut old_v6 = Vec::new();
-    for (key, prefix) in current.drain(..) {
+    // 先分类旧条目，避免同时借用多个 map。
+    let mut old_blocks_v4 = Vec::new();
+    let mut old_blocks_v6 = Vec::new();
+    let mut old_allows_v4 = Vec::new();
+    let mut old_allows_v6 = Vec::new();
+    for (key, prefix) in current_blocks.drain(..) {
         match key.family() {
-            Some(IpFamily::Ipv4) => old_v4.push((key.ipv4(), prefix)),
-            Some(IpFamily::Ipv6) => old_v6.push((key.addr, prefix)),
+            Some(IpFamily::Ipv4) => old_blocks_v4.push((key.ipv4(), prefix)),
+            Some(IpFamily::Ipv6) => old_blocks_v6.push((key.addr, prefix)),
+            _ => {}
+        }
+    }
+    for (key, prefix) in current_allows.drain(..) {
+        match key.family() {
+            Some(IpFamily::Ipv4) => old_allows_v4.push((key.ipv4(), prefix)),
+            Some(IpFamily::Ipv6) => old_allows_v6.push((key.addr, prefix)),
             _ => {}
         }
     }
 
-    // 清空旧规则
+    // 清空旧规则（block / allow 各 4 张表）。
     {
-        let mut geoip_v4: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
             .map_mut("GEOIP_BLOCKED_V4")
             .context("GEOIP_BLOCKED_V4 map not found")?
             .try_into()?;
-        for (addr, prefix) in old_v4 {
-            geoip_v4.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
+        for (addr, prefix) in old_blocks_v4 {
+            map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
         }
     }
     {
-        let mut geoip_v6: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
             .map_mut("GEOIP_BLOCKED_V6")
             .context("GEOIP_BLOCKED_V6 map not found")?
             .try_into()?;
-        for (addr, prefix) in old_v6 {
-            geoip_v6.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
+        for (addr, prefix) in old_blocks_v6 {
+            map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V4")
+            .context("GEOIP_ALLOWED_V4 map not found")?
+            .try_into()?;
+        for (addr, prefix) in old_allows_v4 {
+            map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V6")
+            .context("GEOIP_ALLOWED_V6 map not found")?
+            .try_into()?;
+        for (addr, prefix) in old_allows_v6 {
+            map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
         }
     }
 
     if !config.geoip.enabled {
         return Ok(());
     }
-
-    let blocks = crate::geoip::load_geoip_blocks(&config.geoip)?;
-    if blocks.is_empty() {
-        return Ok(());
+    if config.geoip.db_path.is_some() {
+        warn!(
+            "geoip.db_path (MaxMind MMDB) is reserved but not supported yet; use CSV lists instead"
+        );
     }
 
-    // 分类新条目
-    let mut new_v4 = Vec::new();
-    let mut new_v6 = Vec::new();
+    let blocks = crate::geoip::load_geoip_blocks(&config.geoip)?;
+    let allows = crate::geoip::load_geoip_allows(&config.geoip)?;
+    if config.geoip.default_action == "drop" && allows.is_empty() {
+        warn!(
+            "geoip.default_action=drop but allow_countries/allow_asns is empty; all GeoIP traffic will be dropped"
+        );
+    }
+
+    let mut new_blocks_v4 = Vec::new();
+    let mut new_blocks_v6 = Vec::new();
     for block in blocks {
         match block.key.family() {
-            Some(IpFamily::Ipv4) => new_v4.push((block.key.ipv4(), block.prefix)),
-            Some(IpFamily::Ipv6) => new_v6.push((block.key.addr, block.prefix)),
+            Some(IpFamily::Ipv4) => new_blocks_v4.push((block.key.ipv4(), block.prefix)),
+            Some(IpFamily::Ipv6) => new_blocks_v6.push((block.key.addr, block.prefix)),
             _ => continue,
         }
         info!(
@@ -1561,16 +1637,33 @@ async fn apply_geoip_map(
             block.prefix,
             block.reason
         );
-        current.push((block.key, block.prefix));
+        current_blocks.push((block.key, block.prefix));
+    }
+
+    let mut new_allows_v4 = Vec::new();
+    let mut new_allows_v6 = Vec::new();
+    for allow in allows {
+        match allow.key.family() {
+            Some(IpFamily::Ipv4) => new_allows_v4.push((allow.key.ipv4(), allow.prefix)),
+            Some(IpFamily::Ipv6) => new_allows_v6.push((allow.key.addr, allow.prefix)),
+            _ => continue,
+        }
+        info!(
+            "added GeoIP allow: {}/{} {}",
+            format_ip_key(&allow.key),
+            allow.prefix,
+            allow.reason
+        );
+        current_allows.push((allow.key, allow.prefix));
     }
 
     {
-        let mut geoip_v4: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
             .map_mut("GEOIP_BLOCKED_V4")
             .context("GEOIP_BLOCKED_V4 map not found")?
             .try_into()?;
-        for &(addr, prefix) in &new_v4 {
-            geoip_v4.insert(
+        for &(addr, prefix) in &new_blocks_v4 {
+            map.insert(
                 &LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }),
                 1,
                 0,
@@ -1578,27 +1671,49 @@ async fn apply_geoip_map(
         }
     }
     {
-        let mut geoip_v6: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
             .map_mut("GEOIP_BLOCKED_V6")
             .context("GEOIP_BLOCKED_V6 map not found")?
             .try_into()?;
-        for &(addr, prefix) in &new_v6 {
-            geoip_v6.insert(&LpmKey::new(prefix, GeoIpKeyV6 { addr }), 1, 0)?;
+        for &(addr, prefix) in &new_blocks_v6 {
+            map.insert(&LpmKey::new(prefix, GeoIpKeyV6 { addr }), 1, 0)?;
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V4")
+            .context("GEOIP_ALLOWED_V4 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in &new_allows_v4 {
+            map.insert(
+                &LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }),
+                1,
+                0,
+            )?;
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V6")
+            .context("GEOIP_ALLOWED_V6 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in &new_allows_v6 {
+            map.insert(&LpmKey::new(prefix, GeoIpKeyV6 { addr }), 1, 0)?;
         }
     }
 
-    // 容量预警：LPM Trie 上限 4096 条/族，接近上限时提醒用户收敛网段粒度
-    let v4_used = new_v4.len();
-    let v6_used = new_v6.len();
+    // 容量预警：LPM Trie 上限 4096 条/族，接近上限时提醒用户收敛网段粒度。
+    let v4_used = new_blocks_v4.len() + new_allows_v4.len();
+    let v6_used = new_blocks_v6.len() + new_allows_v6.len();
     if v4_used > 3276 {
         warn!(
-            "GeoIP IPv4 LPM trie is {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
+            "GeoIP IPv4 LPM tries are {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
             v4_used
         );
     }
     if v6_used > 3276 {
         warn!(
-            "GeoIP IPv6 LPM trie is {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
+            "GeoIP IPv6 LPM tries are {}/4096 (>=80%), consider aggregating CIDRs to avoid insert failures",
             v6_used
         );
     }
@@ -1647,17 +1762,21 @@ mod tests {
     }
 
     #[test]
-    fn test_runtime_snapshot_from_config_preserves_ebpf_debug() {
+    fn test_runtime_snapshot_from_config_preserves_trust_divisors() {
         let mut config = Config {
             interface: "lo".to_string(),
-            ebpf_log_enabled: true,
             ..Config::default()
         };
         config.rate_limit.enabled = true;
         config.rate_limit.threshold = 100;
+        config.trust_score.add_divisor = 50;
+        config.trust_score.sub_divisor = 2;
+        config.geoip.default_action = "drop".to_string();
 
         let snapshot = RuntimeConfigSnapshot::from_config(&config);
-        assert!(snapshot.ebpf_debug_enabled);
+        assert_eq!(snapshot.trust_add_divisor, 50);
+        assert_eq!(snapshot.trust_sub_divisor, 2);
+        assert_eq!(snapshot.geoip_default_action, 1);
         assert!(snapshot.rate_limit_enabled);
         assert_eq!(snapshot.rate_limit.threshold, 100);
     }

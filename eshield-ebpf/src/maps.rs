@@ -24,6 +24,14 @@ pub static GEOIP_BLOCKED_V4: LpmTrie<GeoIpKeyV4, u8> = LpmTrie::with_max_entries
 #[map]
 pub static GEOIP_BLOCKED_V6: LpmTrie<GeoIpKeyV6, u8> = LpmTrie::with_max_entries(4096, 0);
 
+/// GeoIP/ASN IPv4 允许 CIDR 匹配（LPM Trie）：default_action=drop 时放行白名单
+#[map]
+pub static GEOIP_ALLOWED_V4: LpmTrie<GeoIpKeyV4, u8> = LpmTrie::with_max_entries(4096, 0);
+
+/// GeoIP/ASN IPv6 允许 CIDR 匹配（LPM Trie）
+#[map]
+pub static GEOIP_ALLOWED_V6: LpmTrie<GeoIpKeyV6, u8> = LpmTrie::with_max_entries(4096, 0);
+
 /// 动态黑名单（LRU Hash）：支持 IPv4 / IPv6
 #[map]
 pub static BLACKLIST: LruHashMap<IpKey, BlockEntry> = LruHashMap::with_max_entries(100000, 0);

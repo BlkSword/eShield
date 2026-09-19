@@ -665,6 +665,15 @@ impl Config {
 
         validate_l7_patterns(&self.l7_scan.patterns)?;
 
+        if self.trust_score.enabled {
+            if self.trust_score.add_divisor == 0 {
+                anyhow::bail!("trust_score.add_divisor must be > 0");
+            }
+            if self.trust_score.sub_divisor == 0 {
+                anyhow::bail!("trust_score.sub_divisor must be > 0");
+            }
+        }
+
         if self.danger_signal.enabled {
             if self.danger_signal.sample_interval_s == 0 {
                 anyhow::bail!("danger_signal.sample_interval_s must be > 0");
@@ -857,11 +866,11 @@ pub fn validate_l7_patterns(patterns: &[L7PatternConfig]) -> anyhow::Result<()> 
         if pat.pattern.is_empty() {
             anyhow::bail!("L7 pattern {} cannot be empty", i);
         }
-        if pat.pattern.as_bytes().len() > 8 {
+        if pat.pattern.len() > 8 {
             anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
         }
         if let Some(mask) = &pat.mask {
-            if mask.as_bytes().len() != pat.pattern.as_bytes().len() {
+            if mask.len() != pat.pattern.len() {
                 anyhow::bail!("L7 pattern {} mask length mismatch", i);
             }
         }

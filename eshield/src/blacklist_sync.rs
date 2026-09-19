@@ -64,11 +64,7 @@ impl BlacklistSync {
                 .context("BLACKLIST map not found")?
                 .try_into()
                 .context("failed to open BLACKLIST map")?;
-            blacklist
-                .iter()
-                .flatten()
-                .map(|(key, entry)| (key, entry))
-                .collect()
+            blacklist.iter().flatten().collect()
         };
 
         let mut skipped = 0usize;

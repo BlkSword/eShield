@@ -26,11 +26,11 @@ use aya_ebpf::{
 use eshield_common::{
     project_action, project_modules, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
     PacketSample, PortRateKey, ProjectPolicy, ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
-    PROJECT_FLAGS_ALL,
+    PROJECT_FLAGS_ALL, TRUST_ADD_DIVISOR, TRUST_SUB_DIVISOR,
 };
 use maps::{
-    CONFIG, EVENTS, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6, GLOBAL_STATS, PACKET_SAMPLES,
-    PROJECT_POLICY, TOP_ATTACKERS, WHITELIST_V4, WHITELIST_V6,
+    CONFIG, EVENTS, GEOIP_ALLOWED_V4, GEOIP_ALLOWED_V6, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6,
+    GLOBAL_STATS, PACKET_SAMPLES, PROJECT_POLICY, TOP_ATTACKERS, WHITELIST_V4, WHITELIST_V6,
 };
 use parser::{ptr_at, EthHdr, IpHdr, Ipv6Hdr, TcpHdr, ETH_HDR_LEN};
 
@@ -46,11 +46,15 @@ struct PacketCtx<'a> {
     dport: u16,
     ip_hdr_len: usize,
     tcp_reset_on_drop: u8,
+    trust_add_divisor: u32,
+    trust_sub_divisor: u32,
     now_ns: u64,
     rule_id: u16,
     /// 本包是否已被 SYN/UDP/ICMP Flood 模块计入 RATE_MAP。
     /// 这些模块与全局速率限制共用同一张计数表，若不标记会导致同一包被计数两次。
     rate_counted: bool,
+    /// 非首片 IPv4 分片：无法可靠解析 L4 头，跳过端口相关模块。
+    fragment: bool,
     /// 防护项目模块位图约束：命中 DEFEND 项目后按位过滤全局防御模块；
     /// PROJECT_FLAGS_ALL（u16::MAX）表示无约束（无项目或项目未配置模块）。
     project_flags: u16,
@@ -79,9 +83,12 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         dport: 0,
         ip_hdr_len: 0,
         tcp_reset_on_drop: 0,
+        trust_add_divisor: TRUST_ADD_DIVISOR,
+        trust_sub_divisor: TRUST_SUB_DIVISOR,
         now_ns: 0,
         rule_id: rules::UNKNOWN,
         rate_counted: false,
+        fragment: false,
         project_flags: PROJECT_FLAGS_ALL,
     };
 
@@ -94,6 +101,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
                 &mut pc.ip_hdr_len,
                 &mut pc.sport,
                 &mut pc.dport,
+                &mut pc.fragment,
             ) {
                 return xdp_action::XDP_PASS;
             }
@@ -122,10 +130,12 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         None => return xdp_action::XDP_PASS,
     };
     pc.tcp_reset_on_drop = runtime.tcp_reset_on_drop;
+    pc.trust_add_divisor = runtime.trust_add_divisor.max(1);
+    pc.trust_sub_divisor = runtime.trust_sub_divisor.max(1);
 
     if is_whitelisted(&src_key) {
         unsafe { with_stats(|s| s.total_passed += 1) };
-        trust::trust_pass(&src_key, pc.now_ns);
+        trust::trust_pass(&src_key, pc.now_ns, pc.trust_add_divisor);
         return xdp_action::XDP_PASS;
     }
 
@@ -137,13 +147,21 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         return action;
     }
 
+    // 黑名单前置：既降低高频封禁源的热路径开销，也避免防护项目 PASS
+    // 把已封禁源放行。
+    action = check_blacklist_drop(&mut pc);
+    if action != NO_ACTION {
+        log_packet_sample(&pc, action);
+        return action;
+    }
+
     action = check_project_policy(&mut pc);
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
     }
 
-    action = check_geoip_drop(&mut pc, runtime.geoip_enabled);
+    action = check_geoip_drop(&mut pc, runtime.geoip_enabled, runtime.geoip_default_action);
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
@@ -191,14 +209,8 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         return action;
     }
 
-    action = check_blacklist_drop(&mut pc);
-    if action != NO_ACTION {
-        log_packet_sample(&pc, action);
-        return action;
-    }
-
     unsafe { with_stats(|s| s.total_passed += 1) };
-    trust::trust_pass(&src_key, pc.now_ns);
+    trust::trust_pass(&src_key, pc.now_ns, pc.trust_add_divisor);
     xdp_action::XDP_PASS
 }
 
@@ -215,7 +227,7 @@ fn drop_packet(pc: &PacketCtx) -> u32 {
     if pc.protocol == parser::IPPROTO_TCP {
         unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
     }
-    trust::trust_drop(pc.src, pc.now_ns);
+    trust::trust_drop(pc.src, pc.now_ns, pc.trust_sub_divisor);
     // 在 eBPF 数据面统一维护高频攻击源热榜，覆盖所有丢弃路径。
     // 黑名单命中原来的 TOP_ATTACKERS 写入已移除，避免重复计数。
     let prev = unsafe { TOP_ATTACKERS.get(pc.src) }.unwrap_or(&0);
@@ -231,7 +243,7 @@ fn drop_packet(pc: &PacketCtx) -> u32 {
 
 #[inline(never)]
 fn check_port_acl_drop(pc: &mut PacketCtx, acl_count: u8) -> u32 {
-    if acl_count == 0 {
+    if acl_count == 0 || pc.fragment {
         return NO_ACTION;
     }
     if port_acl::check_port_acl(pc.protocol, pc.dport, acl_count) {
@@ -262,7 +274,7 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
         Some(c) => c,
         None => return NO_ACTION,
     };
-    if runtime.project_enabled == 0 {
+    if runtime.project_enabled == 0 || pc.fragment {
         return NO_ACTION;
     }
 
@@ -322,7 +334,7 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
         project_action::PASS => {
             pc.rule_id = rules::PROJECT_POLICY;
             unsafe { with_stats(|s| s.total_passed += 1) };
-            trust::trust_pass(pc.src, pc.now_ns);
+            trust::trust_pass(pc.src, pc.now_ns, pc.trust_add_divisor);
             xdp_action::XDP_PASS
         }
         project_action::DROP => {
@@ -350,11 +362,15 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
 }
 
 #[inline(never)]
-fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
-    if geoip_enabled != 0
-        && pc.project_flags & project_modules::GEOIP != 0
-        && is_geoip_blocked(pc.src)
-    {
+fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8, geoip_default_action: u8) -> u32 {
+    if geoip_enabled == 0 || pc.project_flags & project_modules::GEOIP == 0 {
+        return NO_ACTION;
+    }
+    // 默认 pass：仅 block 列表命中时 DROP。
+    // 默认 drop：allow 列表未命中即 DROP（allow 列表为空等价于全部拦截）。
+    let should_drop =
+        is_geoip_blocked(pc.src) || (geoip_default_action == 1 && !is_geoip_allowed(pc.src));
+    if should_drop {
         pc.rule_id = rules::GEOIP;
         unsafe {
             with_stats(|s| {
@@ -371,7 +387,7 @@ fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8) -> u32 {
 
 #[inline(never)]
 fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
-    if pc.project_flags & project_modules::SYN_FLOOD == 0 {
+    if pc.project_flags & project_modules::SYN_FLOOD == 0 || pc.fragment {
         return NO_ACTION;
     }
     if pc.src.family == (eshield_common::IpFamily::Ipv4 as u8) && syn_proxy_enabled != 0 {
@@ -410,7 +426,7 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
         let action = syn_cookie::handle_ack(&pcr, ip_ptr, tcp_ptr);
         if action != NO_ACTION {
             unsafe { with_stats(|s| s.total_passed += 1) };
-            trust::trust_pass(pc.src, pc.now_ns);
+            trust::trust_pass(pc.src, pc.now_ns, pc.trust_add_divisor);
             return action;
         }
         // IPv4 + SYN Proxy 开启时，SYN Flood 检测由 handle_syn 内部完成
@@ -440,7 +456,7 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
 
 #[inline(never)]
 fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8, port_rate_enabled: u8) -> u32 {
-    if pc.protocol != parser::IPPROTO_UDP {
+    if pc.protocol != parser::IPPROTO_UDP || pc.fragment {
         return NO_ACTION;
     }
 
@@ -486,7 +502,8 @@ fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8, port_rate_enabled: 
 
 #[inline(never)]
 fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8, port_rate_enabled: u8) -> u32 {
-    if pc.protocol != parser::IPPROTO_ICMP && pc.protocol != parser::IPPROTO_ICMPV6 {
+    if (pc.protocol != parser::IPPROTO_ICMP && pc.protocol != parser::IPPROTO_ICMPV6) || pc.fragment
+    {
         return NO_ACTION;
     }
 
@@ -533,7 +550,7 @@ fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8, port_rate_enabled
 
 #[inline(never)]
 fn check_l7_drop(pc: &mut PacketCtx, pattern_count: u8) -> u32 {
-    if pattern_count == 0 || pc.project_flags & project_modules::L7_SCAN == 0 {
+    if pattern_count == 0 || pc.project_flags & project_modules::L7_SCAN == 0 || pc.fragment {
         return NO_ACTION;
     }
     if l7_scan::scan(pc.ctx, pc.ip_hdr_len, pc.protocol, pattern_count) {
@@ -606,6 +623,7 @@ fn parse_ipv4(
     ip_hdr_len: &mut usize,
     sport: &mut u16,
     dport: &mut u16,
+    fragment: &mut bool,
 ) -> bool {
     let ip: *const IpHdr = match unsafe { ptr_at(ctx, ETH_HDR_LEN) } {
         Some(p) => p,
@@ -620,6 +638,15 @@ fn parse_ipv4(
     *src = IpKey::from_ipv4(saddr.to_ne_bytes());
     *protocol = unsafe { (*ip).proto };
     *ip_hdr_len = len;
+
+    // 非首片分片（frag_off 低 13 位 != 0）没有 L4 头，禁止读取端口。
+    let frag_off = u16::from_be(unsafe { (*ip).frag_off });
+    *fragment = (frag_off & 0x1fff) != 0;
+    if *fragment {
+        *sport = 0;
+        *dport = 0;
+        return true;
+    }
     if !read_ports(ctx, ETH_HDR_LEN + len, *protocol, sport, dport) {
         return false;
     }
@@ -734,7 +761,7 @@ fn log_packet_sample(pc: &PacketCtx, action: u32) {
         None => return,
     };
 
-    let event = entry.as_mut_ptr() as *mut PacketSample;
+    let event = entry.as_mut_ptr();
     unsafe {
         // 先清零 payload 区域，避免残留旧数据
         // while 循环：避免 for-range 迭代器生成 u32→u64 零扩展（<<=）指令，
@@ -828,11 +855,30 @@ fn is_geoip_blocked(src: &IpKey) -> bool {
     }
 }
 
+fn is_geoip_allowed(src: &IpKey) -> bool {
+    match src.family() {
+        Some(eshield_common::IpFamily::Ipv4) => {
+            let key = LpmKey::new(
+                32,
+                GeoIpKeyV4 {
+                    addr: src.ipv4().to_be(),
+                },
+            );
+            GEOIP_ALLOWED_V4.get(&key).is_some()
+        }
+        Some(eshield_common::IpFamily::Ipv6) => {
+            let key = LpmKey::new(128, GeoIpKeyV6 { addr: src.addr });
+            GEOIP_ALLOWED_V6.get(&key).is_some()
+        }
+        None => false,
+    }
+}
+
 /// 独立栈帧：避免 RingBuf 操作局部与 drop_packet 叠加（BPF 512 字节栈限制）。
 #[inline(never)]
 fn emit_drop_event(pc: &PacketCtx) {
     if let Some(mut entry) = EVENTS.reserve::<eshield_common::DropEvent>(0) {
-        let event = entry.as_mut_ptr() as *mut eshield_common::DropEvent;
+        let event = entry.as_mut_ptr();
         unsafe {
             (*event).timestamp_ns = bpf_ktime_get_ns();
             (*event).src_ip = pc.src.addr;

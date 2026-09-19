@@ -88,19 +88,13 @@ fn reply_tcp_rst_v4(ctx: &XdpContext) -> u32 {
         }
 
         // Swap Ethernet MAC addresses.
-        let src_mac = (*eth).src;
-        (*eth).src = (*eth).dst;
-        (*eth).dst = src_mac;
+        mem::swap(&mut (*eth).src, &mut (*eth).dst);
 
         // Swap IPv4 addresses.
-        let src_ip = (*ip).saddr;
-        (*ip).saddr = (*ip).daddr;
-        (*ip).daddr = src_ip;
+        mem::swap(&mut (*ip).saddr, &mut (*ip).daddr);
 
         // Swap TCP ports.
-        let src_port = (*tcp).source;
-        (*tcp).source = (*tcp).dest;
-        (*tcp).dest = src_port;
+        mem::swap(&mut (*tcp).source, &mut (*tcp).dest);
 
         // Build RST|ACK response: ack = incoming seq + 1.
         let incoming_seq = u32::from_be((*tcp).seq);
