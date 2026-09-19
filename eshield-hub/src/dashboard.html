@@ -67,8 +67,14 @@
 
   <script>
     const api = (path) => `/api/v1${path}`;
+    const TOKEN_KEY = 'eshield-hub-token';
     const token = () => document.getElementById('token').value.trim();
     const headers = () => ({ 'Authorization': `Bearer ${token()}`, 'Content-Type': 'application/json' });
+    function saveToken() { const t = token(); if (t) localStorage.setItem(TOKEN_KEY, t); }
+    window.addEventListener('DOMContentLoaded', () => {
+      const saved = localStorage.getItem(TOKEN_KEY);
+      if (saved) document.getElementById('token').value = saved;
+    });
     function show(msg, isErr) {
       const t = document.getElementById('toast'); t.textContent = msg; t.style.display = 'block'; t.style.borderLeft = `3px solid ${isErr?'var(--danger)':'var(--success)'}`;
       setTimeout(() => t.style.display = 'none', 3000);
@@ -79,6 +85,7 @@
       return r.json();
     }
     async function loadAll() {
+      saveToken();
       try { await Promise.all([loadStats(), loadNodes(), loadPolicies()]); show('加载完成'); }
       catch (e) { show(e.message, true); }
     }

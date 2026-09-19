@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router {
     let auth = state.auth.clone();
     let public = Router::new()
         .route("/", get(index_handler))
+        .route("/login", get(login_handler))
         .with_state(Arc::clone(&state));
 
     let protected = Router::new()
@@ -60,6 +61,10 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 async fn index_handler() -> Html<&'static str> {
     Html(include_str!("dashboard.html"))
+}
+
+async fn login_handler() -> Html<&'static str> {
+    Html(include_str!("login.html"))
 }
 
 async fn push_policies(

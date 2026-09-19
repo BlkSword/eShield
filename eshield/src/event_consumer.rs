@@ -55,6 +55,7 @@ pub async fn run(
     // 自适应引擎按源 IP 聚合本批事件，避免逐事件写 DashMap。
     let mut adaptive_counts: HashMap<IpKey, u64> = HashMap::new();
 
+    let mut logged_events = 0usize;
     for event in &valid_events {
         let src_key = match IpFamily::from_u8(event.family) {
             Some(IpFamily::Ipv4) => IpKey::from_ipv4([
@@ -83,16 +84,20 @@ pub async fn run(
             *adaptive_counts.entry(src_key).or_insert(0) += 1;
         }
 
-        debug!(
-            event_type = "drop",
-            src_ip = format_ip_key(&src_key),
-            dst_port = event.dst_port,
-            protocol = event.protocol,
-            rule = event.rule_id,
-            action = "drop",
-            reason = event.rule_id,
-            "drop event"
-        );
+        // 单批最多采样 5 条明细，避免攻击时 debug 日志本身成为瓶颈。
+        if logged_events < 5 {
+            debug!(
+                event_type = "drop",
+                src_ip = format_ip_key(&src_key),
+                dst_port = event.dst_port,
+                protocol = event.protocol,
+                rule = event.rule_id,
+                action = "drop",
+                reason = event.rule_id,
+                "drop event"
+            );
+            logged_events += 1;
+        }
     }
 
     for (src_key, count) in adaptive_counts {

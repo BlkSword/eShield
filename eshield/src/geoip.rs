@@ -1,8 +1,9 @@
 use crate::ip::parse_cidr;
 use anyhow::{Context, Result};
 use eshield_common::IpKey;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use tracing::{debug, warn};
 
 /// 封禁的 CIDR 条目（支持 IPv4/IPv6）。
@@ -23,6 +24,44 @@ pub fn load_geoip_allows(config: &crate::config::GeoIpConfig) -> Result<Vec<GeoI
     load_entries(config, &config.allow_countries, &config.allow_asns, "allow")
 }
 
+/// GeoIP CSV 解析缓存：key 包含文件路径/mtime/大小与选择集，
+/// 文件未变化时 reload 直接复用上次解析结果。
+static GEOIP_CACHE: OnceLock<Mutex<HashMap<String, Vec<GeoIpBlock>>>> = OnceLock::new();
+
+fn geoip_cache() -> &'static Mutex<HashMap<String, Vec<GeoIpBlock>>> {
+    GEOIP_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn file_fingerprint(path: &Option<String>) -> String {
+    match path {
+        None => "none".to_string(),
+        Some(path) => match std::fs::metadata(path) {
+            Ok(meta) => format!("{}:{:?}:{}", path, meta.modified().ok(), meta.len()),
+            Err(_) => format!("{}:missing", path),
+        },
+    }
+}
+
+fn geoip_cache_key(
+    config: &crate::config::GeoIpConfig,
+    countries: &HashSet<String>,
+    asns: &HashSet<u32>,
+    kind: &str,
+) -> String {
+    let mut country_list: Vec<&String> = countries.iter().collect();
+    country_list.sort();
+    let mut asn_list: Vec<u32> = asns.iter().copied().collect();
+    asn_list.sort();
+    format!(
+        "{}|{}|{}|{:?}|{:?}",
+        kind,
+        file_fingerprint(&config.country_blocks_csv),
+        file_fingerprint(&config.asn_blocks_csv),
+        country_list,
+        asn_list
+    )
+}
+
 fn load_entries(
     config: &crate::config::GeoIpConfig,
     countries: &[String],
@@ -33,6 +72,13 @@ fn load_entries(
 
     let countries: HashSet<String> = countries.iter().map(|s| s.to_ascii_uppercase()).collect();
     let asns: HashSet<u32> = asns.iter().copied().collect();
+    let cache_key = geoip_cache_key(config, &countries, &asns, kind);
+    if let Ok(cache) = geoip_cache().lock() {
+        if let Some(cached) = cache.get(&cache_key) {
+            debug!("GeoIP/ASN {} cache hit", kind);
+            return Ok(cached.clone());
+        }
+    }
 
     if !countries.is_empty() {
         if let Some(path) = &config.country_blocks_csv {
@@ -63,6 +109,12 @@ fn load_entries(
         countries,
         asns,
     );
+    if let Ok(mut cache) = geoip_cache().lock() {
+        if cache.len() >= 32 {
+            cache.clear();
+        }
+        cache.insert(cache_key, blocks.clone());
+    }
     Ok(blocks)
 }
 

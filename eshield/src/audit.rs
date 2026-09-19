@@ -3,6 +3,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::fs::{self, OpenOptions};
@@ -85,6 +86,8 @@ pub struct FileAuditBackend {
     max_size: u64,
     max_backups: u32,
     write_lock: Mutex<()>,
+    /// 复用的追加句柄；轮转或外部替换文件后自动重开。
+    file: Mutex<Option<tokio::fs::File>>,
 }
 
 impl FileAuditBackend {
@@ -102,20 +105,21 @@ impl FileAuditBackend {
             max_size: max_size_mb.saturating_mul(1024 * 1024),
             max_backups: 3,
             write_lock: Mutex::new(()),
+            file: Mutex::new(None),
         })
     }
 
-    async fn maybe_rotate(&self) -> anyhow::Result<()> {
+    async fn maybe_rotate(&self) -> anyhow::Result<bool> {
         if self.max_size == 0 {
-            return Ok(());
+            return Ok(false);
         }
         let meta = match fs::metadata(&self.path).await {
             Ok(m) => m,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e.into()),
         };
         if meta.len() <= self.max_size {
-            return Ok(());
+            return Ok(false);
         }
 
         // 从旧到新轮转：audit.log.2 -> audit.log.3，audit.log.1 -> audit.log.2
@@ -139,7 +143,7 @@ impl FileAuditBackend {
                     first_backup.display()
                 )
             })?;
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -149,18 +153,36 @@ impl AuditBackend for FileAuditBackend {
         let line = serde_json::to_string(&entry)?;
 
         let _guard = self.write_lock.lock().await;
+        let rotated = self.maybe_rotate().await?;
 
-        self.maybe_rotate().await?;
+        let mut file_guard = self.file.lock().await;
+        let need_open = rotated
+            || match file_guard.as_ref() {
+                None => true,
+                Some(file) => match (file.metadata().await, fs::metadata(&self.path).await) {
+                    (Ok(open_meta), Ok(path_meta)) => open_meta.ino() != path_meta.ino(),
+                    _ => true,
+                },
+            };
+        if need_open {
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .await
+                .with_context(|| format!("cannot open audit log: {}", self.path.display()))?;
+            *file_guard = Some(file);
+        }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .await
-            .with_context(|| format!("cannot open audit log: {}", self.path.display()))?;
-
+        let file = file_guard
+            .as_mut()
+            .expect("audit file handle must be initialized");
         file.write_all(line.as_bytes()).await?;
-        file.write_all(b"\n").await?;
+        file.write_all(
+            b"
+",
+        )
+        .await?;
         file.flush().await?;
 
         Ok(())

@@ -12,6 +12,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 
+type SyncScan = (Option<(u64, u64)>, Vec<(IpKey, BlockEntry)>, bool);
+
 /// 缓存条目，用于避免对未变化的 eBPF BLACKLIST 条目反复写 store。
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct CachedEntry {
@@ -30,8 +32,12 @@ pub struct BlacklistSync {
     cache: DashMap<IpKey, CachedEntry>,
     /// 上次清理过期持久化黑名单的时间（ns）。
     last_prune_ns: AtomicU64,
-    /// 上次同步时 eBPF 黑名单代数；未变化时跳过全量 map 扫描。
+    /// 上次同步时 eBPF 黑名单“新增”代数；变化时立即全量扫描。
     last_gen: AtomicU64,
+    /// 上次同步时 eBPF 黑名单“命中”代数；仅按 60s 降频扫描。
+    last_hit_gen: AtomicU64,
+    /// 上次因 hit_count 变化而扫描的时间（ns）。
+    last_hit_scan_ns: AtomicU64,
 }
 
 impl BlacklistSync {
@@ -43,6 +49,8 @@ impl BlacklistSync {
             cache: DashMap::new(),
             last_prune_ns: AtomicU64::new(0),
             last_gen: AtomicU64::new(0),
+            last_hit_gen: AtomicU64::new(0),
+            last_hit_scan_ns: AtomicU64::new(0),
         }
     }
 
@@ -59,23 +67,30 @@ impl BlacklistSync {
     async fn sync_once(&self) -> Result<()> {
         let now_ns = crate::time::monotonic_ns();
 
-        // 读取 eBPF 黑名单代数；无变化且已有缓存时跳过全量 map 扫描。
-        // 有变化时只在锁内做一次快照，随后释放锁再做持久化写入。
-        let (gen, snapshot): (Option<u64>, Vec<(IpKey, BlockEntry)>) = {
+        // 新增黑名单立即扫描；仅 hit_count 变化时降频到 60s 扫描，
+        // 避免攻击期间每 5s 全量遍历 10 万条 BLACKLIST。
+        let (gens, snapshot, scanned): SyncScan = {
             let mut guard = self.ebpf.lock().await;
-            let gen = read_blacklist_gen(&mut guard);
-            if gen.is_some()
-                && gen == Some(self.last_gen.load(Ordering::Relaxed))
-                && !self.cache.is_empty()
-            {
-                (gen, Vec::new())
-            } else {
+            let gens = read_blacklist_gens(&mut guard);
+            let add_changed = gens
+                .map(|(add, _)| add != self.last_gen.load(Ordering::Relaxed))
+                .unwrap_or(true);
+            let hit_changed = gens
+                .map(|(_, hit)| hit != self.last_hit_gen.load(Ordering::Relaxed))
+                .unwrap_or(false);
+            let hit_due = now_ns.saturating_sub(self.last_hit_scan_ns.load(Ordering::Relaxed))
+                >= 60_000_000_000;
+            let need_scan =
+                gens.is_none() || add_changed || (hit_changed && hit_due) || self.cache.is_empty();
+            if need_scan {
                 let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
                     .map_mut("BLACKLIST")
                     .context("BLACKLIST map not found")?
                     .try_into()
                     .context("failed to open BLACKLIST map")?;
-                (gen, blacklist.iter().flatten().collect())
+                (gens, blacklist.iter().flatten().collect(), true)
+            } else {
+                (gens, Vec::new(), false)
             }
         };
 
@@ -141,8 +156,12 @@ impl BlacklistSync {
             }
         }
 
-        if let Some(gen) = gen {
-            self.last_gen.store(gen, Ordering::Relaxed);
+        if scanned {
+            if let Some((add_gen, hit_gen)) = gens {
+                self.last_gen.store(add_gen, Ordering::Relaxed);
+                self.last_hit_gen.store(hit_gen, Ordering::Relaxed);
+                self.last_hit_scan_ns.store(now_ns, Ordering::Relaxed);
+            }
         }
 
         // 每 60s 清理一次已过期的持久化动态黑名单，避免 redb 只增不减。
@@ -163,12 +182,14 @@ impl BlacklistSync {
     }
 }
 
-/// 读取 eBPF GLOBAL_STATS 中所有 CPU 的黑名单变更代数之和。
-fn read_blacklist_gen(ebpf: &mut Ebpf) -> Option<u64> {
+/// 读取 eBPF GLOBAL_STATS 中所有 CPU 的黑名单新增/命中代数之和。
+fn read_blacklist_gens(ebpf: &mut Ebpf) -> Option<(u64, u64)> {
     let map = ebpf.map_mut("GLOBAL_STATS")?;
     let global: PerCpuArray<_, GlobalStats> = map.try_into().ok()?;
     let values = global.get(&0, 0).ok()?;
-    Some(values.iter().map(|v| v.blacklist_gen).sum())
+    let add_gen = values.iter().map(|v| v.blacklist_gen).sum();
+    let hit_gen = values.iter().map(|v| v.blacklist_hit_gen).sum();
+    Some((add_gen, hit_gen))
 }
 
 fn block_reason_to_origin(reason: u8) -> Option<BlockOrigin> {

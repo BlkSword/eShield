@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 · eShield Hub</title>
+  <style>
+    :root { --text:#111; --muted:#666; --border:#e5e5e5; --bg:#fafafa; --primary:#2563eb; --danger:#dc2626; }
+    @media (prefers-color-scheme: dark) {
+      :root { --text:#eee; --muted:#999; --border:#333; --bg:#111; --primary:#3b82f6; --danger:#f87171; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text); font-family:system-ui,-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+    .box { width:100%; max-width:360px; padding:40px 24px; }
+    h1 { font-size:20px; margin:0 0 6px; }
+    p { margin:0 0 24px; color:var(--muted); font-size:14px; }
+    label { display:block; font-size:13px; margin-bottom:6px; color:var(--muted); }
+    input { width:100%; padding:10px 12px; font-size:14px; border:1px solid var(--border); border-radius:8px; background:transparent; color:var(--text); outline:none; }
+    input:focus { border-color:var(--primary); }
+    button { width:100%; margin-top:18px; padding:10px 14px; font-size:14px; font-weight:600; color:#fff; background:var(--primary); border:none; border-radius:8px; cursor:pointer; }
+    .error { display:none; margin-top:14px; padding:10px 12px; font-size:13px; color:var(--danger); border:1px solid var(--danger); border-radius:8px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>eShield Hub</h1>
+    <p>请输入 Hub Token 以访问控制台。</p>
+    <form id="login-form">
+      <label for="token">Hub Token</label>
+      <input type="password" id="token" autocomplete="off" autofocus required>
+      <button type="submit">登录</button>
+    </form>
+    <div class="error" id="error"></div>
+  </div>
+  <script>
+    document.getElementById('login-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var token = document.getElementById('token').value.trim();
+      if (!token) return;
+      localStorage.setItem('eshield-hub-token', token);
+      window.location.href = '/';
+    });
+  </script>
+</body>
+</html>

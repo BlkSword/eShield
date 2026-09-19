@@ -39,7 +39,20 @@ impl Store {
         Ok(Self { db })
     }
 
+    /// 大批量 feed 分批提交，避免单个 redb 写事务过大/持锁过久。
     pub fn merge(&self, node_name: &str, policies: &[NodePolicy]) -> Result<usize> {
+        const CHUNK: usize = 1000;
+        if policies.len() <= CHUNK {
+            return self.merge_chunk(node_name, policies);
+        }
+        let mut merged = 0usize;
+        for chunk in policies.chunks(CHUNK) {
+            merged += self.merge_chunk(node_name, chunk)?;
+        }
+        Ok(merged)
+    }
+
+    fn merge_chunk(&self, node_name: &str, policies: &[NodePolicy]) -> Result<usize> {
         let now_ns = now_ns();
         let write_txn = self.db.begin_write()?;
         let mut merged = 0usize;

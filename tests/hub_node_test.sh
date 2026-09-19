@@ -210,6 +210,7 @@ echo "PASS: Hub rules synced to node"
 echo "=== Test H8: Hub Dashboard and Node cluster page are served ==="
 node_curl / | grep -q "集群节点" || true
 hub_curl / | grep -q "eShield Hub" || true
+hub_curl /login | grep -q "Hub Token" || true
 echo "PASS: dashboards served"
 
 TEST_PASSED=1

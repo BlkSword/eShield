@@ -206,9 +206,12 @@ pub struct GlobalStats {
     pub udp_dropped: u64,
     pub icmp_dropped: u64,
     pub other_dropped: u64,
-    /// 黑名单变更代数：每次新增黑名单或命中 hit_count 时递增，
-    /// 用户态 blacklist_sync 可据此跳过无变化时的全量 map 扫描。
+    /// 黑名单新增代数：每次 add_to_blacklist 时递增，
+    /// 用户态 blacklist_sync 据此即时同步新封禁。
     pub blacklist_gen: u64,
+    /// 黑名单 hit_count 变更代数：命中已有黑名单时递增，
+    /// 用户态可降频持久化，避免攻击期间每 5s 全量扫描。
+    pub blacklist_hit_gen: u64,
 }
 
 /// 配置运行时快照（内嵌到 CONFIG Map）

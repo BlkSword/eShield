@@ -1,12 +1,22 @@
 use crate::maps::{BLACKLIST, GLOBAL_STATS, TRUST_MAP};
 use eshield_common::{BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
 
-/// 黑名单内容发生变化时递增全局代数，供用户态增量同步判断。
+/// 新增黑名单时递增全局代数，供用户态即时同步。
 #[inline(always)]
 fn bump_blacklist_gen() {
     unsafe {
         if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
             (*stats).blacklist_gen = (*stats).blacklist_gen.wrapping_add(1);
+        }
+    }
+}
+
+/// 命中已有黑名单、更新 hit_count 时递增，供用户态降频持久化。
+#[inline(always)]
+fn bump_blacklist_hit_gen() {
+    unsafe {
+        if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+            (*stats).blacklist_hit_gen = (*stats).blacklist_hit_gen.wrapping_add(1);
         }
     }
 }
@@ -21,7 +31,7 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
                 let mut updated = *entry;
                 updated.hit_count = updated.hit_count.saturating_add(1);
                 let _ = BLACKLIST.insert(src, &updated, 0);
-                bump_blacklist_gen();
+                bump_blacklist_hit_gen();
                 return true;
             }
         }
