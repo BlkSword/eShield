@@ -1196,7 +1196,7 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         danger_level: 0,
         packet_log_enabled: u8::from(config.packet_log.enabled),
         project_enabled: u8::from(!config.protection_projects.is_empty()),
-        port_acl_count: (config.port_acl.len() as u8).min(128),
+        port_acl_count: (config.port_acl.len() as u8).min(eshield_common::MAX_PORT_ACL as u8),
         l7_pattern_count: (config.l7_scan.patterns.len() as u8).min(16),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
         padding: [0; 6],
@@ -1325,14 +1325,17 @@ fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<(
         .context("PORT_ACL map not found")?
         .try_into()?;
 
-    // 清空全部 128 个槽位
-    for i in 0..128u32 {
+    // 清空全部 PORT_ACL 槽位
+    for i in 0..eshield_common::MAX_PORT_ACL as u32 {
         let _ = port_acl.set(i, PortAclEntry::default(), 0);
     }
 
     for (i, item) in items.iter().enumerate() {
-        if i >= 128 {
-            anyhow::bail!("too many port_acl entries (max 128)");
+        if i >= eshield_common::MAX_PORT_ACL {
+            anyhow::bail!(
+                "too many port_acl entries (max {})",
+                eshield_common::MAX_PORT_ACL
+            );
         }
         let entry = item
             .to_entry()
@@ -1342,7 +1345,7 @@ fn init_port_acl_map(ebpf: &mut Ebpf, items: &[PortAclItem]) -> anyhow::Result<(
 
     // 同步实际规则条数到 CONFIG map，数据面据此跳过空表循环
     sync_config_count(ebpf, |cfg| {
-        cfg.port_acl_count = (items.len() as u8).min(128);
+        cfg.port_acl_count = (items.len() as u8).min(eshield_common::MAX_PORT_ACL as u8);
     })?;
 
     Ok(())

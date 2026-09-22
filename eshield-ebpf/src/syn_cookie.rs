@@ -4,7 +4,7 @@ use core::mem;
 use crate::maps::{COOKIE_SECRETS, SYN_PROXY_CONN};
 use crate::parser::{is_syn_flags, ptr_at, ptr_at_mut, EthHdr, IpHdr, TcpHdr, ETH_HDR_LEN};
 use crate::rate_counter::{update_rate_counter, RateUpdate};
-use eshield_common::pure::{build_cookie, mss_to_idx};
+use eshield_common::pure::{build_cookie_runtime, mss_to_idx};
 use eshield_common::IpKey;
 
 /// 与主流程共享的包上下文（见 crate::main::PacketCtx）。
@@ -152,14 +152,11 @@ fn syn_challenge(
         &secret.current
     };
 
-    let cookie = build_cookie(
-        saddr,
-        daddr,
-        sport,
-        dport,
-        bucket as u32,
-        mss_idx,
+    let cookie = build_cookie_runtime(
+        (saddr as u64) | ((daddr as u64) << 32),
+        (sport as u64) | ((dport as u64) << 16) | ((bucket as u64) << 32),
         secret_bytes,
+        mss_idx,
     );
 
     if send_synack(pc, tcp_hdr_len, mss_idx, cookie, original_seq).is_ok() {
@@ -224,14 +221,11 @@ pub fn handle_ack(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u3
             continue;
         };
 
-        let computed = build_cookie(
-            saddr,
-            daddr,
-            sport,
-            dport,
-            bucket as u32,
-            mss_idx,
+        let computed = build_cookie_runtime(
+            (saddr as u64) | ((daddr as u64) << 32),
+            (sport as u64) | ((dport as u64) << 16) | ((bucket as u64) << 32),
             secret_bytes,
+            mss_idx,
         );
         if computed == expected {
             // Cookie 验证通过：解除挑战模式，后续该源的 SYN 直通内核正常握手。

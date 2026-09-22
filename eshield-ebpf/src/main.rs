@@ -27,7 +27,7 @@ use aya_ebpf::{
 use eshield_common::{
     project_action, project_modules, rules, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
     PacketSample, PortRateKey, ProjectPolicy, ProjectPolicyKey, WhitelistKeyV4, WhitelistKeyV6,
-    PROJECT_FLAGS_ALL, TRUST_ADD_DIVISOR, TRUST_SUB_DIVISOR,
+    MAX_L7_PATTERNS, MAX_PORT_ACL, PROJECT_FLAGS_ALL, TRUST_ADD_DIVISOR, TRUST_SUB_DIVISOR,
 };
 use maps::{
     CONFIG, EVENTS, GEOIP_ALLOWED_V4, GEOIP_ALLOWED_V6, GEOIP_BLOCKED_V4, GEOIP_BLOCKED_V6,
@@ -142,7 +142,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
 
     let mut action: u32;
 
-    action = check_port_acl_drop(&mut pc, runtime.port_acl_count);
+    action = check_port_acl_drop(&mut pc, runtime.port_acl_count.min(MAX_PORT_ACL as u8));
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
@@ -208,7 +208,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
     }
 
     if runtime.l7_scan_enabled != 0 {
-        action = check_l7_drop(&mut pc, runtime.l7_pattern_count);
+        action = check_l7_drop(&mut pc, runtime.l7_pattern_count.min(MAX_L7_PATTERNS as u8));
         if action != NO_ACTION {
             log_packet_sample(&pc, action);
             return action;

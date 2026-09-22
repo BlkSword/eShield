@@ -730,8 +730,11 @@ impl Config {
 
 /// 端口 ACL 条目校验，供配置文件、Web API 与 Hub 规则包共用。
 pub fn validate_port_acl_items(items: &[PortAclItem]) -> anyhow::Result<()> {
-    if items.len() > 128 {
-        anyhow::bail!("too many port_acl entries (max 128)");
+    if items.len() > eshield_common::MAX_PORT_ACL {
+        anyhow::bail!(
+            "too many port_acl entries (max {})",
+            eshield_common::MAX_PORT_ACL
+        );
     }
     for (i, entry) in items.iter().enumerate() {
         let protocol = entry.protocol.to_lowercase();
@@ -872,8 +875,11 @@ fn validate_hub(config: &Config) -> anyhow::Result<()> {
 
 /// L7 指纹校验，供配置文件、Web API 与 Hub 规则包共用。
 pub fn validate_l7_patterns(patterns: &[L7PatternConfig]) -> anyhow::Result<()> {
-    if patterns.len() > 16 {
-        anyhow::bail!("too many L7 patterns (max 16)");
+    if patterns.len() > eshield_common::MAX_L7_PATTERNS {
+        anyhow::bail!(
+            "too many L7 patterns (max {})",
+            eshield_common::MAX_L7_PATTERNS
+        );
     }
     for (i, pat) in patterns.iter().enumerate() {
         if pat.pattern.is_empty() {

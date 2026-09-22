@@ -5,7 +5,8 @@ use aya_ebpf::{
 use eshield_common::{
     BlockEntry, ConnTrackEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
     L7Pattern, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
-    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6, MAX_L7_PATTERNS,
+    MAX_PORT_ACL,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -83,11 +84,11 @@ pub static COOKIE_SECRETS: Array<CookieSecret> = Array::with_max_entries(1, 0);
 
 /// L7 轻量指纹模式
 #[map]
-pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(16, 0);
+pub static L7_PATTERNS: Array<L7Pattern> = Array::with_max_entries(MAX_L7_PATTERNS as u32, 0);
 
 /// 端口/协议 ACL 规则表
 #[map]
-pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(128, 0);
+pub static PORT_ACL: Array<PortAclEntry> = Array::with_max_entries(MAX_PORT_ACL as u32, 0);
 
 /// 防护项目策略表（LRU Hash）：按 目的 IPv4 + 目的端口 + 协议 精确匹配。
 /// 控制面将项目的 target_ips CIDR 展开为精确 IP 后写入；容量 8192 条。

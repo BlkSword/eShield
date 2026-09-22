@@ -26,18 +26,74 @@ pub fn build_cookie(
     mss_idx: u8,
     secret: &[u8; COOKIE_SECRET_LEN],
 ) -> u32 {
+    build_cookie_words(
+        saddr,
+        daddr,
+        sport,
+        dport,
+        bucket,
+        mss_idx,
+        secret_words(secret),
+    )
+}
+
+/// 把 16 字节 secret 折叠为 4 个 u32，避免逐字节 16 次 mix 展开。
+#[inline(always)]
+fn secret_words(secret: &[u8; COOKIE_SECRET_LEN]) -> [u32; 4] {
+    [
+        u32::from_le_bytes([secret[0], secret[1], secret[2], secret[3]]),
+        u32::from_le_bytes([secret[4], secret[5], secret[6], secret[7]]),
+        u32::from_le_bytes([secret[8], secret[9], secret[10], secret[11]]),
+        u32::from_le_bytes([secret[12], secret[13], secret[14], secret[15]]),
+    ]
+}
+
+#[inline(always)]
+fn build_cookie_words(
+    saddr: u32,
+    daddr: u32,
+    sport: u16,
+    dport: u16,
+    bucket: u32,
+    mss_idx: u8,
+    words: [u32; 4],
+) -> u32 {
     let mut h: u32 = 0x9e37_79b9;
     mix(&mut h, u32::from_be(saddr));
     mix(&mut h, u32::from_be(daddr));
     mix(&mut h, ((sport as u32) << 16) | (dport as u32));
     mix(&mut h, bucket);
     mix(&mut h, mss_idx as u32);
-
-    for &b in secret.iter() {
-        mix(&mut h, b as u32);
+    for word in words {
+        mix(&mut h, word);
     }
-
     ((mss_idx as u32) << 24) | (h & 0x00ff_ffff)
+}
+
+/// eBPF 专用 SYN Cookie 构造：参数打包为 4 个寄存器，标记 inline(never)
+/// 后成为独立 BPF 函数，避免 Cookie 逻辑在多个调用点重复展开导致
+/// 内核 7.0 verifier 状态爆炸。
+#[inline(never)]
+pub fn build_cookie_runtime(
+    addr_pair: u64,
+    port_bucket: u64,
+    secret: &[u8; COOKIE_SECRET_LEN],
+    mss_idx: u8,
+) -> u32 {
+    let saddr = (addr_pair & 0xffff_ffff) as u32;
+    let daddr = (addr_pair >> 32) as u32;
+    let sport = (port_bucket & 0xffff) as u16;
+    let dport = ((port_bucket >> 16) & 0xffff) as u16;
+    let bucket = (port_bucket >> 32) as u32;
+    build_cookie_words(
+        saddr,
+        daddr,
+        sport,
+        dport,
+        bucket,
+        mss_idx,
+        secret_words(secret),
+    )
 }
 
 /// 根据客户端 MSS 选择档位索引。
@@ -108,7 +164,7 @@ pub fn tcp_checksum(saddr: u32, daddr: u32, proto: u8, tcp_data: &[u8]) -> u16 {
 /// 根据 `elapsed_ns / tick_ns` 计算经历的刻度次数，并对 `counter`
 /// 连续应用 `counter * decay_num / decay_den`，最后返回衰减后的值
 ///（调用者应自行 +1）。
-#[inline(always)]
+#[inline(never)]
 pub fn decay_counter(
     counter: u64,
     elapsed_ns: u64,
@@ -425,5 +481,19 @@ mod tests {
         let reset = conn_track_step(9, 1_000_000_000, 20_000_000_000, true, false, 2, window);
         assert_eq!(reset.half_open, 1);
         assert!(!reset.drop);
+    }
+
+    #[test]
+    fn test_build_cookie_runtime_matches() {
+        let secret = [0x11u8; COOKIE_SECRET_LEN];
+        let (saddr, daddr, sport, dport, bucket, mss_idx) =
+            (0xc0a8_0001u32, 0xc0a8_0002u32, 12345u16, 80u16, 7u32, 1u8);
+        let expected = build_cookie(saddr, daddr, sport, dport, bucket, mss_idx, &secret);
+        let addr_pair = (saddr as u64) | ((daddr as u64) << 32);
+        let port_bucket = (sport as u64) | ((dport as u64) << 16) | ((bucket as u64) << 32);
+        assert_eq!(
+            expected,
+            build_cookie_runtime(addr_pair, port_bucket, &secret, mss_idx)
+        );
     }
 }

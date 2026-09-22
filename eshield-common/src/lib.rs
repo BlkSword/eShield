@@ -161,6 +161,13 @@ pub struct ConnTrackEntry {
     pub padding: [u8; 4],
 }
 
+/// PORT_ACL 最大规则数（内核 7.0 verifier 对 128 次线性扫描会超过
+/// 100 万指令处理上限；当前实现限制为 32，后续可用哈希精确匹配恢复）。
+pub const MAX_PORT_ACL: usize = 32;
+
+/// L7 指纹最大模式数（同样为控制 verifier 状态规模）。
+pub const MAX_L7_PATTERNS: usize = 8;
+
 /// Per-IP 指数衰减速率计数器
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug)]
