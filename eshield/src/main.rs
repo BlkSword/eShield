@@ -286,18 +286,38 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     program.load()?;
 
     // 优先原生模式挂载，失败则回退到通用模式；保存 link_id 用于优雅退出时显式卸载。
-    let xdp_link_id = match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
-        Ok(id) => {
-            info!("attached XDP in DRV (native) mode on {}", config.interface);
-            Some(id)
-        }
-        Err(e) => {
-            warn!("native XDP attach failed ({}), trying generic mode", e);
-            let id = program
-                .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
-                .context("failed to attach XDP program")?;
-            info!("attached XDP in SKB (generic) mode on {}", config.interface);
-            Some(id)
+    // ESHIELD_XDP_MODE=skb|generic 可强制 SKB 模式，用于规避 veth/虚拟网卡上
+    // 原生 XDP_TX 可能触发的内核问题。
+    let force_skb = matches!(
+        std::env::var("ESHIELD_XDP_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "skb" | "generic"
+    );
+    let xdp_link_id = if force_skb {
+        info!(
+            "ESHIELD_XDP_MODE=skb, attaching generic XDP on {}",
+            config.interface
+        );
+        let id = program
+            .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
+            .context("failed to attach XDP program in SKB mode")?;
+        Some(id)
+    } else {
+        match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
+            Ok(id) => {
+                info!("attached XDP in DRV (native) mode on {}", config.interface);
+                Some(id)
+            }
+            Err(e) => {
+                warn!("native XDP attach failed ({}), trying generic mode", e);
+                let id = program
+                    .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
+                    .context("failed to attach XDP program")?;
+                info!("attached XDP in SKB (generic) mode on {}", config.interface);
+                Some(id)
+            }
         }
     };
 

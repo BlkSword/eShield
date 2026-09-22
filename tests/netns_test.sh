@@ -1,6 +1,12 @@
 #!/bin/bash
 set -e
 
+# 可用 ESHIELD_TEST_XDP_MODE=skb 让所有 eShield 实例强制 SKB 模式，
+# 规避 veth/虚拟网卡上原生 XDP_TX 可能触发的内核问题。
+if [ -n "${ESHIELD_TEST_XDP_MODE:-}" ]; then
+    export ESHIELD_XDP_MODE="$ESHIELD_TEST_XDP_MODE"
+fi
+
 if [ "$EUID" -ne 0 ]; then
     echo "Please run as root"
     exit 1
