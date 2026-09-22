@@ -2,6 +2,7 @@
 #![no_main]
 
 mod blacklist;
+mod conn_track;
 mod icmp_flood;
 mod l7_scan;
 mod maps;
@@ -162,6 +163,17 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
     }
 
     action = check_geoip_drop(&mut pc, runtime.geoip_enabled, runtime.geoip_default_action);
+    if action != NO_ACTION {
+        log_packet_sample(&pc, action);
+        return action;
+    }
+
+    action = check_conn_track_drop(
+        &mut pc,
+        runtime.conn_track_enabled,
+        runtime.conn_track_threshold,
+        runtime.conn_track_window_ms,
+    );
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
         return action;
@@ -383,6 +395,40 @@ fn check_geoip_drop(pc: &mut PacketCtx, geoip_enabled: u8, geoip_default_action:
     } else {
         NO_ACTION
     }
+}
+
+/// 可选连接跟踪模块：默认关闭；启用后仅 SYN/ACK/RST 触碰 CONN_TRACK map。
+#[inline(never)]
+fn check_conn_track_drop(pc: &mut PacketCtx, enabled: u8, threshold: u32, window_ms: u64) -> u32 {
+    if enabled == 0
+        || pc.fragment
+        || pc.protocol != parser::IPPROTO_TCP
+        || pc.project_flags & project_modules::CONN_TRACK == 0
+    {
+        return NO_ACTION;
+    }
+    let tcp = match unsafe { parser::ptr_at::<TcpHdr>(pc.ctx, ETH_HDR_LEN + pc.ip_hdr_len) } {
+        Some(t) => t,
+        None => return NO_ACTION,
+    };
+    if conn_track::check_conn_track(
+        pc.src,
+        unsafe { (*tcp).flags() },
+        pc.now_ns,
+        threshold.max(1),
+        window_ms.max(1),
+    ) {
+        pc.rule_id = rules::CONN_TRACK;
+        unsafe {
+            with_stats(|s| {
+                s.total_dropped += 1;
+                s.conn_track_blocked += 1;
+                inc_protocol_dropped(s, parser::IPPROTO_TCP);
+            });
+        }
+        return drop_packet(pc);
+    }
+    NO_ACTION
 }
 
 #[inline(never)]

@@ -85,6 +85,8 @@ sudo eshield-hub --bind 0.0.0.0:9930 --token "your-hub-token"
 ```
 
 > 生产环境强烈建议在 Hub 前挂 **nginx/Caddy** 做 TLS termination，节点配置 `urls = ["https://hub.example.com:9930"]`。
+>
+> 多节点部署建议使用 `--node-tokens-file /etc/eshield-hub/node-tokens`，文件每行 `node_name:token`。节点专属 Token 认证成功后，Hub 会强制以认证节点名记录/限流，避免请求体伪造 node_name；master token 仍兼容旧部署。
 
 ### 节点接入 Hub
 

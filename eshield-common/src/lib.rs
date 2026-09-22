@@ -101,6 +101,7 @@ pub mod rules {
     pub const GEOIP: u16 = 10;
     pub const THREAT_INTEL: u16 = 11;
     pub const PROJECT_POLICY: u16 = 12;
+    pub const CONN_TRACK: u16 = 13;
 }
 
 /// 黑名单条目
@@ -146,6 +147,19 @@ pub const TRUST_MIN: u32 = 0;
 pub const TRUST_ADD_DIVISOR: u32 = 100; // trust += (1000 - trust) / 100  慢慢加分
 pub const TRUST_SUB_DIVISOR: u32 = 3; // trust -= trust / 3             快速减分
 pub const TRUST_DEFAULT: u32 = 500; // 新 IP 默认中性
+
+/// 轻量 TCP 并发/半连接跟踪条目。
+/// 默认模块关闭时不使用；启用后只对目标端口/项目生效。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ConnTrackEntry {
+    /// 最后一次更新时间（ns，CLOCK_MONOTONIC）
+    pub last_seen_ns: u64,
+    /// 当前窗口内未完成握手的 SYN 计数
+    pub half_open: u32,
+    /// 显式填充，保证 repr(C) 无隐式未初始化 padding
+    pub padding: [u8; 4],
+}
 
 /// Per-IP 指数衰减速率计数器
 #[repr(C, align(32))]
@@ -212,6 +226,8 @@ pub struct GlobalStats {
     /// 黑名单 hit_count 变更代数：命中已有黑名单时递增，
     /// 用户态可降频持久化，避免攻击期间每 5s 全量扫描。
     pub blacklist_hit_gen: u64,
+    /// 连接跟踪模块拦截计数
+    pub conn_track_blocked: u64,
 }
 
 /// 配置运行时快照（内嵌到 CONFIG Map）
@@ -222,6 +238,12 @@ pub struct RuntimeConfig {
     pub trust_add_divisor: u32,
     /// Trust Score DROP 减分除数：trust -= trust / divisor
     pub trust_sub_divisor: u32,
+    /// 连接跟踪模块阈值：单源窗口内半连接数超过该值即 DROP
+    pub conn_track_threshold: u32,
+    /// 显式对齐填充
+    pub padding0: [u8; 4],
+    /// 连接跟踪窗口（ms）
+    pub conn_track_window_ms: u64,
     /// 包日志采样率：N 表示 1/N；0 等价于关闭
     pub packet_log_sample_rate: u16,
     pub rate_limit_enabled: u8,
@@ -248,8 +270,10 @@ pub struct RuntimeConfig {
     pub l7_pattern_count: u8,
     /// 按目的端口限速开关：0=关闭（零开销跳过），1=开启
     pub port_rate_limit_enabled: u8,
+    /// 连接跟踪模块开关：0=关闭（零开销跳过），1=开启
+    pub conn_track_enabled: u8,
     /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
-    pub padding: [u8; 3],
+    pub padding: [u8; 6],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）
@@ -357,6 +381,7 @@ pub mod project_modules {
     pub const GEOIP: u16 = 1 << 6;
     pub const TCP_RESET: u16 = 1 << 7;
     pub const PORT_ACL: u16 = 1 << 8;
+    pub const CONN_TRACK: u16 = 1 << 9;
 }
 
 /// 项目策略动作。
@@ -396,9 +421,9 @@ impl Default for RateLimitConfig {
 #[cfg(feature = "userspace")]
 mod userspace_impls {
     use super::{
-        BlockEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern,
-        PacketSample, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
-        RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+        BlockEntry, ConnTrackEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats,
+        IpKey, L7Pattern, PacketSample, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey,
+        RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -420,5 +445,6 @@ mod userspace_impls {
     unsafe impl Pod for RuntimeConfig {}
     unsafe impl Pod for RateLimitConfig {}
     unsafe impl Pod for TrustEntry {}
+    unsafe impl Pod for ConnTrackEntry {}
     unsafe impl Pod for PacketSample {}
 }

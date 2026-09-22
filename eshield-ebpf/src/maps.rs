@@ -3,9 +3,9 @@ use aya_ebpf::{
     maps::{Array, LpmTrie, LruHashMap, PerCpuArray, RingBuf},
 };
 use eshield_common::{
-    BlockEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey, L7Pattern, PortAclEntry,
-    PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter, RateLimitConfig, RuntimeConfig,
-    TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+    BlockEntry, ConnTrackEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
+    L7Pattern, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
+    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -99,6 +99,10 @@ pub static PROJECT_POLICY: LruHashMap<ProjectPolicyKey, ProjectPolicy> =
 /// 触发 SYN Flood 阈值后该源的 SYN 被 Cookie 挑战；ACK 验证通过后删除条目恢复直通。
 #[map]
 pub static SYN_PROXY_CONN: LruHashMap<IpKey, u64> = LruHashMap::with_max_entries(100000, 0);
+
+/// 可选连接跟踪 Map（LRU Hash）：单源半连接计数（默认模块关闭时不访问）
+#[map]
+pub static CONN_TRACK: LruHashMap<IpKey, ConnTrackEntry> = LruHashMap::with_max_entries(100_000, 0);
 
 /// IP 信誉 Map（LRU Hash）：双向更新——PASS 加分，DROP 减分（v0.4.0）
 #[map]

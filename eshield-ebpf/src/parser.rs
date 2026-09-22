@@ -21,6 +21,7 @@ pub const IPPROTO_ICMPV6: u8 = 58;
 
 /// TCP flags：SYN / ACK。
 pub const TCP_FLAG_SYN: u8 = 0x02;
+pub const TCP_FLAG_RST: u8 = 0x04;
 pub const TCP_FLAG_ACK: u8 = 0x10;
 
 /// 是否为“纯 SYN”（含 SYN+ECE/CWR 等变体，但不含 SYN+ACK），
@@ -28,6 +29,12 @@ pub const TCP_FLAG_ACK: u8 = 0x10;
 #[inline(always)]
 pub const fn is_syn_flags(flags: u8) -> bool {
     flags & TCP_FLAG_SYN != 0 && flags & TCP_FLAG_ACK == 0
+}
+
+/// 是否为 ACK 或 RST（用于连接跟踪半连接计数回退）。
+#[inline(always)]
+pub const fn is_ack_or_rst_flags(flags: u8) -> bool {
+    flags & TCP_FLAG_ACK != 0 || flags & TCP_FLAG_RST != 0
 }
 
 #[repr(C)]

@@ -36,9 +36,11 @@ NODE_STORE="/tmp/node-test.redb"
 HUB_LOG="/tmp/hub-test.log"
 NODE_LOG="/tmp/node-test.log"
 CFG="/tmp/hub-node-cfg.toml"
+NODE_TOKENS="/tmp/hub-node-tokens"
 
 # 清理上次失败的持久化数据，避免跨测试污染
-rm -f "$HUB_STORE" "$NODE_STORE" "$HUB_LOG" "$NODE_LOG" "$CFG"
+rm -f "$HUB_STORE" "$NODE_STORE" "$HUB_LOG" "$NODE_LOG" "$CFG" "$NODE_TOKENS"
+echo "test-node:$NODE_TOKEN" > "$NODE_TOKENS"
 
 TEST_PASSED=0
 cleanup() {
@@ -48,7 +50,7 @@ cleanup() {
     ip netns del eshield-server 2>/dev/null || true
     ip link del veth-server 2>/dev/null || true
     if [ "$TEST_PASSED" -eq 1 ]; then
-        rm -f "$HUB_STORE" "$NODE_STORE" "$HUB_LOG" "$NODE_LOG" "$CFG"
+        rm -f "$HUB_STORE" "$NODE_STORE" "$HUB_LOG" "$NODE_LOG" "$CFG" "$NODE_TOKENS"
     else
         echo "(logs preserved: $HUB_LOG $NODE_LOG)"
     fi
@@ -113,6 +115,7 @@ echo "=== Starting Hub ==="
 ip netns exec eshield-server /tmp/eshield-hub \
     --bind 0.0.0.0:9930 \
     --token "$HUB_TOKEN" \
+    --node-tokens-file "$NODE_TOKENS" \
     --store-path "$HUB_STORE" > "$HUB_LOG" 2>&1 &
 HUB_PID=$!
 sleep 1

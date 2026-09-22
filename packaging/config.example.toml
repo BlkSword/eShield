@@ -114,6 +114,12 @@ enabled = false
 # action = "drop"
 
 # Trust Score IP 双向信誉引擎（v0.4.0，默认关闭）
+# 连接跟踪 / 半连接 CC 防御（v0.4.7，默认关闭；启用后仅 SYN/ACK/RST 触碰 map）
+[conn_track]
+enabled = false
+threshold = 20              # 单源窗口内未完成握手 SYN 数阈值
+window_ms = 10000           # 统计窗口（毫秒）
+
 [trust_score]
 enabled = false
 # add_divisor = 100       # PASS: trust += (1000 - trust) / divisor（已接入数据面）

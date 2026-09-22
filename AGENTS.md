@@ -99,7 +99,7 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 
 主要模块：
 
-- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 黑名单 → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP（block/allow + default_action）→ TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 决策；非首片 IPv4 分片跳过端口/L4 模块。
+- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 黑名单 → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP（block/allow + default_action）→ 可选连接跟踪（仅启用时）→ TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 决策；非首片 IPv4 分片跳过端口/L4 模块。
 - `parser.rs`：有界读取 Ethernet / IPv4 / IPv6 / TCP / UDP / ICMP 头部。
 - `maps.rs`：BPF Maps 定义。
 - `blacklist.rs`：LRU Hash 黑名单查询。
@@ -376,7 +376,7 @@ sync_rules_enabled = true
 ## 9. 安全注意事项
 
 - **必须 root 或高权限 capability**：加载 XDP/eBPF 程序需要 `CAP_BPF` / `CAP_NET_ADMIN` 等，无法以普通用户运行。
-- **Token 管理**：建议显式设置 `api_token`；若未设置，系统会生成随机 Token 并只在日志中输出前缀。首次使用可在本机执行 `eshield reset-token` 生成并打印新 Token，或在 CLI/TUI 上用 `--token`/`ESHIELD_API_TOKEN` 访问远程实例。
+- **Token 管理**：建议显式设置 `api_token`；若未设置，系统会生成随机 Token 并只在日志中输出前缀。首次使用可在本机执行 `eshield reset-token` 生成并打印新 Token，或在 CLI/TUI 上用 `--token`/`ESHIELD_API_TOKEN` 访问远程实例。Hub 支持 `--node-tokens-file`（每行 `node_name:token`），节点专属 Token 会以认证节点名为准，避免请求体伪造。
 - **审计与持久化**：动态规则写入 redb（`store_path`），审计日志可开启文件后端；确保这些目录的权限正确，避免敏感信息泄露。
 - **威胁情报**：feed URL 通过 `reqwest` + `rustls-tls` 拉取，但仍应只使用可信来源。
 - **Hub 通信**：节点与 Hub 之间使用共享 Bearer Token；生产环境务必启用 TLS，并确保 `node_name` 在集群内唯一，避免策略回环。

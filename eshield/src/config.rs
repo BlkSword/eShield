@@ -90,6 +90,8 @@ pub struct Config {
     #[serde(default)]
     pub danger_signal: DangerSignalConfig,
     #[serde(default)]
+    pub conn_track: ConnTrackConfig,
+    #[serde(default)]
     pub hub: HubConfig,
     #[serde(default)]
     pub packet_log: PacketLogConfig,
@@ -205,6 +207,37 @@ fn default_danger_sample_s() -> u64 {
 }
 fn default_danger_anomaly_multiplier() -> f64 {
     2.0
+}
+
+/// 可选连接跟踪 / 半连接 CC 防御配置（默认关闭）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ConnTrackConfig {
+    #[serde(default = "default_false")]
+    pub enabled: bool,
+    /// 单源窗口内未完成握手 SYN 数阈值
+    #[serde(default = "default_conn_track_threshold")]
+    pub threshold: u32,
+    /// 统计窗口（ms）
+    #[serde(default = "default_conn_track_window_ms")]
+    pub window_ms: u64,
+}
+
+impl Default for ConnTrackConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_conn_track_threshold(),
+            window_ms: default_conn_track_window_ms(),
+        }
+    }
+}
+
+fn default_conn_track_threshold() -> u32 {
+    20
+}
+
+fn default_conn_track_window_ms() -> u64 {
+    10_000
 }
 
 /// Hub 分布式同步配置（v0.4.2）。
@@ -628,6 +661,15 @@ impl Config {
 
         validate_l7_patterns(&self.l7_scan.patterns)?;
 
+        if self.conn_track.enabled {
+            if self.conn_track.threshold == 0 {
+                anyhow::bail!("conn_track.threshold must be > 0");
+            }
+            if self.conn_track.window_ms == 0 {
+                anyhow::bail!("conn_track.window_ms must be > 0");
+            }
+        }
+
         if self.trust_score.enabled {
             if self.trust_score.add_divisor == 0 {
                 anyhow::bail!("trust_score.add_divisor must be > 0");
@@ -864,6 +906,7 @@ pub fn validate_protection_projects_list(projects: &[ProtectionProject]) -> anyh
         "geoip",
         "tcp_reset",
         "port_acl",
+        "conn_track",
     ]
     .into_iter()
     .collect();

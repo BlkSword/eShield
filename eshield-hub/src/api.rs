@@ -1,5 +1,5 @@
 use crate::{
-    auth::auth_layer,
+    auth::{auth_layer, NodeIdentity},
     models::{
         DeletedPolicies, NodeHeartbeat, NodesResponse, PolicyDelete, PolicyPull, PolicyPush,
         RulesResponse, StatsResponse,
@@ -8,7 +8,7 @@ use crate::{
     time::now_ns,
 };
 use axum::{
-    extract::{ConnectInfo, Query, State},
+    extract::{ConnectInfo, Extension, Query, State},
     http::StatusCode,
     middleware::{self},
     response::{Html, IntoResponse},
@@ -69,18 +69,21 @@ async fn login_handler() -> Html<&'static str> {
 
 async fn push_policies(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<NodeIdentity>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(push): Json<PolicyPush>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !state.rate_limiter.check(&push.node_name, now_ns()) {
-        tracing::warn!(%addr, node = %push.node_name, "rate limit exceeded");
+    // 节点专属 token 时以认证身份为准，防止请求体伪造 node_name。
+    let node_name = identity.0.unwrap_or_else(|| push.node_name.clone());
+    if !state.rate_limiter.check(&node_name, now_ns()) {
+        tracing::warn!(%addr, node = %node_name, "rate limit exceeded");
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
-    match state.store.merge(&push.node_name, &push.policies) {
+    match state.store.merge(&node_name, &push.policies) {
         Ok(merged) => Ok(Json(json!({ "merged": merged }))),
         Err(err) => {
-            tracing::error!(%addr, node = %push.node_name, "failed to merge policies: {err}");
+            tracing::error!(%addr, node = %node_name, "failed to merge policies: {err}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }
@@ -108,11 +111,13 @@ async fn pull_policies(
 
 async fn heartbeat(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<NodeIdentity>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(hb): Json<NodeHeartbeat>,
 ) -> StatusCode {
-    tracing::debug!(%addr, node = %hb.node_name, "heartbeat received");
-    state.registry.heartbeat(hb.node_name, now_ns());
+    let node_name = identity.0.unwrap_or(hb.node_name);
+    tracing::debug!(%addr, node = %node_name, "heartbeat received");
+    state.registry.heartbeat(node_name, now_ns());
     StatusCode::OK
 }
 
@@ -137,11 +142,13 @@ async fn stats(State(state): State<Arc<AppState>>) -> Result<Json<StatsResponse>
 
 async fn delete_policies(
     State(state): State<Arc<AppState>>,
+    Extension(identity): Extension<NodeIdentity>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(req): Json<PolicyDelete>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    if !state.rate_limiter.check(&req.node_name, now_ns()) {
-        tracing::warn!(%addr, node = %req.node_name, "rate limit exceeded");
+    let node_name = identity.0.unwrap_or_else(|| req.node_name.clone());
+    if !state.rate_limiter.check(&node_name, now_ns()) {
+        tracing::warn!(%addr, node = %node_name, "rate limit exceeded");
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
 
@@ -151,7 +158,7 @@ async fn delete_policies(
             Ok(true) => removed += 1,
             Ok(false) => {}
             Err(err) => {
-                tracing::error!(%addr, node = %req.node_name, "failed to delete policy: {err}");
+                tracing::error!(%addr, node = %node_name, "failed to delete policy: {err}");
                 return Err(StatusCode::INTERNAL_SERVER_ERROR);
             }
         }

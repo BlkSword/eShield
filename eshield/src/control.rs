@@ -62,6 +62,9 @@ pub struct RuntimeConfigSnapshot {
     pub geoip_enabled: bool,
     pub tcp_reset_on_drop: bool,
     pub trust_enabled: bool,
+    pub conn_track_enabled: bool,
+    pub conn_track_threshold: u32,
+    pub conn_track_window_ms: u64,
     pub trust_add_divisor: u32,
     pub trust_sub_divisor: u32,
     pub geoip_default_action: u8,
@@ -104,6 +107,9 @@ pub struct RuntimeConfigPatch {
     pub geoip_enabled: Option<bool>,
     pub tcp_reset_on_drop: Option<bool>,
     pub trust_enabled: Option<bool>,
+    pub conn_track_enabled: Option<bool>,
+    pub conn_track_threshold: Option<u32>,
+    pub conn_track_window_ms: Option<u64>,
     pub trust_add_divisor: Option<u32>,
     pub trust_sub_divisor: Option<u32>,
     pub geoip_default_action: Option<u8>,
@@ -504,6 +510,15 @@ impl ControlState {
         if let Some(enabled) = patch.trust_enabled {
             snapshot.trust_enabled = enabled;
         }
+        if let Some(enabled) = patch.conn_track_enabled {
+            snapshot.conn_track_enabled = enabled;
+        }
+        if let Some(threshold) = patch.conn_track_threshold {
+            snapshot.conn_track_threshold = threshold;
+        }
+        if let Some(window_ms) = patch.conn_track_window_ms {
+            snapshot.conn_track_window_ms = window_ms;
+        }
         if let Some(divisor) = patch.trust_add_divisor {
             snapshot.trust_add_divisor = divisor;
         }
@@ -577,6 +592,9 @@ impl ControlState {
             cfg.geoip_default_action = snapshot.geoip_default_action;
             cfg.tcp_reset_on_drop = u8::from(snapshot.tcp_reset_on_drop);
             cfg.trust_enabled = u8::from(snapshot.trust_enabled);
+            cfg.conn_track_enabled = u8::from(snapshot.conn_track_enabled);
+            cfg.conn_track_threshold = snapshot.conn_track_threshold.max(1);
+            cfg.conn_track_window_ms = snapshot.conn_track_window_ms.max(1);
             cfg.trust_add_divisor = snapshot.trust_add_divisor.max(1);
             cfg.trust_sub_divisor = snapshot.trust_sub_divisor.max(1);
             // danger_level 由 DangerMonitor 任务维护，PATCH 配置时必须保留当前值。
@@ -1055,6 +1073,12 @@ fn validate_runtime_patch(patch: &RuntimeConfigPatch) -> anyhow::Result<()> {
             anyhow::ensure!(ad.threshold > 0, "adaptive.threshold must be > 0");
         }
     }
+    if let Some(threshold) = patch.conn_track_threshold {
+        anyhow::ensure!(threshold > 0, "conn_track_threshold must be > 0");
+    }
+    if let Some(window_ms) = patch.conn_track_window_ms {
+        anyhow::ensure!(window_ms > 0, "conn_track_window_ms must be > 0");
+    }
     if let Some(d) = patch.trust_add_divisor {
         anyhow::ensure!(d > 0, "trust_add_divisor must be > 0");
     }
@@ -1088,6 +1112,9 @@ impl RuntimeConfigSnapshot {
             geoip_enabled: config.geoip.enabled,
             tcp_reset_on_drop: config.tcp_reset_on_drop,
             trust_enabled: config.trust_score.enabled,
+            conn_track_enabled: config.conn_track.enabled,
+            conn_track_threshold: config.conn_track.threshold.max(1),
+            conn_track_window_ms: config.conn_track.window_ms.max(1),
             trust_add_divisor: config.trust_score.add_divisor.max(1),
             trust_sub_divisor: config.trust_score.sub_divisor.max(1),
             geoip_default_action: if config.geoip.default_action == "drop" {
@@ -1162,13 +1189,17 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         },
         tcp_reset_on_drop: u8::from(config.tcp_reset_on_drop),
         trust_enabled: u8::from(config.trust_score.enabled),
+        conn_track_enabled: u8::from(config.conn_track.enabled),
+        conn_track_threshold: config.conn_track.threshold.max(1),
+        conn_track_window_ms: config.conn_track.window_ms.max(1),
+        padding0: [0; 4],
         danger_level: 0,
         packet_log_enabled: u8::from(config.packet_log.enabled),
         project_enabled: u8::from(!config.protection_projects.is_empty()),
         port_acl_count: (config.port_acl.len() as u8).min(128),
         l7_pattern_count: (config.l7_scan.patterns.len() as u8).min(16),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
-        padding: [0; 3],
+        padding: [0; 6],
     };
     tracing::debug!(
         "init_config_map: tcp_reset_on_drop={} trust={}/{} geoip_default={}",
@@ -1370,6 +1401,7 @@ fn init_protection_projects_map(
                 "geoip" => Some(project_modules::GEOIP),
                 "tcp_reset" => Some(project_modules::TCP_RESET),
                 "port_acl" => Some(project_modules::PORT_ACL),
+                "conn_track" => Some(project_modules::CONN_TRACK),
                 _ => None,
             };
             if let Some(b) = bit {

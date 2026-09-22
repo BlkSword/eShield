@@ -247,6 +247,7 @@ struct StatsResponse {
     udp_flood_blocked: u64,
     icmp_flood_blocked: u64,
     geoip_blocked: u64,
+    conn_track_blocked: u64,
     tcp_rst_sent: u64,
     tcp_rst_fail: u64,
     tcp_rst_attempt: u64,
@@ -518,6 +519,17 @@ async fn protection_modules_handler(State(state): State<Arc<WebState>>) -> Json<
             "enabled": rt.geoip_enabled,
             "stats_key": "geoip_blocked",
             "editable_fields": [field_switch("enabled", "启用 GeoIP", rt.geoip_enabled)]
+        }),
+        serde_json::json!({
+            "id": "conn_track",
+            "name": "连接跟踪 / CC 防御",
+            "category": "智能防御",
+            "description": "按源统计未完成握手 SYN 数，超过阈值即 DROP；默认关闭，仅对启用项目生效。",
+            "enabled": rt.conn_track_enabled,
+            "stats_key": "conn_track_blocked",
+            "editable_fields": [
+                field_switch("enabled", "启用连接跟踪", rt.conn_track_enabled)
+            ]
         }),
         serde_json::json!({
             "id": "tcp_reset",
@@ -1474,6 +1486,7 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         udp_flood_blocked: stats.udp_flood_blocked.load(Ordering::Relaxed),
         icmp_flood_blocked: stats.icmp_flood_blocked.load(Ordering::Relaxed),
         geoip_blocked: stats.geoip_blocked.load(Ordering::Relaxed),
+        conn_track_blocked: stats.conn_track_blocked.load(Ordering::Relaxed),
         tcp_rst_sent: stats.tcp_rst_sent.load(Ordering::Relaxed),
         tcp_rst_fail: stats.tcp_rst_fail.load(Ordering::Relaxed),
         tcp_rst_attempt: stats.tcp_rst_attempt.load(Ordering::Relaxed),
@@ -1531,6 +1544,9 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
          # HELP eshield_geoip_blocked_total GeoIP blocked packets\n\
          # TYPE eshield_geoip_blocked_total counter\n\
          eshield_geoip_blocked_total{{interface=\"{}\"}} {}\n\n\
+         # HELP eshield_conn_track_blocked_total Connection-track blocked packets\n\
+         # TYPE eshield_conn_track_blocked_total counter\n\
+         eshield_conn_track_blocked_total{{interface=\"{}\"}} {}\n\n\
          # HELP eshield_dropped_by_protocol_total Dropped packets by IP protocol\n\
          # TYPE eshield_dropped_by_protocol_total counter\n\
          eshield_dropped_by_protocol_total{{interface=\"{}\",protocol=\"tcp\"}} {}\n\
@@ -1557,6 +1573,8 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         stats.icmp_flood_blocked,
         interface,
         stats.geoip_blocked,
+        interface,
+        stats.conn_track_blocked,
         interface,
         tcp,
         interface,

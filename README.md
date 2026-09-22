@@ -100,6 +100,7 @@ eShield 在 Linux 内核 XDP 钩子上运行一个由 Rust/Aya 编写的 eBPF �
 | **SYN Cookie 恢复（v0.4.6）** | 恢复 IPv4 TCP SYN Cookie 降级式挑战：仅 SYN Flood 源受挑战，伪造源被清洗，合法客户端响应 Cookie 后解除挑战，正常连接直通（v0.4.2 曾因 verifier 问题临时禁用）。 |
 | **防护项目数据面化（v0.4.6）** | 防护项目 PASS/DROP 在数据面真实生效：target_ips CIDR 展开为精确 IP 下发（下限 /24），支持 any 端口/协议；DEFEND 项目按 `enabled_modules` 位图在数据面过滤全局防御模块。 |
 | **按目的端口限速（v0.4.6）** | `[port_rate_limit]` 按 协议+目的端口 维度固定窗口限速，防换源 IP 绕过 per-IP 限速；超限仅 DROP 不加黑名单。 |
+| **连接跟踪 / CC 防御（v0.4.7）** | `[conn_track]` 可选半连接计数：默认关闭，启用后仅 SYN/ACK/RST 触碰 map，超阈值 DROP，普通包零开销。 |
 | **空表快速跳过（v0.4.6）** | PORT_ACL / L7_PATTERNS 空表时数据面跳过整段循环查询，热路径瘦身。 |
 
 > **关于防护项目**：target_ips 不能为空且至少包含一个 IPv4 目标（数据面仅支持 IPv4 精确匹配）；CIDR 由控制面展开为精确 IP 后下发到 `PROJECT_POLICY` map（上限 8192 条）；PASS 放行、DROP 丢弃在 eBPF 数据面生效，DEFEND 动作复用全局防御模块并按 `enabled_modules` 过滤（未配置模块视为全开）；IPv6 目标暂不匹配。

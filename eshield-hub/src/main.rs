@@ -22,6 +22,7 @@ use crate::{
 };
 use anyhow::{bail, Context, Result};
 use clap::Parser;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +37,10 @@ struct Args {
 
     #[arg(long)]
     token: Option<String>,
+
+    /// 可选：每节点 token 文件，每行 `node_name:token`，与 master token 并存
+    #[arg(long)]
+    node_tokens_file: Option<PathBuf>,
 
     #[arg(long, default_value = "/var/lib/eshield-hub/policies.redb")]
     store_path: PathBuf,
@@ -66,6 +71,33 @@ struct Args {
     threat_feed_ttl_s: u64,
 }
 
+/// 解析每节点 token 文件：每行 `node_name:token`，支持 # 注释与空行。
+fn load_node_tokens(path: &std::path::Path) -> Result<HashMap<String, String>> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("read node tokens file {}", path.display()))?;
+    let mut tokens = HashMap::new();
+    for (idx, line) in content.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (name, token) = line.split_once(':').with_context(|| {
+            format!("{}:{}: expected `node_name:token`", path.display(), idx + 1)
+        })?;
+        let name = name.trim();
+        let token = token.trim();
+        if name.is_empty() || token.is_empty() {
+            bail!(
+                "{}:{}: node_name and token cannot be empty",
+                path.display(),
+                idx + 1
+            );
+        }
+        tokens.insert(name.to_string(), token.to_string());
+    }
+    Ok(tokens)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -81,6 +113,10 @@ async fn main() -> Result<()> {
     if token.is_empty() {
         bail!("--token or ESHIELD_HUB_TOKEN is required");
     }
+    let node_tokens = match &args.node_tokens_file {
+        Some(path) => load_node_tokens(path)?,
+        None => HashMap::new(),
+    };
 
     if let Some(parent) = args.store_path.parent() {
         std::fs::create_dir_all(parent).context("create store directory")?;
@@ -136,7 +172,7 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         store,
         registry: Arc::clone(&registry),
-        auth: HubAuth::new(token),
+        auth: HubAuth::new(token, node_tokens),
         rate_limiter,
         node_timeout_ns: args.node_timeout_s * 1_000_000_000,
     });

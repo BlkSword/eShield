@@ -178,6 +178,42 @@ pub fn match_port_acl_entry(
     }
 }
 
+/// 连接跟踪单步更新结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnTrackStep {
+    pub half_open: u32,
+    pub last_seen_ns: u64,
+    pub drop: bool,
+}
+
+/// 轻量 TCP 半连接计数：SYN 递增、ACK/RST 递减，超阈值返回 drop。
+/// 该函数不依赖 eBPF，可在用户态直接单测。
+#[inline(always)]
+pub fn conn_track_step(
+    half_open: u32,
+    last_seen_ns: u64,
+    now_ns: u64,
+    is_syn: bool,
+    is_ack_or_rst: bool,
+    threshold: u32,
+    window_ns: u64,
+) -> ConnTrackStep {
+    let mut half_open = half_open;
+    if window_ns != 0 && now_ns.saturating_sub(last_seen_ns) > window_ns {
+        half_open = 0;
+    }
+    if is_syn {
+        half_open = half_open.saturating_add(1);
+    } else if is_ack_or_rst {
+        half_open = half_open.saturating_sub(1);
+    }
+    ConnTrackStep {
+        half_open,
+        last_seen_ns: now_ns,
+        drop: half_open > threshold,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +399,31 @@ mod tests {
     #[test]
     fn test_port_acl_match_empty_action() {
         assert_eq!(match_port_acl_entry(6, 80, 6, 80, 80, 0), None);
+    }
+
+    #[test]
+    fn test_conn_track_syn_threshold() {
+        let window = 10_000_000_000u64;
+        let (a, b) = (1_000_000_000u64, 2_000_000_000u64);
+        let s1 = conn_track_step(0, 0, a, true, false, 2, window);
+        assert_eq!(s1.half_open, 1);
+        assert!(!s1.drop);
+        let s2 = conn_track_step(s1.half_open, s1.last_seen_ns, b, true, false, 2, window);
+        assert_eq!(s2.half_open, 2);
+        assert!(!s2.drop);
+        let s3 = conn_track_step(s2.half_open, s2.last_seen_ns, b, true, false, 2, window);
+        assert_eq!(s3.half_open, 3);
+        assert!(s3.drop);
+    }
+
+    #[test]
+    fn test_conn_track_ack_reduces_and_window_resets() {
+        let window = 10_000_000_000u64;
+        let s = conn_track_step(3, 1_000_000_000, 2_000_000_000, false, true, 2, window);
+        assert_eq!(s.half_open, 2);
+        // 超出窗口后重新从 0 开始计数
+        let reset = conn_track_step(9, 1_000_000_000, 20_000_000_000, true, false, 2, window);
+        assert_eq!(reset.half_open, 1);
+        assert!(!reset.drop);
     }
 }

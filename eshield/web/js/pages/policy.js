@@ -18,6 +18,7 @@ const MODULE_PATCH_MAP = {
   geoip: 'geoip_enabled',
   tcp_reset: 'tcp_reset_on_drop',
   trust_score: 'trust_enabled',
+  conn_track: 'conn_track_enabled',
 };
 
 /* rate_limit / port_rate_limit / adaptive：参数表单模块，"保存"时提交完整子对象（含当前 enabled） */
@@ -37,6 +38,7 @@ const CONFIG_ENABLED = {
   geoip: c => !!c.geoip_enabled,
   tcp_reset: c => !!c.tcp_reset_on_drop,
   trust_score: c => !!c.trust_enabled,
+  conn_track: c => !!c.conn_track_enabled,
   danger_signal: c => (c.danger_level || 0) > 0,
   port_acl: c => (c.port_acl || []).length > 0,
 };
@@ -52,6 +54,7 @@ const PROJECT_MODULES = [
   { id: 'geoip', name: 'GeoIP 地区封禁' },
   { id: 'tcp_reset', name: 'TCP RST 回包' },
   { id: 'port_acl', name: '端口 ACL' },
+  { id: 'conn_track', name: '连接跟踪 / CC 防御' },
 ];
 
 const DANGER_TEXT = ['L0 · 平稳', 'L1 · 警戒', 'L2 · 危险'];

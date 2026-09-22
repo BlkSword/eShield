@@ -1013,6 +1013,7 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
                         acc.udp_flood_blocked += v.udp_flood_blocked;
                         acc.icmp_flood_blocked += v.icmp_flood_blocked;
                         acc.geoip_blocked += v.geoip_blocked;
+                        acc.conn_track_blocked += v.conn_track_blocked;
                         acc.blacklist_blocked += v.blacklist_blocked;
                         acc.tcp_rst_sent += v.tcp_rst_sent;
                         acc.tcp_rst_fail += v.tcp_rst_fail;
@@ -1059,6 +1060,9 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats
             .geoip_blocked
             .store(acc.geoip_blocked, Ordering::Relaxed);
+        stats
+            .conn_track_blocked
+            .store(acc.conn_track_blocked, Ordering::Relaxed);
         stats
             .blacklist_blocked
             .store(acc.blacklist_blocked, Ordering::Relaxed);

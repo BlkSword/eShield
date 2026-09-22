@@ -719,4 +719,55 @@ wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
 rm -f /var/lib/eshield/rules.redb /tmp/geoip_allow.csv
 
+echo "=== Test 13: optional connection tracking should block SYN flood, keep ICMP ==="
+cat > "$mktemp_cfg" <<'TOML'
+interface = "veth-server"
+log_level = "info"
+whitelist = ["10.0.0.1/32"]
+blacklist = []
+
+[rate_limit]
+enabled = false
+
+[syn_proxy]
+enabled = false
+
+[l7_scan]
+enabled = false
+
+[conn_track]
+enabled = true
+threshold = 2
+window_ms = 5000
+TOML
+
+ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
+ESHIELD_PID=$!
+sleep 2
+
+# 3 个未完成握手的 SYN，阈值 2，应触发连接跟踪 DROP
+ip netns exec eshield-client hping3 -S -p 80 -c 3 -i u10000 10.0.0.1 >/dev/null 2>&1 || true
+sleep 0.5
+
+CT_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+if ! echo "$CT_STATS" | grep -q '"conn_track_blocked":[1-9]'; then
+    echo "FAIL: conn_track did not block half-open SYN flood (stats: $CT_STATS)"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+# ICMP 不属于 TCP，连接跟踪不应误伤
+if ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
+    echo "PASS: conn_track blocked half-open SYNs, ICMP unaffected"
+else
+    echo "FAIL: conn_track blocked non-TCP traffic"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+
+kill $ESHIELD_PID 2>/dev/null || true
+wait $ESHIELD_PID 2>/dev/null || true
+sleep 1
+rm -f /var/lib/eshield/rules.redb
+
 echo "=== All Phase 1+2+3 integration tests passed ==="
