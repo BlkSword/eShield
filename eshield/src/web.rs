@@ -1367,6 +1367,11 @@ static STATIC_ASSETS: &[(&str, &str, &[u8])] = &[
         MIME_CSS,
         include_bytes!("../web/css/pages.css"),
     ),
+    (
+        "css/refactor.css",
+        MIME_CSS,
+        include_bytes!("../web/css/refactor.css"),
+    ),
     ("js/main.js", MIME_JS, include_bytes!("../web/js/main.js")),
     ("js/api.js", MIME_JS, include_bytes!("../web/js/api.js")),
     ("js/store.js", MIME_JS, include_bytes!("../web/js/store.js")),

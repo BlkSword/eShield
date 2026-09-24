@@ -16,18 +16,40 @@ export const sub = () => {
 };
 
 const KPIS = [
-  { key: 'pps', label: '实时速率', icon: 'activity', tone: '--accent', unit: 'pps',
-    get: s => s.current_pps, sub: s => `丢弃 ${fmtInt(s.current_dps)} pps`, spark: 'pps' },
-  { key: 'dropped', label: '总拦截', icon: 'ban', tone: '--danger', cn: true,
-    get: s => s.total_dropped, sub: s => `占总流量 ${s.total_packets ? (s.total_dropped / s.total_packets * 100).toFixed(2) : '0.00'}%`, spark: 'dps' },
-  { key: 'blacklist', label: '黑名单拦截', icon: 'shieldCheck', tone: '--violet', cn: true,
-    get: s => s.blacklist_blocked, sub: () => '动态封禁命中', spark: 'blacklist_blocked', module: null },
-  { key: 'rate', label: '速率限制', icon: 'gauge', tone: '--warning', cn: true,
-    get: s => s.rate_limited, sub: (s, c) => c.rate_limit?.enabled ? `阈值 ${fmtInt(c.rate_limit.threshold)} 包/窗口` : '未启用', spark: 'rate_limited', module: (s, c) => c.rate_limit?.enabled },
-  { key: 'syn', label: 'SYN Flood 拦截', icon: 'waves', tone: '--info', cn: true,
-    get: s => s.syn_flood_blocked, sub: (s, c) => c.syn_proxy_enabled ? 'Cookie 代理运行中' : '基础检测运行中', spark: 'syn_flood_blocked', module: (s, c) => c.syn_proxy_enabled },
-  { key: 'l7', label: 'L7 / 其他防御', icon: 'layers', tone: '--success', cn: true,
-    get: s => s.l7_blocked + s.geoip_blocked + s.adaptive_blocked, sub: () => 'L7 指纹 · GeoIP · 自适应', spark: 'other' },
+  { key: 'pps', label: '实时 PPS', tone: '--accent', unit: 'pps',
+    get: s => s.current_pps, sub: s => `总包 ${fmtCn(s.total_packets)}`, spark: 'pps' },
+  { key: 'dps', label: '实时 DPS', tone: '--danger', unit: 'pps',
+    get: s => s.current_dps, sub: s => `总拦截 ${fmtCn(s.total_dropped)}`, spark: 'dps' },
+  { key: 'passed', label: '总放行', tone: '--success', cn: true,
+    get: s => s.total_passed, sub: s => `占总量 ${s.total_packets ? (s.total_passed / s.total_packets * 100).toFixed(2) : '0.00'}%` },
+  { key: 'dropped', label: '总拦截', tone: '--danger', cn: true,
+    get: s => s.total_dropped, sub: s => `拦截率 ${s.total_packets ? (s.total_dropped / s.total_packets * 100).toFixed(2) : '0.00'}%` },
+  { key: 'blacklist', label: '黑名单拦截', tone: '--violet', cn: true,
+    get: s => s.blacklist_blocked, sub: () => '动态封禁命中', spark: 'blacklist_blocked' },
+  { key: 'rate', label: '速率限制', tone: '--warning', cn: true,
+    get: s => s.rate_limited, sub: (s, c) => c.rate_limit?.enabled ? `阈值 ${fmtCn(c.rate_limit.threshold)}` : '未启用', spark: 'rate_limited', module: (s, c) => c.rate_limit?.enabled },
+  { key: 'syn', label: 'SYN Flood', tone: '--info', cn: true,
+    get: s => s.syn_flood_blocked, sub: (s, c) => c.syn_proxy_enabled ? 'Cookie 代理运行中' : '基础检测运行中', spark: 'syn_flood_blocked' },
+  { key: 'udp', label: 'UDP Flood', tone: '--warning', cn: true,
+    get: s => s.udp_flood_blocked, sub: () => 'per-IP / per-port', spark: 'udp_flood_blocked' },
+  { key: 'icmp', label: 'ICMP Flood', tone: '--warning', cn: true,
+    get: s => s.icmp_flood_blocked, sub: () => '回显 / 时间戳', spark: 'icmp_flood_blocked' },
+  { key: 'l7', label: 'L7 指纹', tone: '--success', cn: true,
+    get: s => s.l7_blocked, sub: () => '应用层特征匹配', spark: 'l7_blocked' },
+  { key: 'geoip', label: 'GeoIP 拦截', tone: '--info', cn: true,
+    get: s => s.geoip_blocked, sub: () => '地区 / ASN', spark: 'geoip_blocked' },
+  { key: 'adaptive', label: '自适应拦截', tone: '--violet', cn: true,
+    get: s => s.adaptive_blocked, sub: () => 'Adaptive Engine', spark: 'adaptive_blocked' },
+  { key: 'conn_track', label: '连接跟踪拦截', tone: '--danger', cn: true,
+    get: s => s.conn_track_blocked || 0, sub: (s, c) => c.conn_track_enabled ? 'CC / 半连接' : '模块未启用' },
+  { key: 'rst', label: 'TCP RST 回包', tone: '--success', cn: true,
+    get: s => s.tcp_rst_sent || 0, sub: s => `失败 ${fmtCn(s.tcp_rst_fail || 0)}` },
+  { key: 'trust_good', label: '可信 IP', tone: '--success', cn: true,
+    get: s => s.trust_trusted || 0, sub: () => 'Trust Score 高信誉' },
+  { key: 'trust_sus', label: '可疑 / 恶意', tone: '--danger', cn: true,
+    get: s => (s.trust_suspicious || 0) + (s.trust_malicious || 0), sub: s => `可疑 ${fmtCn(s.trust_suspicious || 0)} · 恶意 ${fmtCn(s.trust_malicious || 0)}` },
+  { key: 'danger', label: '危险等级', tone: '--warning', cn: false,
+    get: s => s.danger_level || 0, sub: () => 'Danger Signal', fmt: v => ['L0 平稳', 'L1 警戒', 'L2 危险'][Math.min(v, 2)] },
 ];
 
 const TREND_FIELDS = [
@@ -170,14 +192,24 @@ export function mount(el) {
     KPIS.forEach(k => {
       const card = $(`#ovKpi [data-kpi="${k.key}"]`);
       if (!card) return;
-      const val = k.get(stats);
+      const raw = k.get(stats);
+      const val = k.fmt ? k.fmt(raw) : raw;
       const valEl = card.querySelector('[data-kpi-value]');
-      if (first) countUp(valEl, val, k.cn ? fmtCn : fmtInt);   // 数字滚动仅首次
-      else valEl.textContent = k.cn ? fmtCn(val) : fmtInt(val);
+      if (k.fmt) {
+        valEl.textContent = val;
+      } else if (first) {
+        countUp(valEl, val, k.cn ? fmtCn : fmtInt);   // 数字滚动仅首次
+      } else {
+        valEl.textContent = k.cn ? fmtCn(val) : fmtInt(val);
+      }
       card.querySelector('[data-kpi-sub]').textContent = k.sub(stats, config);
       const dot = card.querySelector('[data-kpi-dot]');
       if (dot && k.module) dot.className = `status-dot ${k.module(stats, config) ? 'on' : 'off'}`;
-      card.querySelector('[data-kpi-spark]').innerHTML = sparkline(spark[k.spark], cssVar(k.tone));
+      const sparkEl = card.querySelector('[data-kpi-spark]');
+      if (sparkEl) {
+        const data = k.spark ? spark[k.spark] : null;
+        sparkEl.innerHTML = data ? sparkline(data, cssVar(k.tone)) : '';
+      }
     });
     kpiFirstRender = false;
   }

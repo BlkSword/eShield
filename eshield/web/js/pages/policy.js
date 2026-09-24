@@ -6,7 +6,7 @@ import { toast, skeleton, emptyState, errorState, openDrawer, closeDrawer } from
 import { icon } from '../icons.js';
 
 export const id = 'policy';
-export const title = '防护策略';
+export const title = '防护模块';
 export const sub = '全局模块开关与参数 · 防护项目分组';
 
 /* 模块 id → PATCH /api/config 顶层开关字段；在列的模块为 switch-only，改动立即 PATCH */

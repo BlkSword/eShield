@@ -1,6 +1,5 @@
-/* 控制台入口：主题、侧边栏、头部态势条、SSE 连接管理、全局快捷键、路由启动。 */
+/* 控制台入口：文本导航、头部态势、SSE、全局搜索与路由。 */
 import { $ } from './format.js';
-import { icon } from './icons.js';
 import { store } from './store.js';
 import { apiGet } from './api.js';
 import { toast } from './ui.js';
@@ -18,49 +17,31 @@ import * as security from './pages/security.js';
 import * as cluster from './pages/cluster.js';
 import * as settings from './pages/settings.js';
 
-/* ================= 主题 ================= */
-const rootEl = document.documentElement;
-function applyTheme(t) {
-  rootEl.setAttribute('data-theme', t);
-  localStorage.setItem('eshield-theme', t);
-  store.set('theme', t);
-}
-applyTheme(localStorage.getItem('eshield-theme') || 'dark');
-$('#themeBtn').addEventListener('click', () => {
-  applyTheme(rootEl.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-  refreshAllCharts();
-});
-
-/* ================= 侧边栏 ================= */
+/* ================= 文本导航 ================= */
 const NAV = [
   { group: '监控', items: [
-    { id: 'overview', label: '总览', icon: 'dashboard' },
-    { id: 'attacks', label: '攻击事件', icon: 'zap' },
-    { id: 'packets', label: '包日志', icon: 'terminal' },
-    { id: 'audit', label: '审计日志', icon: 'fileText' },
+    { id: 'overview', label: '总览' },
+    { id: 'attacks', label: '攻击事件' },
+    { id: 'packets', label: '实时流量' },
+    { id: 'audit', label: '审计日志' },
   ]},
-  { group: '防护', items: [
-    { id: 'policy', label: '防护策略', icon: 'shield' },
-    { id: 'rules', label: '规则中心', icon: 'listChecks' },
-    { id: 'security', label: '安全运营', icon: 'crosshair' },
+  { group: '策略', items: [
+    { id: 'policy', label: '防护模块' },
+    { id: 'rules', label: '防护规则' },
+    { id: 'security', label: '安全运营' },
   ]},
   { group: '系统', items: [
-    { id: 'cluster', label: '集群节点', icon: 'network' },
-    { id: 'settings', label: '设置', icon: 'settings' },
+    { id: 'cluster', label: '集群管理' },
+    { id: 'settings', label: '系统设置' },
   ]},
 ];
-$('#logoMark').innerHTML = icon('shieldCheck', 20);
 $('#nav').innerHTML = NAV.map(g => `
   <div class="nav-group-label">${g.group}</div>
-  ${g.items.map(it => `<button class="nav-item" data-nav="${it.id}">${icon(it.icon)}<span class="nav-label">${it.label}</span></button>`).join('')}
+  ${g.items.map(it => `<button class="nav-item" data-nav="${it.id}"><span class="nav-label">${it.label}</span></button>`).join('')}
 `).join('');
 $('#nav').addEventListener('click', e => {
   const btn = e.target.closest('[data-nav]');
   if (btn) navigate(btn.dataset.nav);
-});
-$('#collapseBtn').addEventListener('click', () => {
-  $('#sidebar').classList.toggle('collapsed');
-  setTimeout(resizeAllCharts, 280);
 });
 $('#versionText').textContent = 'v' + (window.__INITIAL_CONFIG__?.version || '?');
 
@@ -75,6 +56,7 @@ const DANGER_LEVELS = [
   { cls: 'l1', text: '危险等级 L1 · 警戒' },
   { cls: 'l2', text: '危险等级 L2 · 危险' },
 ];
+let cfg = window.__INITIAL_CONFIG__ || {};
 function renderDanger(level) {
   const lv = DANGER_LEVELS[Math.min(level, 2)];
   const pill = $('#dangerPill');
@@ -85,8 +67,12 @@ function renderDanger(level) {
     : `${cfg?.interface || '—'} · DRV_MODE`;
 }
 
-let cfg = window.__INITIAL_CONFIG__ || {};
-
+function fmtPps(n) {
+  n = Number(n || 0);
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
 async function pollStats() {
   try {
     const stats = await apiGet('/api/stats');
@@ -97,28 +83,20 @@ async function pollStats() {
     $('#hdrDps').classList.toggle('hot', (stats.current_dps || 0) > 20000);
   } catch { /* 网络抖动时保持旧状态 */ }
 }
-
-/* 头部 PPS 格式化：≥1 万显示 X.Xk */
-function fmtPps(n) {
-  n = Number(n || 0);
-  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-  if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
-  return String(n);
-}
-
 apiGet('/api/config').then(c => {
   cfg = c;
+  store.set('config', c);
   $('#xdpMeta').textContent = `${c.interface || '—'} · DRV_MODE`;
   $('#xdpName').textContent = 'XDP 程序已挂载';
 }).catch(() => {});
 pollStats();
 setInterval(pollStats, 5000);
 
-/* SSE：审计事件流，全局单连接，页面通过 store.on('audit') 订阅 */
+/* ================= SSE 审计流 ================= */
 function renderSse(status) {
-  const dot = $('#sseDot'), label = $('#sseLabel');
-  dot.className = 'live-dot' + (status === 'connected' ? ' on' : status === 'error' ? ' err' : '');
+  const label = $('#sseLabel');
   label.textContent = status === 'connected' ? '实时' : status === 'error' ? '重连中' : '连接中';
+  label.parentElement.classList.toggle('err', status === 'error');
 }
 store.on('sse', renderSse);
 function connectSse() {
@@ -149,9 +127,11 @@ $('#globalSearch').addEventListener('keydown', e => {
   e.target.blur();
 });
 
-/* ================= 启动 ================= */
+/* 跟随系统主题：切换时重绘图表 */
+const mq = window.matchMedia('(prefers-color-scheme: light)');
+if (mq.addEventListener) mq.addEventListener('change', () => refreshAllCharts());
+
 window.addEventListener('resize', resizeAllCharts);
 startRouter();
 
-/* 供页面使用的共享操作 */
 export { openIpDrawer, toast };

@@ -1,55 +1,37 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>eShield 控制台 · 防御态势中心</title>
+<title>eShield 控制台</title>
 <link rel="stylesheet" href="/static/css/tokens.css">
 <link rel="stylesheet" href="/static/css/base.css">
 <link rel="stylesheet" href="/static/css/components.css">
 <link rel="stylesheet" href="/static/css/pages.css">
+<link rel="stylesheet" href="/static/css/refactor.css">
 <script>window.__INITIAL_CONFIG__ = __CONFIG_JSON__;</script>
 <script src="/static/echarts.min.js"></script>
 </head>
 <body>
-
-<!-- 背景装饰：网格 + 顶部光晕 -->
-<div class="bg-grid"></div>
-<div class="bg-halo"></div>
-
 <div class="app">
   <aside class="sidebar" id="sidebar">
     <div class="logo">
-      <div class="logo-mark" id="logoMark"></div>
       <div class="logo-text">
         <div class="logo-name">eShield</div>
-        <div class="logo-sub">网络清洗盾 · 防御态势中心</div>
+        <div class="logo-sub">主机防护控制台</div>
       </div>
       <span class="logo-ver" id="versionText">v—</span>
     </div>
-
     <nav class="nav" id="nav"></nav>
-
     <div class="sidebar-foot">
       <div class="xdp-status">
-        <span class="pulse-dot on" id="xdpDot"></span>
         <div class="xdp-info">
           <div class="xdp-name" id="xdpName">XDP 程序已挂载</div>
-          <div class="xdp-meta" id="xdpMeta">— · 加载中</div>
+          <div class="xdp-meta" id="xdpMeta">—</div>
         </div>
-      </div>
-      <div class="foot-btns">
-        <button class="foot-btn" id="collapseBtn" title="折叠/展开侧边栏">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
-        </button>
-        <button class="foot-btn" id="themeBtn" title="切换主题">
-          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4l1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
-          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
-        </button>
       </div>
     </div>
   </aside>
-
   <div class="main">
     <header class="header">
       <div class="header-left">
@@ -58,31 +40,20 @@
       </div>
       <div class="header-spacer"></div>
       <div class="search-box">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input id="globalSearch" type="text" placeholder="搜索 IP 情报…" autocomplete="off" spellcheck="false">
+        <input id="globalSearch" type="text" placeholder="搜索 IP / 规则 / 事件" autocomplete="off" spellcheck="false">
         <kbd>/</kbd>
       </div>
-      <div class="danger-pill l0" id="dangerPill"><span class="dot"></span><span id="dangerText">危险等级 L0 · 平稳</span></div>
-      <div class="stat-chip">
-        <span class="chip-key">实时 PPS</span>
-        <span class="chip-val num" id="hdrPps">0</span>
-      </div>
-      <div class="stat-chip">
-        <span class="chip-key">拦截</span>
-        <span class="chip-val num" id="hdrDps">0</span>
-      </div>
-      <div class="live-chip" id="sseChip">
-        <span class="live-dot on" id="sseDot"></span><span id="sseLabel">连接中</span>
-      </div>
+      <div class="danger-pill l0" id="dangerPill"><span id="dangerText">危险等级 L0 · 平稳</span></div>
+      <div class="stat-chip"><span class="chip-key">PPS</span><span class="chip-val num" id="hdrPps">0</span></div>
+      <div class="stat-chip"><span class="chip-key">DROP</span><span class="chip-val num" id="hdrDps">0</span></div>
+      <div class="live-chip" id="sseChip"><span id="sseLabel">连接中</span></div>
     </header>
     <main class="content" id="page"></main>
   </div>
 </div>
-
 <div class="drawer-mask" id="drawerMask"></div>
 <aside class="drawer" id="drawer"></aside>
 <div class="toast-wrap" id="toastWrap"></div>
-
 <script type="module" src="/static/js/main.js"></script>
 </body>
 </html>
