@@ -26,12 +26,27 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
         Some(entry) => {
             // BLOCK_PERMANENT 表示永久封禁
             if entry.blocked_until_ns == BLOCK_PERMANENT || entry.blocked_until_ns > now_ns {
-                // 命中黑名单时递增 hit_count，供持久化/审计使用。
-                // Top 攻击源由主流程 drop_packet 统一维护，避免重复计数。
-                let mut updated = *entry;
-                updated.hit_count = updated.hit_count.saturating_add(1);
-                let _ = BLACKLIST.insert(src, &updated, 0);
-                bump_blacklist_hit_gen();
+                // 命中黑名单时按 1/16 采样写 hit_count，攻击期避免每包写 BLACKLIST。
+                // 采样命中时一次性补 16，近似保持计数；Top 攻击源由主流程维护。
+                let mut due = true;
+                let mut sampled = false;
+                unsafe {
+                    if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                        sampled = true;
+                        (*stats).blacklist_hit_sample =
+                            (*stats).blacklist_hit_sample.wrapping_add(1);
+                        due = (*stats).blacklist_hit_sample & 0xf == 0;
+                    }
+                }
+                if due {
+                    let mut updated = *entry;
+                    updated.hit_count =
+                        updated
+                            .hit_count
+                            .saturating_add(if sampled { 16 } else { 1 });
+                    let _ = BLACKLIST.insert(src, &updated, 0);
+                    bump_blacklist_hit_gen();
+                }
                 return true;
             }
         }

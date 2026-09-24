@@ -4,14 +4,17 @@
 //! - `trust_drop`：DROP 事件快速减分，`trust -= trust / 3`
 //! - `trust_factor`：返回速率阈值调制因子（定点放大 1000 倍）
 
-use crate::maps::TRUST_MAP;
+use crate::maps::{GLOBAL_STATS, TRUST_MAP};
 use eshield_common::{
-    IpKey, TrustEntry, TRUST_ADD_DIVISOR, TRUST_DEFAULT, TRUST_MAX, TRUST_SUB_DIVISOR,
+    IpKey, TrustEntry, TRUST_ADD_DIVISOR, TRUST_DEFAULT, TRUST_MAX, TRUST_MIN, TRUST_SUB_DIVISOR,
 };
 
 /// PASS 事件：缓慢增加信任分。
-#[inline(always)]
-pub fn trust_pass(src: &IpKey, now_ns: u64, add_divisor: u32) {
+/// `weight` 为采样权重：调用者每 N 个 PASS 调用一次，这里按 N 补偿，
+/// 避免每包写 TRUST_MAP。标记 inline(never) 以控制 verifier 状态规模。
+#[inline(never)]
+pub fn trust_pass(src: &IpKey, now_ns: u64, add_divisor: u32, weight: u32) {
+    let weight = weight.max(1);
     let mut entry = match unsafe { TRUST_MAP.get(src) } {
         Some(e) => *e,
         None => TrustEntry {
@@ -19,21 +22,23 @@ pub fn trust_pass(src: &IpKey, now_ns: u64, add_divisor: u32) {
             ..TrustEntry::default()
         },
     };
-    entry.pass_count = entry.pass_count.saturating_add(1);
+    entry.pass_count = entry.pass_count.saturating_add(weight);
     let divisor = if add_divisor == 0 {
         TRUST_ADD_DIVISOR
     } else {
         add_divisor
     };
     let delta = TRUST_MAX.saturating_sub(entry.trust_score) / divisor;
-    entry.trust_score = (entry.trust_score + delta).min(TRUST_MAX);
+    entry.trust_score = (entry.trust_score + delta.saturating_mul(weight)).min(TRUST_MAX);
     entry.last_update_ns = now_ns;
     entry.level = trust_level(entry.trust_score);
     let _ = TRUST_MAP.insert(src, &entry, 0);
 }
 
 /// DROP 事件：快速降低信任分。
-#[inline(always)]
+/// 已归零的源在攻击期占多数，按 1/16 采样写入并补偿 drop_count，
+/// 避免每个被丢弃的包都写 TRUST_MAP。
+#[inline(never)]
 pub fn trust_drop(src: &IpKey, now_ns: u64, sub_divisor: u32) {
     let mut entry = match unsafe { TRUST_MAP.get(src) } {
         Some(e) => *e,
@@ -53,6 +58,21 @@ pub fn trust_drop(src: &IpKey, now_ns: u64, sub_divisor: u32) {
         .saturating_sub(entry.trust_score / divisor);
     entry.last_update_ns = now_ns;
     entry.level = trust_level(entry.trust_score);
+
+    if entry.trust_score == TRUST_MIN {
+        let mut due = true;
+        unsafe {
+            if let Some(stats) = GLOBAL_STATS.get_ptr_mut(0) {
+                (*stats).trust_drop_sample = (*stats).trust_drop_sample.wrapping_add(1);
+                due = (*stats).trust_drop_sample & 0xf == 0;
+            }
+        }
+        if !due {
+            return;
+        }
+        // 补偿跳过的 15 次采样
+        entry.drop_count = entry.drop_count.saturating_add(15);
+    }
     let _ = TRUST_MAP.insert(src, &entry, 0);
 }
 

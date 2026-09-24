@@ -136,7 +136,7 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
 
     if is_whitelisted(&src_key) {
         unsafe { with_stats(|s| s.total_passed += 1) };
-        trust::trust_pass(&src_key, pc.now_ns, pc.trust_add_divisor);
+        trust_pass_sampled(&src_key, pc.now_ns, pc.trust_add_divisor);
         return xdp_action::XDP_PASS;
     }
 
@@ -222,8 +222,24 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
     }
 
     unsafe { with_stats(|s| s.total_passed += 1) };
-    trust::trust_pass(&src_key, pc.now_ns, pc.trust_add_divisor);
+    trust_pass_sampled(&src_key, pc.now_ns, pc.trust_add_divisor);
     xdp_action::XDP_PASS
+}
+
+/// PASS 信任更新采样：每 64 个 PASS 写一次 TRUST_MAP，按 64 倍权重补偿。
+/// 攻击/正常混合流量下显著降低 per-packet map 写放大。
+#[inline(never)]
+fn trust_pass_sampled(src: &IpKey, now_ns: u64, add_divisor: u32) {
+    let mut due = false;
+    unsafe {
+        with_stats(|s| {
+            s.trust_pass_sample = s.trust_pass_sample.wrapping_add(1);
+            due = s.trust_pass_sample & 0x3f == 0;
+        });
+    }
+    if due {
+        trust::trust_pass(src, now_ns, add_divisor, 64);
+    }
 }
 
 /// 安全地获取并修改全局统计。
@@ -236,16 +252,30 @@ unsafe fn with_stats(f: impl FnOnce(&mut GlobalStats)) {
 
 #[inline(never)]
 fn drop_packet(pc: &PacketCtx) -> u32 {
-    if pc.protocol == parser::IPPROTO_TCP {
-        unsafe { with_stats(|s| s.tcp_rst_attempt += 1) };
+    // TOP_ATTACKERS 按 1/16 采样写入，攻击期避免每包写 LRU Hash。
+    let mut due = true;
+    let mut sampled = false;
+    unsafe {
+        with_stats(|s| {
+            if pc.protocol == parser::IPPROTO_TCP {
+                s.tcp_rst_attempt += 1;
+            }
+            sampled = true;
+            s.top_attacker_sample = s.top_attacker_sample.wrapping_add(1);
+            due = s.top_attacker_sample & 0xf == 0;
+        });
     }
     trust::trust_drop(pc.src, pc.now_ns, pc.trust_sub_divisor);
-    // 在 eBPF 数据面统一维护高频攻击源热榜，覆盖所有丢弃路径。
-    // 黑名单命中原来的 TOP_ATTACKERS 写入已移除，避免重复计数。
-    let prev = unsafe { TOP_ATTACKERS.get(pc.src) }.unwrap_or(&0);
-    let next = prev.saturating_add(1);
-    let _ = TOP_ATTACKERS.insert(pc.src, &next, 0);
-    emit_drop_event(pc);
+    if due {
+        let prev = unsafe { TOP_ATTACKERS.get(pc.src) }.unwrap_or(&0);
+        let next = prev.saturating_add(if sampled { 16 } else { 1 });
+        let _ = TOP_ATTACKERS.insert(pc.src, &next, 0);
+    }
+    // 黑名单命中已由 BLACKLIST hit_count/全局统计覆盖，跳过 RingBuf 事件，
+    // 避免持续封禁流量把 RingBuf 写满。
+    if pc.rule_id != rules::BLACKLIST {
+        emit_drop_event(pc);
+    }
     if pc.tcp_reset_on_drop != 0 && pc.protocol == parser::IPPROTO_TCP {
         tcp_reset::reply_tcp_rst(pc.ctx, pc.ip_hdr_len)
     } else {
@@ -346,7 +376,7 @@ fn check_project_policy(pc: &mut PacketCtx) -> u32 {
         project_action::PASS => {
             pc.rule_id = rules::PROJECT_POLICY;
             unsafe { with_stats(|s| s.total_passed += 1) };
-            trust::trust_pass(pc.src, pc.now_ns, pc.trust_add_divisor);
+            trust_pass_sampled(pc.src, pc.now_ns, pc.trust_add_divisor);
             xdp_action::XDP_PASS
         }
         project_action::DROP => {
@@ -472,7 +502,7 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
         let action = syn_cookie::handle_ack(&pcr, ip_ptr, tcp_ptr);
         if action != NO_ACTION {
             unsafe { with_stats(|s| s.total_passed += 1) };
-            trust::trust_pass(pc.src, pc.now_ns, pc.trust_add_divisor);
+            trust_pass_sampled(pc.src, pc.now_ns, pc.trust_add_divisor);
             return action;
         }
         // IPv4 + SYN Proxy 开启时，SYN Flood 检测由 handle_syn 内部完成

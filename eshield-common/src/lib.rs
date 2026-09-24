@@ -235,6 +235,14 @@ pub struct GlobalStats {
     pub blacklist_hit_gen: u64,
     /// 连接跟踪模块拦截计数
     pub conn_track_blocked: u64,
+    /// Trust PASS 采样计数（per-CPU）
+    pub trust_pass_sample: u32,
+    /// Trust DROP 采样计数（per-CPU）
+    pub trust_drop_sample: u32,
+    /// 黑名单命中采样计数（per-CPU）
+    pub blacklist_hit_sample: u32,
+    /// TOP_ATTACKERS 热榜采样计数（per-CPU）
+    pub top_attacker_sample: u32,
 }
 
 /// 配置运行时快照（内嵌到 CONFIG Map）
