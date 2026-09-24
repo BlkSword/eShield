@@ -67,8 +67,8 @@
 | PACKET_SAMPLES | Ring Buffer | — | PacketSample | 16 MB | 采样包日志 |
 | TOP_ATTACKERS | LRU Hash | IpKey | u64 | 256 | 高频攻击源热榜 |
 | COOKIE_SECRETS | Array | u32 | CookieSecret | 1 | SYN Cookie 密钥 |
-| L7_PATTERNS | Array | u32 | L7Pattern | 16 | L7 特征 |
-| PORT_ACL | Array | u32 | PortAclEntry | 128 | 端口/协议 ACL |
+| L7_PATTERNS | Array | u32 | L7Pattern | 8 | L7 特征（内核 7.0 verifier 上限约束） |
+| PORT_ACL | Array | u32 | PortAclEntry | 32 | 端口/协议 ACL（内核 7.0 verifier 上限约束） |
 | PROJECT_POLICY | LRU Hash | ProjectPolicyKey | ProjectPolicy | 8,192 | 防护项目策略（精确 IP 展开） |
 | GEOIP_BLOCKED_V4 | LPM Trie | GeoIpKeyV4 | u8 | 4,096 | GeoIP IPv4 拦截 CIDR |
 | GEOIP_BLOCKED_V6 | LPM Trie | GeoIpKeyV6 | u8 | 4,096 | GeoIP IPv6 拦截 CIDR |

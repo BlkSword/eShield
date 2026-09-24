@@ -220,10 +220,17 @@ fi
 
 # 发送 20 个 SYN 包触发 SYN flood 阈值，源 IP 进入 Cookie 挑战模式
 ip netns exec eshield-client hping3 -S -p 80 -c 20 -i u10000 10.0.0.1 >/dev/null 2>&1 || true
-sleep 0.5
 
 # 通过 API 确认挑战确实触发：syn_flood_blocked 必须 > 0。
-SC_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+# 用户态每 1s 才从 eBPF map 同步一次统计，这里轮询最多 5s，避免读到全零快照。
+SC_STATS=""
+for _ in $(seq 1 10); do
+    SC_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+    if echo "$SC_STATS" | grep -q '"syn_flood_blocked":[1-9]'; then
+        break
+    fi
+    sleep 0.5
+done
 if ! echo "$SC_STATS" | grep -q '"syn_flood_blocked":[1-9]'; then
     echo "FAIL: SYN flood challenge was not triggered (stats: $SC_STATS)"
     kill $ESHIELD_PID 2>/dev/null || true
@@ -753,9 +760,16 @@ sleep 2
 
 # 3 个未完成握手的 SYN，阈值 2，应触发连接跟踪 DROP
 ip netns exec eshield-client hping3 -S -p 80 -c 3 -i u10000 10.0.0.1 >/dev/null 2>&1 || true
-sleep 0.5
 
-CT_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+# 同样轮询等待用户态同步 eBPF 统计。
+CT_STATS=""
+for _ in $(seq 1 10); do
+    CT_STATS=$(ip netns exec eshield-server curl -s --max-time 3 http://127.0.0.1:8720/api/stats || true)
+    if echo "$CT_STATS" | grep -q '"conn_track_blocked":[1-9]'; then
+        break
+    fi
+    sleep 0.5
+done
 if ! echo "$CT_STATS" | grep -q '"conn_track_blocked":[1-9]'; then
     echo "FAIL: conn_track did not block half-open SYN flood (stats: $CT_STATS)"
     kill $ESHIELD_PID 2>/dev/null || true

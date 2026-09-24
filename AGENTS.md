@@ -29,6 +29,9 @@
 - **Rust**：
   - stable：用于用户态（`x86_64-unknown-linux-musl`）。
   - nightly：用于 eBPF（`bpfel-unknown-none`，需要 `rust-src`）。默认使用经验证的 `nightly-2026-07-31`（最新 nightly 的 LLVM 可能与 bpf-linker/内核 verifier 不兼容），可用 `ESHIELD_EBPF_TOOLCHAIN` 覆盖。
+  - `ESHIELD_XDP_MODE=skb|generic`：强制 SKB 模式挂载，用于规避 veth/虚拟网卡上原生 XDP_TX 可能触发的内核问题。
+  - `ESHIELD_TEST_XDP_MODE=skb`：`tests/netns_test.sh` 专用，让所有测试实例继承 SKB 模式。
+  - 内核 7.0 verifier 对复杂 XDP 程序更严格；PORT_ACL 上限 32、L7 模式上限 8 是为了低于 100 万指令处理上限。
 - **构建工具**：LLVM / clang、`bpf-linker`。
 - **注意**：Aya 用户态依赖 Linux API，**无法在 Windows 上直接编译或运行**；代码编辑可以在 Windows 完成，构建和测试必须在 WSL2 / 虚拟机 / 远程 Linux 上执行。
 

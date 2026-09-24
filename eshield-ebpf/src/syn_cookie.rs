@@ -154,7 +154,7 @@ fn syn_challenge(
 
     let cookie = build_cookie_runtime(
         (saddr as u64) | ((daddr as u64) << 32),
-        (sport as u64) | ((dport as u64) << 16) | ((bucket as u64) << 32),
+        (sport as u64) | ((dport as u64) << 16) | (bucket << 32),
         secret_bytes,
         mss_idx,
     );
@@ -223,7 +223,7 @@ pub fn handle_ack(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u3
 
         let computed = build_cookie_runtime(
             (saddr as u64) | ((daddr as u64) << 32),
-            (sport as u64) | ((dport as u64) << 16) | ((bucket as u64) << 32),
+            (sport as u64) | ((dport as u64) << 16) | (bucket << 32),
             secret_bytes,
             mss_idx,
         );
