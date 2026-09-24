@@ -1,7 +1,7 @@
 /* 控制台入口：文本导航、头部态势、SSE、全局搜索与路由。 */
 import { $ } from './format.js';
 import { store } from './store.js';
-import { apiGet } from './api.js';
+import { apiGet, apiPost } from './api.js';
 import { toast } from './ui.js';
 import { refreshAllCharts, resizeAllCharts } from './charts.js';
 import { registerPage, startRouter, navigate } from './router.js';
@@ -111,10 +111,83 @@ function connectSse() {
 renderSse('connecting');
 connectSse();
 
+/* ================= 命令面板 ================= */
+const COMMANDS = [
+  { label: '跳转到 总览', kbd: 'G O', run: () => navigate('overview') },
+  { label: '跳转到 攻击事件', kbd: 'G A', run: () => navigate('attacks') },
+  { label: '跳转到 实时流量', kbd: 'G T', run: () => navigate('packets') },
+  { label: '跳转到 审计日志', kbd: 'G L', run: () => navigate('audit') },
+  { label: '跳转到 防护模块', kbd: 'G P', run: () => navigate('policy') },
+  { label: '跳转到 防护规则', kbd: 'G R', run: () => navigate('rules') },
+  { label: '跳转到 安全运营', kbd: 'G S', run: () => navigate('security') },
+  { label: '跳转到 集群管理', kbd: 'G C', run: () => navigate('cluster') },
+  { label: '跳转到 系统设置', kbd: 'G ,', run: () => navigate('settings') },
+  { label: '聚焦全局搜索', kbd: '/', run: () => $('#globalSearch').focus() },
+  { label: '重载配置文件', kbd: 'R', run: async () => {
+      try { await apiPost('/api/config/reload'); toast('配置已重载', 'ok'); }
+      catch (e) { toast(`重载失败：${e.message}`, 'err'); }
+    } },
+];
+const palette = $('#palette');
+const paletteInput = $('#paletteInput');
+const paletteList = $('#paletteList');
+let paletteItems = COMMANDS.slice();
+let paletteIndex = 0;
+
+function renderPalette(filter) {
+  const q = (filter || '').trim().toLowerCase();
+  paletteItems = COMMANDS.filter(c => !q || c.label.toLowerCase().includes(q));
+  paletteIndex = 0;
+  paletteList.innerHTML = paletteItems.length
+    ? paletteItems.map((c, i) => `<div class="palette-item${i === 0 ? ' active' : ''}" data-index="${i}"><span>${c.label}</span>${c.kbd ? `<span class="kbd">${c.kbd}</span>` : ''}</div>`).join('')
+    : '<div class="palette-item">没有匹配的命令</div>';
+}
+function openPalette() {
+  palette.classList.add('show');
+  paletteInput.value = '';
+  renderPalette('');
+  paletteInput.focus();
+}
+function closePalette() { palette.classList.remove('show'); }
+function runPalette(index) {
+  const cmd = paletteItems[index];
+  if (!cmd) return;
+  closePalette();
+  Promise.resolve(cmd.run()).catch(() => {});
+}
+paletteInput.addEventListener('input', () => renderPalette(paletteInput.value));
+paletteInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closePalette(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteItems.length - 1); }
+  if (e.key === 'ArrowUp') { e.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0); }
+  if (e.key === 'Enter') { e.preventDefault(); runPalette(paletteIndex); return; }
+  paletteList.querySelectorAll('.palette-item').forEach((n, i) => n.classList.toggle('active', i === paletteIndex));
+});
+paletteList.addEventListener('click', e => {
+  const item = e.target.closest('[data-index]');
+  if (item) runPalette(Number(item.dataset.index));
+});
+palette.addEventListener('click', e => { if (e.target === palette) closePalette(); });
+
 /* ================= 全局搜索 / 快捷键 ================= */
+let gPending = false;
 document.addEventListener('keydown', e => {
-  if (e.key === '/' && document.activeElement !== $('#globalSearch')
-      && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault();
+    palette.classList.contains('show') ? closePalette() : openPalette();
+    return;
+  }
+  if (e.key === 'Escape' && palette.classList.contains('show')) { closePalette(); return; }
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  if (gPending) {
+    gPending = false;
+    const map = { o: 'overview', a: 'attacks', t: 'packets', l: 'audit', p: 'policy', r: 'rules', s: 'security', c: 'cluster', ',': 'settings' };
+    if (map[e.key.toLowerCase()]) { e.preventDefault(); navigate(map[e.key.toLowerCase()]); }
+    return;
+  }
+  if (e.key.toLowerCase() === 'g') { gPending = true; setTimeout(() => { gPending = false; }, 1200); return; }
+  if (e.key === '/') {
     e.preventDefault();
     $('#globalSearch').focus();
   }

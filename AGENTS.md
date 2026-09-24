@@ -90,7 +90,7 @@
 Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，无前端构建链，经 `include_str!`/`include_bytes!` 嵌入二进制）：
 
 - `index.html`：应用骨架，`__CONFIG_JSON__` 注入运行时配置；含背景网格/光晕装饰层、XDP 状态栏、顶部 PPS/DPS 实时态势条。
-- `css/`：`tokens.css`（design tokens，暗/亮双主题；`--text-*`/`--bg-*`/`--accent-*` 等旧名称为 JS 引用保留的兼容别名）、`base.css`（外壳：侧边栏/头部态势条）、`components.css`（卡片/表格/表单/抽屉/Toast/KPI/雷达等）、`pages.css`（页面级布局）。
+- `css/`：`tokens.css`（design tokens，暗/亮双主题；`--text-*`/`--bg-*`/`--accent-*` 等旧名称为 JS 引用保留的兼容别名）、`components.css`（外壳/卡片/表格/表单/抽屉/Toast/KPI/模块/命令面板）、`pages.css`（页面级布局与旧模板兼容）。
 - `js/`：`main.js`（入口：主题/侧边栏/SSE/快捷键/危险等级/头部 PPS/DPS 轮询/路由启动）、`api.js`（fetch 封装 + 认证）、`store.js`（状态总线）、`router.js`（hash 路由 + 页面生命周期）、`format.js`（格式化，唯一一份）、`icons.js`（SVG 图标）、`ui.js`（Toast/骨架屏/抽屉等）、`charts.js`（ECharts 主题感知助手）、`ipdrawer.js`（IP 情报抽屉，全站共享）。
 - `js/pages/`：九个页面模块（overview / attacks / packets / audit / policy / rules / security / cluster / settings），每个导出 `id`/`title`/`sub`/`mount(el)→unmount`；总览页含威胁态势雷达（按攻击源散列方位 + 命中数分布，动画连续需保持攻击源签名不变才重建 SVG）。
 - 新增/删除静态文件时，必须同步 `web.rs` 中的 `STATIC_ASSETS` 表。
