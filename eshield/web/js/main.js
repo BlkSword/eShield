@@ -21,17 +21,17 @@ import * as settings from './pages/settings.js';
 const NAV = [
   { group: '监控', items: [
     { id: 'overview', label: '总览' },
-    { id: 'attacks', label: '攻击事件' },
     { id: 'packets', label: '实时流量' },
-    { id: 'audit', label: '审计日志' },
+    { id: 'attacks', label: '攻击事件' },
   ]},
-  { group: '策略', items: [
+  { group: '防护', items: [
     { id: 'policy', label: '防护模块' },
     { id: 'rules', label: '防护规则' },
     { id: 'security', label: '安全运营' },
   ]},
   { group: '系统', items: [
     { id: 'cluster', label: '集群管理' },
+    { id: 'audit', label: '审计日志' },
     { id: 'settings', label: '系统设置' },
   ]},
 ];
@@ -60,11 +60,8 @@ let cfg = window.__INITIAL_CONFIG__ || {};
 function renderDanger(level) {
   const lv = DANGER_LEVELS[Math.min(level, 2)];
   const pill = $('#dangerPill');
-  pill.className = 'danger-pill ' + lv.cls;
+  pill.className = 'pill ' + lv.cls;
   $('#dangerText').textContent = lv.text;
-  $('#xdpMeta').textContent = level > 0
-    ? `${cfg?.interface || '—'} · 防御等级已上调`
-    : `${cfg?.interface || '—'} · DRV_MODE`;
 }
 
 function fmtPps(n) {
@@ -86,8 +83,8 @@ async function pollStats() {
 apiGet('/api/config').then(c => {
   cfg = c;
   store.set('config', c);
-  $('#xdpMeta').textContent = `${c.interface || '—'} · DRV_MODE`;
-  $('#xdpName').textContent = 'XDP 程序已挂载';
+  $('#xdpName').textContent = '已挂载';
+  $('#xdpMeta').textContent = c.interface || '—';
 }).catch(() => {});
 pollStats();
 setInterval(pollStats, 5000);
@@ -182,7 +179,7 @@ document.addEventListener('keydown', e => {
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
   if (gPending) {
     gPending = false;
-    const map = { o: 'overview', a: 'attacks', t: 'packets', l: 'audit', p: 'policy', r: 'rules', s: 'security', c: 'cluster', ',': 'settings' };
+    const map = { o: 'overview', t: 'packets', a: 'attacks', p: 'policy', r: 'rules', s: 'security', c: 'cluster', l: 'audit', ',': 'settings' };
     if (map[e.key.toLowerCase()]) { e.preventDefault(); navigate(map[e.key.toLowerCase()]); }
     return;
   }

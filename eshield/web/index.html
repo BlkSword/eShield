@@ -13,38 +13,31 @@
 <body>
 <div class="app">
   <aside class="sidebar" id="sidebar">
-    <div class="logo">
-      <div class="logo-text">
-        <div class="logo-name">eShield</div>
-        <div class="logo-sub">主机防护控制台</div>
+    <div class="brand">
+      <div class="brand-logo">ES</div>
+      <div>
+        <div class="brand-name">eShield</div>
+        <div class="brand-sub">主机防护控制台</div>
       </div>
-      <span class="logo-ver" id="versionText">v—</span>
     </div>
     <nav class="nav" id="nav"></nav>
     <div class="sidebar-foot">
-      <div class="xdp-status">
-        <div class="xdp-info">
-          <div class="xdp-name" id="xdpName">XDP 程序已挂载</div>
-          <div class="xdp-meta" id="xdpMeta">—</div>
-        </div>
-      </div>
+      <div class="line"><span>版本</span><span id="versionText">v—</span></div>
+      <div class="line"><span>XDP</span><span id="xdpName">—</span></div>
+      <div class="line"><span>接口</span><span id="xdpMeta">—</span></div>
     </div>
   </aside>
   <div class="main">
-    <header class="header">
-      <div class="header-left">
-        <div class="page-title" id="pageTitle">总览</div>
-        <div class="page-sub" id="pageSub"></div>
+    <header class="topbar">
+      <div class="crumb"><strong id="pageTitle">总览</strong><span class="sep">/</span><span id="pageSub"></span></div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-actions">
+        <span class="pill" id="sseChip"><span class="dot"></span><span id="sseLabel">连接中</span></span>
+        <span class="pill" id="dangerPill"><span id="dangerText">危险等级 L0 · 平稳</span></span>
+        <span class="pill">PPS <span class="mono" id="hdrPps">0</span></span>
+        <span class="pill">DROP <span class="mono" id="hdrDps">0</span></span>
+        <span class="search-box"><input id="globalSearch" type="text" placeholder="搜索 IP / 规则" autocomplete="off" spellcheck="false"><kbd>/</kbd></span>
       </div>
-      <div class="header-spacer"></div>
-      <div class="search-box">
-        <input id="globalSearch" type="text" placeholder="搜索 IP / 规则 / 事件" autocomplete="off" spellcheck="false">
-        <kbd>/</kbd>
-      </div>
-      <div class="danger-pill l0" id="dangerPill"><span id="dangerText">危险等级 L0 · 平稳</span></div>
-      <div class="stat-chip"><span class="chip-key">PPS</span><span class="chip-val num" id="hdrPps">0</span></div>
-      <div class="stat-chip"><span class="chip-key">DROP</span><span class="chip-val num" id="hdrDps">0</span></div>
-      <div class="live-chip" id="sseChip"><span id="sseLabel">连接中</span></div>
     </header>
     <main class="content" id="page"></main>
   </div>
@@ -53,7 +46,7 @@
 <aside class="drawer" id="drawer"></aside>
 <div class="toast-wrap" id="toastWrap"></div>
 <div class="palette" id="palette">
-  <input id="paletteInput" type="text" placeholder="输入命令：跳转页面、搜索 IP、重载配置" autocomplete="off">
+  <input id="paletteInput" type="text" placeholder="输入命令：跳转页面、聚焦搜索、重载配置" autocomplete="off">
   <div class="palette-list" id="paletteList"></div>
 </div>
 <script type="module" src="/static/js/main.js"></script>

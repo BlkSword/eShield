@@ -64,43 +64,6 @@ const TREND_FIELDS = [
 ];
 const RANGES = { '15m': 900, '1h': 3600, '6h': 21600, '24h': 86400 };
 
-/* IP 字符串 → 稳定散列（用于雷达方位角） */
-function hashAngle(ip) {
-  let h = 0;
-  for (let i = 0; i < ip.length; i++) h = (h * 31 + ip.charCodeAt(i)) >>> 0;
-  return (h % 3600) / 10;   // 0-360
-}
-
-/* 威胁雷达 SVG：攻击源按散列方位 + 命中数归一化半径分布 */
-function radarSVG(blips) {
-  const cx = 130, cy = 130, R = 104;
-  const rings = [26, 52, 78, 104];
-  const ringStr = rings.map(r => `<circle class="ring${r > 80 ? ' faint' : ''}" cx="${cx}" cy="${cy}" r="${r}"/>`).join('');
-  const axisStr = [0, 45, 90, 135].map(deg => {
-    const a = (deg - 90) * Math.PI / 180;
-    return `<line class="axis" x1="${cx}" y1="${cy}" x2="${cx + Math.cos(a) * R}" y2="${cy + Math.sin(a) * R}"/>`;
-  }).join('');
-  const blipStr = blips.map(b => {
-    const a = (b.ang - 90) * Math.PI / 180;
-    const x = cx + Math.cos(a) * b.d * R, y = cy + Math.sin(a) * b.d * R;
-    const color = b.hot ? cssVar('--danger') : cssVar('--accent');
-    return `<circle class="radar-blip" cx="${x}" cy="${y}" r="${b.hot ? 3.5 : 2.6}" fill="${color}" style="animation-delay:${(b.d * 0.3).toFixed(2)}s"/>`;
-  }).join('');
-  return `<svg class="radar-svg" viewBox="0 0 260 260">
-    <defs>
-      <linearGradient id="radarGrad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0" stop-color="${cssVar('--accent')}" stop-opacity=".30"/>
-        <stop offset=".6" stop-color="${cssVar('--accent')}" stop-opacity=".06"/>
-        <stop offset="1" stop-color="${cssVar('--accent')}" stop-opacity="0"/>
-      </linearGradient>
-    </defs>
-    ${ringStr}${axisStr}
-    <path class="radar-sweep" d="M${cx},${cy} L${cx + R},${cy} A${R},${R} 0 0 1 ${cx - R},${cy} Z"/>
-    ${blipStr}
-    <circle class="radar-center" cx="${cx}" cy="${cy}" r="3"/>
-  </svg>`;
-}
-
 export function mount(el) {
   el.innerHTML = `
     <section class="kpi-grid" id="ovKpi">${KPIS.map(() => `<div class="card kpi-card">${skeleton(96)}</div>`).join('')}</section>
@@ -121,11 +84,10 @@ export function mount(el) {
       </div>
       <div class="card">
         <div class="card-head">
-          <div><div class="card-title"><span class="tick"></span>威胁态势雷达</div><div class="card-sub">TOP 攻击源方位分布</div></div>
-          <div class="card-tools"><span class="tag tag-drop" id="radarCountTag">0 源</span></div>
+          <div><div class="card-title"><span class="tick"></span>防护模块</div><div class="card-sub">当前启用状态</div></div>
+          <div class="card-tools"><span class="tag tag-muted" id="ovModuleCount">—</span></div>
         </div>
-        <div class="radar-wrap" id="ovRadar">${skeleton(220)}</div>
-        <div class="radar-legend"><span><i style="background:${cssVar('--accent')}"></i>活跃攻击源</span><span><i style="background:${cssVar('--danger')}"></i>高危 TOP3</span></div>
+        <div class="card-body" id="ovModules" style="padding-top:4px;padding-bottom:4px">${skeleton(220)}</div>
       </div>
     </section>
     <section class="row-trio">
@@ -162,7 +124,6 @@ export function mount(el) {
   let spark = { pps: [], dps: [], blacklist_blocked: [], rate_limited: [], syn_flood_blocked: [], other: [] };
   let feedLastTs = 0;
   let kpiFirstRender = true;
-  let radarBlips = [];
   const timers = [];
   const charts = [];
 
@@ -235,7 +196,7 @@ export function mount(el) {
       renderKpis();
       donut.merge(); ports.merge();   // 增量合并刷新，避免整图重绘闪烁
       renderAttackers();
-      renderRadar();
+      renderModules();
     } catch (e) {
       if (!stats) $('#ovKpi').innerHTML = `<div class="card" style="grid-column:1/-1">${errorState(e.message)}</div>`;
     }
@@ -323,29 +284,23 @@ export function mount(el) {
   // 初始 range 可能来自 store（攻击事件页联动），同步按钮高亮
   $$('#ovRange button').forEach(x => x.classList.toggle('active', x.dataset.range === range));
 
-  /* ---------- 威胁雷达 ---------- */
-  let radarSig = '';
-  function renderRadar() {
-    const list = (stats?.top_attackers || []).slice(0, 8);
-    const sig = JSON.stringify(list.map(a => a.ip));   // 仅 IP 列表变化时重建，保持扫描动画连续
-    if (sig === radarSig) return;   // 攻击源未变化时保持扫描动画连续
-    radarSig = sig;
-    const box = $('#ovRadar');
-    if (!box) return;
-    if (!list.length) {
-      box.innerHTML = '<div class="empty-state" style="padding:80px 20px"><div class="e-title">暂无攻击源</div><div class="e-sub">当前没有 DROP 记录</div></div>';
-      $('#radarCountTag').textContent = '0 源';
-      return;
-    }
-    const max = Math.max(...list.map(a => a.count), 1);
-    radarBlips = list.map((a, i) => ({
-      ang: hashAngle(a.ip) + (i * 7) % 15 - 7,
-      d: 0.18 + Math.sqrt(a.count / max) * 0.68,
-      hot: i < 3,
-    }));
-    box.innerHTML = radarSVG(radarBlips);
-    const hot = radarBlips.filter(b => b.hot).length;
-    $('#radarCountTag').textContent = `${list.length} 源 · ${hot} 高危`;
+  /* ---------- 防护模块状态 ---------- */
+  function renderModules() {
+    const box = $('#ovModules');
+    if (!box || !config) return;
+    const rows = [
+      ['SYN Cookie 代理', !!config.syn_proxy_enabled],
+      ['速率限制', !!config.rate_limit?.enabled],
+      ['UDP Flood', !!config.udp_flood_enabled],
+      ['ICMP Flood', !!config.icmp_flood_enabled],
+      ['L7 指纹扫描', !!config.l7_scan_enabled],
+      ['GeoIP 地区封禁', !!config.geoip_enabled],
+      ['Trust Score', !!config.trust_enabled],
+      ['连接跟踪 / CC', !!config.conn_track_enabled],
+    ];
+    const enabled = rows.filter(r => r[1]).length;
+    $('#ovModuleCount').textContent = `${enabled} / ${rows.length} 启用`;
+    box.innerHTML = rows.map(([name, on]) => `<div class="status-line"><span class="name">${name}</span><span class="tag ${on ? 'tag-pass' : 'tag-muted'}">${on ? '运行中' : '已关闭'}</span></div>`).join('');
   }
 
   /* ---------- 实时事件流 ---------- */
@@ -461,7 +416,7 @@ export function mount(el) {
   });
 
   /* ---------- 启动 / 卸载 ---------- */
-  apiGet('/api/config').then(c => { config = c; store.set('config', c); if (stats) renderKpis(); }).catch(() => {});
+  apiGet('/api/config').then(c => { config = c; store.set('config', c); if (stats) renderKpis(); renderModules(); }).catch(() => {});
   pollStats();
   loadSeries();
   pollFeed();
