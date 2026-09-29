@@ -1,10 +1,10 @@
 # eShield 路线图（Roadmap）
 
-> 当前版本：**v0.4.5**（开发中）
+> 当前版本：**v0.4.6**（已发布）
 >
 > 已完成：单节点 CC/DDoS 防御 + 分布式 Hub-Node 协同免疫。
 >
-> 当前焦点：**v0.4.5 — 控制台重写与体验收尾**
+> 当前焦点：**v0.4.6 — 内核 7.0 兼容、控制台全量替换与高频写路径优化**
 
 ---
 
@@ -93,6 +93,11 @@
 - [x] port_acl 双重匹配去重；trust 同步降频 5s；adaptive 窗口改用单调时钟
 - [x] GeoIP LPM 容量预警（>=80% 告警）；防护项目网段下限 /24 校验
 - [x] 文档同步（ROADMAP WAF/SYN Cookie/防护项目状态、版本号注释）
+- [x] 可选连接跟踪 / CC 防御：`CONN_TRACK` map，仅 SYN/ACK/RST 访问，默认关闭
+- [x] Hub 每节点 Token：`--node-tokens-file` 与认证节点名强制归属
+- [x] 控制台全量替换：跟随系统主题、纯文字导航、命令面板、全部模块控制
+- [x] 内核 7.0 verifier 兼容：PORT_ACL 32 / L7 8、SKB 模式、固定 nightly 与 bpf-linker
+- [x] 高频写路径采样：Trust、BLACKLIST hit_count、TOP_ATTACKERS、黑名单 RingBuf 抑制
 
 ## 下一阶段：v0.5.0 — L7 增强与规则进化
 

@@ -1,36 +1,54 @@
 # Changelog
 
-## Unreleased (0.4.6)
+## 0.4.6 (2026-09-29)
+
+> **兼容性变更**：为满足 Linux 内核 7.0 verifier 的 100 万指令处理上限，`port_acl` 规则上限由 128 调整为 32，`l7_scan.patterns` 上限由 16 调整为 8；超限配置在 `eshield check` 阶段拒绝。需要更多规则时应拆分配置；哈希匹配方案尚未实现。
+
+### 新增
+
+- **可选连接跟踪 / CC 防御（`[conn_track]`）**：新增 eBPF `CONN_TRACK` LRU Hash，按源统计窗口内未完成握手的半连接数；仅 SYN/ACK/RST 访问 map，普通数据包零额外开销；超过阈值执行 DROP；默认关闭，支持防护项目位图控制；Web 控制台与 Prometheus 新增 `conn_track_blocked` 指标；netns 新增半连接拦截与 ICMP 不误伤用例。
+- **Hub 每节点 Token**：`eshield-hub` 新增 `--node-tokens-file`，每行格式为 `node_name:token`；节点专属 Token 认证后，Hub 强制使用认证节点名记录策略与限流，防止请求体伪造 `node_name`；master token 保持兼容；新增 Hub `/login` 页面与 Dashboard Token 持久化。
+- **控制台全量替换**：浅色优先并跟随系统 `prefers-color-scheme`；纯文字导航；总览 KPI 扩展为 18 项；全部已实现模块的开关与参数集中管理；新增 `Ctrl/Cmd+K` 命令面板与 `g` 系列快捷键；移除威胁雷达、世界地图与装饰性图标；攻击事件、防护规则、实时流量、审计、集群、设置页面统一样式。
+- **内核 7.0 兼容与工具链固定**：固定 `nightly-2026-07-31` 与 `bpf-linker 0.10.4`；新增 `ESHIELD_XDP_MODE=skb|generic` 强制 SKB 通用模式；`xtask`、CI、Docker、release 脚本同步固定工具链。
+- **防护项目数据面落地**：新增 `PROJECT_POLICY` map，按目标 IPv4 + 端口 + 协议匹配；PASS/DROP/DEFEND 在数据面生效；DEFEND 按 `enabled_modules` 位图过滤全局模块；CIDR 展开下限 `/24`，项目上限 8192。
+- **GeoIP allowlist 与 default_action**：新增 `GEOIP_ALLOWED_V4/V6` LPM Trie；支持仅放行 allow 列表、其余丢弃；CSV 解析结果按路径/mtime/大小缓存，reload 时文件未变化直接复用。
+- **按目的端口限速（`[port_rate_limit]`）**：按协议 + 目的端口固定窗口限速，降低换源 IP 绕过 per-IP 限速的风险；超限仅 DROP，不自动加入黑名单；默认关闭。
+- **数据面高频写路径采样**：Trust PASS 更新 1/64 采样并按 64 倍权重补偿；信任分已归零的 DROP 1/16 采样；`BLACKLIST` 命中 `hit_count` 1/16 采样；`TOP_ATTACKERS` 1/16 采样；黑名单命中的 DROP 不再写 RingBuf 事件。
+- **控制面性能优化**：事件批量聚合与加权自适应窗口、时序 VecDeque 环形缓冲、Hub 策略索引与 redb range 增量查询、Hub merge 分批提交、审计文件句柄复用、威胁情报批量封禁、包日志批量写、黑名单新增/命中代数拆分、GeoIP 解析缓存。
 
 ### 修复
 
-- **SYN Cookie 代理恢复（降级式挑战）**：v0.4.2 因 eBPF verifier 兼容问题被临时禁用（`handle_syn`/`handle_ack` 空实现），现恢复为 Katran 式降级挑战——SYN Flood 超限源进入 Cookie 挑战模式（XDP_TX 回 SYN-ACK，伪造源无法通过验证，在 XDP 层被清洗），合法客户端响应 Cookie 后自动解除挑战、后续连接直通内核正常握手；未触发阈值的正常连接始终无感直通。「防护策略」页的 SYN Proxy 开关现在真实生效。
-- **eBPF verifier 兼容性修复（5 类问题，Ubuntu 6.8 kernel 实测验证）**：
-  - 组合栈超限（544 > 512）：主帧瘦身（删除 dst_key，parse 直接写 pc 字段，省 ~72B）、syn cookie 链帧分离与内联优化（is_challenged 内联速率检测，复用 src_key 栈槽）
-  - `pointer arithmetic with <<=`：深层函数不再接收 ctx 入参（LLVM 参数提升把 ctx 展开为 data/data_end 指针，callee prologue 对入参指针做 u32 零扩展被 verifier 拒绝）；ctx 改从 pc 内存读取（verifier 栈追踪保持类型）
-  - 标量内存访问（pc.data 丢失 PTR_TO_PACKET 类型）：回退为 pc.ctx + ptr_at 模式
-  - for-range 循环的 u32 零扩展指令：全部改为 u64 while 循环（port_acl/l7_scan/log_packet_sample）
-  - MSS option 写入越界 1 字节：边界证明改用 ptr_at_mut 返回值传播（防 LLVM 删除存在性检查）
-- 所有 eBPF 循环变量统一为 u64（避免 u32→u64 零扩展指令被 verifier 拒绝）
+- 修复 Danger Signal 采样后未更新 `danger_level` 的问题；用户态现在按采样值与上一等级写入 eBPF `CONFIG` map。
+- 修复自适应引擎滑动窗口内存持续增长问题：窗口改为 `(timestamp, count)` 加权结构并设置硬上限。
+- 修复 Hub 增量分页游标丢失同时间戳分组、限流回填、过期策略清理与 tombstone 删除问题。
+- 修复速率计数器不足一个 tick 时重复累加导致低速率流量误封；`decay_counter` 保留 sub-tick 余量。
+- 移除 SYN/UDP/ICMP Flood 与全局速率限制之间的重复计数。
+- 修复 RingBuf 采样载荷未复制真实 L7 payload、verifier 未释放引用、early return 顺序导致的加载失败。
+- 修复共享结构体 `repr(C)` 隐式 padding 未初始化导致的 eBPF Pod 未定义行为。
+- 修复 Web 前端 `RULE_MAP` 与后端 `rules` 常量不一致（6-10 偏移 1 位、缺少 11/12）。
+- 修复 `web_bind` 缺少 host:port 校验；修复审计文件 `list` 大文件反向读取；修复 timeseries 时间戳与快照逻辑。
+- 修复 Hub `delete_policy` / `merge` / `prune` 全量扫描与策略索引不一致问题。
+- 修复 `blacklist_sync` 覆盖 Hub 策略来源导致 Hub DELETE 后无法解封的问题。
+- 修复 `tests/netns_test.sh` 统计断言时序（改为轮询 stats API）与跨测试 store 污染。
 
 ### 改进
 
-- Trust Score 分布同步由每秒降频为每 5 秒（TRUST_MAP 最多 10 万条，降低全局 Ebpf 锁占用）。
-- **防护项目数据面落地**：新增 `PROJECT_POLICY` map，target_ips 的 CIDR 由控制面展开为精确 IP（下限 /24，`eshield check` 阶段校验）后下发；PASS/DROP 在数据面真实生效（支持 any 端口/协议通配），DEFEND 复用全局防御模块；IPv6 目标暂不匹配（控制面跳过并记录日志）。
-- 移除旧版单文件控制台：`/legacy` 路由、`dashboard.html` 嵌入与 `tests/remote/console_verify.sh` 中对应检查。
-- 删除未使用的 eBPF Map（`RULE_HITS`、`SYN_PROXY_CONN`）；清理 `sync_trust_scores` 中自存自读的 `danger_level` 残留代码。
-- `port_acl.rs` 双重匹配去重（热路径少一次重复判断，统一由 `match_port_acl_entry` 判定）。
+- 移除死配置：`SynProxyConfig.backend_ports/max_conns/conn_timeout_s`、`PortRateLimitConfig.decay_num/decay_den`、`ebpf_debug`。
+- 黑名单新增与命中代数拆分，`blacklist_sync` 空闲期跳过全量 map 扫描；威胁情报 drop feed 改为批量封禁。
+- Hub 增量查询改为 redb `range` 扫描，跳过历史策略行；Hub 策略表按 1000 条分批提交。
+- 审计文件 append 复用句柄，轮转或 inode 变化时自动重开。
+- 控制台登录页与 Hub Dashboard 跟随系统主题；命令面板与快捷键补充。
+- 性能文档更新为 veth 大包实测数据、采样优化说明与物理网卡/小包 pps 未实测的边界。
 
-### 改进
+### 测试
 
-- Trust Score 分布同步由每秒降频为每 5 秒（TRUST_MAP 最多 10 万条，降低全局 Ebpf 锁占用）。
-- 自适应引擎滑动窗口改用 `CLOCK_MONOTONIC`（原 `SystemTime`，避免 NTP 校时导致窗口错乱）。
-- GeoIP LPM Trie 容量预警：IPv4/IPv6 条目达到上限 80% 时输出告警日志。
-- **按目的端口限速（`[port_rate_limit]`）**：按 协议+目的端口 维度限速，防换源 IP 绕过 per-IP 限速；计数为固定滑动窗口（每 tick 重置，避免指数衰减在包间隔 < tick 时失效误伤低速率流量）；超限仅 DROP 不加黑名单；默认关闭。
-- **防护项目 `enabled_modules` 数据面生效**：DEFEND 项目命中后按模块位图过滤全局防御（SYN_FLOOD / UDP_FLOOD / ICMP_FLOOD / RATE_LIMIT / L7_SCAN / GEOIP）；未配置模块视为全开（与旧版本行为一致）。
-- **空表快速跳过**：`RuntimeConfig` 增加 `port_acl_count` / `l7_pattern_count`，空表时数据面跳过 PORT_ACL 128 次与 L7_PATTERNS 16 次循环查询，热路径瘦身。
-- 修复 `config.example.toml` 结构错误：`whitelist`/`blacklist` 误置于 `[audit]` 表之后被 TOML 归入 `audit.whitelist`，导致示例配置无法解析。
-- 文档同步：ROADMAP 标注 WAF/Challenge 已于 v0.3.4 移除、SYN Cookie 与防护项目状态；修正 `config.rs` 中 Hub 配置注释版本号。
+- 单元测试：`cargo test --workspace --exclude eshield-ebpf` 共 57 项通过。
+- netns 集成测试：`ESHIELD_TEST_XDP_MODE=skb bash tests/netns_test.sh` 12 项全部通过（内核 7.0），覆盖黑名单、TCP RST、速率限制、SYN Cookie、UDP/ICMP Flood、L7、SIGHUP、自适应、GeoIP、威胁情报、防护项目、分片与连接跟踪。
+- Hub-Node 集成测试：`ESHIELD_XDP_MODE=skb bash tests/hub_node_test.sh` 8 项全部通过（含每节点 Token）。
+- 冒烟测试：`ESHIELD_XDP_MODE=skb bash tests/full_attack_test.sh` 通过。
+- 静态检查：`cargo fmt --check`、userspace+eBPF clippy（`-D warnings`）通过。
+- README 中英文重写为正式技术文档，补充架构、配置、性能与限制说明。
+
 
 ## 0.4.5 (2026-07-18)
 
