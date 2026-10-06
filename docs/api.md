@@ -1,6 +1,6 @@
 > # eShield REST API 参考
 
-> 版本：v0.4.6
+> 版本：v0.4.7
 
 > **v0.4.5 破坏性变更**：`/api/attack-events` 与 `/api/packets` 返回的 `timestamp_ns` 字段语义由 **eBPF 单调时钟纳秒**（开机起算）改为 **wall-clock Unix 纳秒**（后端统一转换后返回）。此前依赖该字段自行对齐 `CLOCK_MONOTONIC` 的客户端需要改为按 Unix 时间戳处理。
 
@@ -26,18 +26,17 @@ Authorization: Bearer <token>
 | `/api/auth/check` | GET | 登录状态检查 |
 | `/api/auth/reset-token` | POST | 重置访问令牌 |
 | `/` | GET | Web Dashboard（Vue 3 单文件 SPA，`console/` 构建后嵌入 `eshield/web/app.html`） |
-| `/static/*` | GET | 旧版控制台静态资源（保留兼容；新入口为单文件 SPA） |
 | `/api/stats` | GET | 运行统计 |
 | `/api/attack-events` | GET | 攻击事件（DROP），`timestamp_ns` 为 wall-clock Unix 纳秒 |
 | `/api/packets` | GET | 采样包日志，`timestamp_ns` 为 wall-clock Unix 纳秒 |
 | `/api/config` | GET, PATCH | 读取/修改运行时配置 |
 | `/api/config/reload` | POST | 从文件重新加载配置 |
 | `/api/protection-modules` | GET | 防护模块列表与状态 |
-| `/api/blacklist` | POST, DELETE | 封禁/解封 IP |
-| `/api/whitelist` | POST, DELETE | 添加/移除 CIDR 白名单 |
+| `/api/blacklist` | GET, POST, DELETE | 查询实时黑名单 / 封禁 / 解封 IP |
+| `/api/whitelist` | GET, POST, DELETE | 查询 / 添加 / 移除 CIDR 白名单 |
 | `/api/audit` | GET | 审计日志 |
 | `/api/audit/stream` | GET | 审计日志 SSE |
-| `/api/metrics/series` | GET | 时序指标 |
+| `/api/metrics/series` | GET | 时序指标（附 wall-clock `timestamp_ns`，参数 `duration_s`） |
 | `/api/metrics/attacker-series` | GET | 单 IP 时序 |
 | `/api/port-acl` | GET, POST | 端口 ACL |
 | `/api/protection-projects` | GET, POST | 防护项目（v0.4.6 起 PASS/DROP 在数据面生效；target_ips 支持 CIDR，IPv4 下限 /24） |
@@ -101,6 +100,30 @@ Authorization: Bearer <token>
 ### POST /api/config/reload
 
 从磁盘重新加载配置文件。
+
+### GET /api/blacklist
+
+返回当前仍有效的黑名单条目（来自 eBPF `BLACKLIST` 实时表）。
+
+```json
+{
+  "entries": [
+    {"ip": "203.0.113.9", "reason": "黑名单", "origin": "api", "created_ns": 0, "expires_ns": 0, "hits": 9812443}
+  ],
+  "count": 1
+}
+```
+
+### GET /api/whitelist
+
+返回当前白名单 CIDR。
+
+```json
+{
+  "entries": [{"cidr": "10.0.0.0/8", "note": "内网"}],
+  "count": 1
+}
+```
 
 ### POST /api/blacklist
 

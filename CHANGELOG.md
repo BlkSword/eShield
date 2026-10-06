@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.7 (2026-10-06)
+
+> **控制台入口变更**：`/` 与 `/login` 统一提供 Vue 3 单文件 SPA；旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。新 API：`GET /api/blacklist`、`GET /api/whitelist`。
 
 ### 新增
 
