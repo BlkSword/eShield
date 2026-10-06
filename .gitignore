@@ -34,3 +34,7 @@ config.toml
 /docs
 /dist
 AGENTS.md
+
+# Console frontend
+console/node_modules
+console/dist

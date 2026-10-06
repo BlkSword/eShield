@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### 新增
+
+- **控制台重构为 Vue 3 单文件 SPA**：新增 `console/` 前端工程（Vue 3 + TypeScript + Vite + ECharts），构建产物 `eshield/web/app.html` 由 `include_str!` 嵌入二进制；页面覆盖总览、攻击事件、包日志、审计日志、防护模块、访问控制、L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置与登录；支持命令面板、深浅色切换、live/mock 自适应数据源与运行参数热更新。
+
+### 改进
+
+- 控制台 `/` 与 `/login` 改为提供新的单文件 SPA；旧版 `eshield/web/` 静态资源保留在静态资源表中作为回退，不再作为入口。
+
+### 测试与文档
+
+- 新增 `docs/test-report-2026-10.md`：v0.4.6 云内网三节点极限测试报告，含环境、用例数据、评价与未测试项。
+- `docs/benchmark.md` 增加 v0.4.6 云内网实测汇总；`README.md`、`docs/api.md` 同步新版控制台说明。
+
+
 ## 0.4.6 (2026-09-29)
 
 > **兼容性变更**：为满足 Linux 内核 7.0 verifier 的 100 万指令处理上限，`port_acl` 规则上限由 128 调整为 32，`l7_scan.patterns` 上限由 16 调整为 8；超限配置在 `eshield check` 阶段拒绝。需要更多规则时应拆分配置；哈希匹配方案尚未实现。

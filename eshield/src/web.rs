@@ -33,6 +33,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Embedded ECharts library for offline dashboard use.
 const ECHARTS_JS: &[u8] = include_bytes!("echarts.min.js");
 
+/// New console: single-file Vue 3 SPA built from `console/`.
+const APP_HTML: &str = include_str!("../web/app.html");
+
 /// 统一 API 错误响应体：`{ "error": "..." }`。
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -339,8 +342,8 @@ async fn echarts_handler() -> Response {
         .into_response()
 }
 
-async fn login_handler() -> Html<String> {
-    Html(include_str!("login.html").to_string())
+async fn login_handler() -> Response {
+    html_bytes(APP_HTML)
 }
 
 async fn login_api_handler(
@@ -1336,16 +1339,20 @@ async fn attacker_series_handler(
     Json(serde_json::json!({ "ip": q.ip, "series": points }))
 }
 
-const INDEX_HTML: &str = include_str!("../web/index.html");
-
-/// 新版控制台（默认）：`eshield/web/` 下的模块化静态资源。
-async fn index_handler(State(state): State<Arc<WebState>>) -> Html<String> {
-    let config_json = serde_json::to_string(&*state.control.runtime.read().await)
-        .unwrap_or_else(|_| "{}".to_string());
-    Html(INDEX_HTML.replacen("__CONFIG_JSON__", &config_json, 1))
+fn html_bytes(bytes: &'static str) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(bytes))
+        .unwrap()
 }
 
-/// 嵌入的新版控制台静态资源（CSS/JS 模块），保持单二进制、离线可用。
+/// 控制台入口：嵌入的单文件 Vue 3 SPA（`console/` 构建产物）。
+async fn index_handler() -> Response {
+    html_bytes(APP_HTML)
+}
+
+/// 旧版控制台静态资源（保留以兼容/回退），新入口为上面的 SPA。
 static STATIC_ASSETS: &[(&str, &str, &[u8])] = &[
     (
         "css/tokens.css",

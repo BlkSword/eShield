@@ -20,13 +20,13 @@ Authorization: Bearer <token>
 |---|---|---|
 | `/healthz` | GET | 健康检查 |
 | `/ready` | GET | 就绪检查 |
-| `/login` | GET | 控制台登录页 |
+| `/login` | GET | 控制台登录入口（Vue SPA，登录态由 SPA 处理） |
 | `/blocked` | GET | 403 封禁示例页 |
 | `/api/auth/login` | POST | 控制台登录验证 |
 | `/api/auth/check` | GET | 登录状态检查 |
 | `/api/auth/reset-token` | POST | 重置访问令牌 |
-| `/` | GET | Web Dashboard（新版控制台，`eshield/web/` 模块化资源） |
-| `/static/*` | GET | 新版控制台静态资源（CSS/JS ES modules，`include_bytes!` 嵌入二进制） |
+| `/` | GET | Web Dashboard（Vue 3 单文件 SPA，`console/` 构建后嵌入 `eshield/web/app.html`） |
+| `/static/*` | GET | 旧版控制台静态资源（保留兼容；新入口为单文件 SPA） |
 | `/api/stats` | GET | 运行统计 |
 | `/api/attack-events` | GET | 攻击事件（DROP），`timestamp_ns` 为 wall-clock Unix 纳秒 |
 | `/api/packets` | GET | 采样包日志，`timestamp_ns` 为 wall-clock Unix 纳秒 |
