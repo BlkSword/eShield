@@ -88,3 +88,33 @@ packets: 200000, interval: u1
 
 优化后 netns 全部 12 项集成测试、57 项单元测试、eBPF/userspace clippy 均通过，
 内核 7.0 verifier 仍可正常加载。
+
+## 云内网极限测试（v0.4.6，2026-10）
+
+本节汇总 v0.4.6 在云内网三节点环境的实测结果：attack1 / attack2 各 8 vCPU / 32GB，
+defense 128 vCPU / 257GB、eth0 为 virtio_net 32 队列、native XDP（DRV 模式）。
+完整方法、口径与限制见 [test-report-2026-10.md](test-report-2026-10.md)。
+
+| 场景 | 实测结果 |
+|---|---|
+| 单机全 PASS（20M UDP） | total_packets 20,000,037，全部 PASS，无 DROP |
+| 单机全 DROP（20M UDP + 静态黑名单） | total_dropped 20,000,000，blacklist_blocked 20,000,000 |
+| 双机同时 PASS（各 20M） | 处理 39,271,100 / 40,000,000，聚合约 3.14M pps |
+| 双机混合 DROP + PASS（各 20M） | 聚合约 3.08M pps；DROP 侧 19,996,176 全部命中 blacklist_blocked |
+| SYN Flood（trafgen 20M SYN） | syn_flood_blocked 15,767,577，total_passed 217 |
+| UDP Flood（pktgen 20M） | total_dropped 19,998,743，首窗口后由动态黑名单承担 DROP |
+| ICMP Flood（8 路 hping3，8s） | icmp_dropped 12,794,723，total_passed 1,645 |
+| conn_track（8 路 hping3 SYN，8s） | conn_track_blocked 11,779,346，total_passed 198 |
+| L7 扫描（pattern="GET /"） | 负向 POST 不误杀；正向 GET 全部命中 DROP |
+| L7 吞吐（hping3 交替 payload，8s） | l7_blocked 6,399,046，约处理数一半；未命中由测试工具 payload 导致 |
+
+结论：
+
+- v0.4.6 在 virtio_net + native XDP（DRV 模式）下，单机可稳定处理约 1.5–2M pps，
+  双机聚合约 3.1M pps；全量 DROP/PASS、SYN/UDP/ICMP Flood、conn_track 与 L7
+  扫描均按预期生效。
+- defense 为云主机 virtio_net，吞吐受 vNIC 与内网链路限制，不能据此推算物理网卡
+  线速；发送侧约 0.01% 的云内网丢包使绝对 pps 为下限值。
+- 测试中复现的 4 个问题（热加载瞬断、L7/端口 ACL 的 API 上限与 map 容量不一致、
+  Flood 模块计数被黑名单短路掩盖、DELETE 黑名单非幂等）记录在完整报告，建议在
+  v0.4.7 前评估。
