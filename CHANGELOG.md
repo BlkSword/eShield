@@ -5,14 +5,27 @@
 ### 新增
 
 - **控制台重构为 Vue 3 单文件 SPA**：新增 `console/` 前端工程（Vue 3 + TypeScript + Vite + ECharts），构建产物 `eshield/web/app.html` 由 `include_str!` 嵌入二进制；页面覆盖总览、攻击事件、包日志、审计日志、防护模块、访问控制、L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置与登录；支持命令面板、深浅色切换、live/mock 自适应数据源与运行参数热更新。
+- 新增 `GET /api/blacklist` 与 `GET /api/whitelist`，返回实时 eBPF 黑名单与白名单 CIDR。
+- 新增 `console/scripts/mockapi.py` 与 `console/scripts/wiring.mjs`：按真实 API envelope 做前后端接线回归（11 页面 + IP 详情抽屉）。
+
+### 修复
+
+- 对齐控制台与后端 API 契约：统一 `{series}`、`{modules}`、`{events}`、`{entries}`、`{items}`、`{patterns}`、`{projects}` 等响应 envelope，补齐协议号/动作号/规则名/时间戳/payload 映射。
+- 修复前端模块开关 patch 键与 `RuntimeConfigPatch` 不一致的问题，新增按模块 ID 生成 patch 的映射（含 `port_rate_limit`、`adaptive` 对象）。
+- `/api/metrics/series` 新增 wall-clock `timestamp_ns` 字段；前端改用后端参数名 `duration_s`。
+- `/api/l7-patterns` 与 `/api/port-acl` 的上限校验对齐 `MAX_L7_PATTERNS=8` / `MAX_PORT_ACL=32`，`init_l7_patterns_map` 同步按常量清理与写入。
+- `DELETE /api/blacklist` 改为幂等，条目已不存在时不再返回底层 map 错误。
+- IP 详情抽屉接入 `/api/ip-detail` 与 `/api/ip-series`；GeoIP 重载、威胁情报同步、Hub 节点列表分别接入真实接口。
 
 ### 改进
 
-- 控制台 `/` 与 `/login` 改为提供新的单文件 SPA；旧版 `eshield/web/` 静态资源保留在静态资源表中作为回退，不再作为入口。
+- 移除 `web.rs` 中不再使用的 ECharts 与旧版控制台静态资源表；旧版 `eshield/web/{index.html,css,js}` 不再嵌入，musl release 二进制由 9.94MB 回落到 8.71MB。
+- `web.rs` 中攻击事件的规则显示名收敛到 `rule_display_name()`，消除重复 match。
 
 ### 测试与文档
 
 - 新增 `docs/test-report-2026-10.md`：v0.4.6 云内网三节点极限测试报告，含环境、用例数据、评价与未测试项。
+- 新增 `docs/coupling-review.md`：数据面/控制面/Hub/前后端契约的耦合性评估与重构优先级。
 - `docs/benchmark.md` 增加 v0.4.6 云内网实测汇总；`README.md`、`docs/api.md` 同步新版控制台说明。
 
 

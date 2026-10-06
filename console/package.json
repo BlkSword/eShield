@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "build:fast": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:wiring": "node scripts/wiring.mjs"
   },
   "dependencies": {
     "echarts": "^5.5.1",

@@ -24,7 +24,7 @@ onMounted(async () => {
 async function toggle(m: ModuleState, v: boolean) {
   m.enabled = v
   try {
-    await api.patchConfig({ [`${m.id}_enabled`]: v })
+    await api.patchModule(m.id, v)
     toast(`${m.name} 已${v ? '启用' : '停用'}`, '运行时生效，无需重启', v ? 'ok' : 'warn')
   } catch (e) {
     m.enabled = !v

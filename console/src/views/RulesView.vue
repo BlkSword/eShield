@@ -4,24 +4,51 @@ import PanelCard from '../components/PanelCard.vue'
 import TagPill from '../components/TagPill.vue'
 import { api } from '../api/client'
 import { toast } from '../stores/app'
-import { hubNodes } from '../api/mock'
+import { hubNodes as mockHubNodes } from '../api/mock'
 import type { ProtectionProject } from '../api/types'
 
+interface HubNode { name: string; ip: string; version: string; status: string; policies: number; last_seen: string }
 const projects = ref<ProtectionProject[]>([])
+const nodes = ref<HubNode[]>(mockHubNodes)
+const hub = ref({ connected: false, url: '—' })
 const syncing = ref(false)
-onMounted(async () => { projects.value = await api.projects() })
-function sync() {
+
+onMounted(async () => {
+  projects.value = await api.projects()
+  const [status, remote] = await Promise.all([api.hubStatus(), api.hubNodes()])
+  if (status && typeof status === 'object') {
+    hub.value = {
+      connected: !!(status.connected ?? status.enabled ?? status.hub_connected),
+      url: String(status.active_url || status.url || status.hub_url || '—'),
+    }
+  }
+  if (Array.isArray(remote) && remote.length) {
+    nodes.value = remote.map((n: any) => ({
+      name: String(n.node_name ?? n.name ?? '—'),
+      ip: String(n.ip ?? n.address ?? '—'),
+      version: String(n.version ?? '—'),
+      status: String(n.status ?? 'online'),
+      policies: Number(n.policies ?? n.policy_count ?? 0),
+      last_seen: n.last_seen ? String(n.last_seen) : n.last_seen_s ? `${n.last_seen_s}s` : '—',
+    }))
+  }
+})
+async function sync() {
   syncing.value = true
-  toast('规则包同步已触发', '向 Hub 拉取增量策略', 'info')
-  setTimeout(() => (syncing.value = false), 1200)
+  try {
+    await api.hubStatus()
+    toast('规则包同步已触发', '已向 Hub 查询最新策略', 'ok')
+  } catch (e) {
+    toast('同步失败', String(e), 'danger')
+  } finally { syncing.value = false }
 }
 </script>
 
 <template>
   <div class="page">
     <div class="grid grid-4">
-      <div class="kpi ok"><div class="k-label">Hub 连接</div><div class="k-value" style="font-size: 17px">已连接</div><div class="k-foot"><span>wss://hub.eshield.local:9930</span></div></div>
-      <div class="kpi accent"><div class="k-label">在线节点</div><div class="k-value">{{ hubNodes.filter((n) => n.status === 'online').length }}<small>/ {{ hubNodes.length }}</small></div><div class="k-foot"><span>心跳间隔 10s</span></div></div>
+      <div class="kpi" :class="hub.connected ? 'ok' : 'warn'"><div class="k-label">Hub 连接</div><div class="k-value" style="font-size: 17px">{{ hub.connected ? '已连接' : '未连接' }}</div><div class="k-foot"><span>{{ hub.url }}</span></div></div>
+      <div class="kpi accent"><div class="k-label">在线节点</div><div class="k-value">{{ nodes.filter((n) => n.status === 'online').length }}<small>/ {{ nodes.length }}</small></div><div class="k-foot"><span>心跳间隔 10s</span></div></div>
       <div class="kpi violet"><div class="k-label">规则条数</div><div class="k-value">{{ 18 + projects.length }}</div><div class="k-foot"><span>ACL + L7 + 项目</span></div></div>
       <div class="kpi warn"><div class="k-label">待同步</div><div class="k-value">0</div><div class="k-foot"><span>本地策略已上报</span></div></div>
     </div>
@@ -34,7 +61,7 @@ function sync() {
         <table class="dt">
           <thead><tr><th>节点</th><th>地址</th><th>版本</th><th class="col-num">策略数</th><th>最近心跳</th><th>状态</th><th></th></tr></thead>
           <tbody>
-            <tr v-for="n in hubNodes" :key="n.name">
+            <tr v-for="n in nodes" :key="n.name">
               <td class="cell-main">{{ n.name }}</td>
               <td class="mono">{{ n.ip }}</td>
               <td><TagPill :text="'v' + n.version" :kind="n.version === '0.4.6' ? 'tag-ok' : 'tag-warn'" /></td>

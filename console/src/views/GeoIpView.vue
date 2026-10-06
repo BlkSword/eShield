@@ -38,7 +38,21 @@ async function save() {
 }
 async function reload() {
   loading.value = true
-  try { toast('GeoIP CSV 重载已触发', csvPath.value, 'info') } finally { loading.value = false }
+  try {
+    await api.reloadGeoIp()
+    toast('GeoIP CSV 已重载', csvPath.value, 'ok')
+  } catch (e) {
+    toast('重载失败', String(e), 'danger')
+  } finally { loading.value = false }
+}
+
+async function syncIntel() {
+  try {
+    await api.syncThreatIntel()
+    toast('威胁情报同步已触发', '稍后刷新查看结果', 'ok')
+  } catch (e) {
+    toast('同步失败', String(e), 'danger')
+  }
 }
 </script>
 
@@ -80,7 +94,7 @@ async function reload() {
     </div>
 
     <PanelCard title="威胁情报源" sub="定时拉取并写入动态黑名单" flush>
-      <template #actions><button class="btn btn-sm">立即同步</button></template>
+      <template #actions><button class="btn btn-sm" @click="syncIntel()">立即同步</button></template>
       <div class="table-wrap">
         <table class="dt">
           <thead><tr><th>名称</th><th>地址</th><th>间隔</th><th class="col-num">置信度</th><th class="col-num">条目数</th><th>最近同步</th><th>状态</th></tr></thead>

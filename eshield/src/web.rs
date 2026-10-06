@@ -1,6 +1,6 @@
 use axum::{
     body::Body,
-    extract::{ConnectInfo, Path, Query, Request, State},
+    extract::{ConnectInfo, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{sse::Event, Html, IntoResponse, Response, Sse},
@@ -29,9 +29,6 @@ use crate::state::Stats;
 use eshield_common::{BlockEntry, IpKey, TrustEntry};
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// Embedded ECharts library for offline dashboard use.
-const ECHARTS_JS: &[u8] = include_bytes!("echarts.min.js");
 
 /// New console: single-file Vue 3 SPA built from `console/`.
 const APP_HTML: &str = include_str!("../web/app.html");
@@ -154,8 +151,6 @@ pub async fn run(
         .route("/ready", get(health::ready_handler))
         .route("/login", get(login_handler))
         .route("/blocked", get(blocked_handler))
-        .route("/static/echarts.min.js", get(echarts_handler))
-        .route("/static/*path", get(static_assets_handler))
         .route("/api/auth/login", post(login_api_handler))
         .layer(middleware::from_fn(request_logger))
         .with_state(state.clone());
@@ -174,11 +169,15 @@ pub async fn run(
         .route("/api/protection-modules", get(protection_modules_handler))
         .route(
             "/api/blacklist",
-            post(block_ip_handler).delete(unblock_ip_handler),
+            get(list_blacklist_handler)
+                .post(block_ip_handler)
+                .delete(unblock_ip_handler),
         )
         .route(
             "/api/whitelist",
-            post(allow_cidr_handler).delete(disallow_cidr_handler),
+            get(list_whitelist_handler)
+                .post(allow_cidr_handler)
+                .delete(disallow_cidr_handler),
         )
         .route("/api/audit", get(audit_handler))
         .route("/api/audit/stream", get(audit_stream_handler))
@@ -331,15 +330,6 @@ async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<Str
         .replace("{timestamp}", &Utc::now().to_rfc3339())
         .replace("{request_id}", &format!("{:08x}", rand::random::<u32>()));
     Html(html)
-}
-
-/// Serve embedded ECharts from binary (no CDN dependency).
-async fn echarts_handler() -> Response {
-    (
-        [("content-type", "application/javascript; charset=utf-8")],
-        ECHARTS_JS,
-    )
-        .into_response()
 }
 
 async fn login_handler() -> Response {
@@ -611,6 +601,102 @@ async fn reload_config_handler(
     Ok("配置已从文件重新加载")
 }
 
+fn rule_display_name(rule_id: u16) -> &'static str {
+    use eshield_common::rules;
+    match rule_id {
+        rules::BLACKLIST => "黑名单",
+        rules::RATE_LIMIT => "速率限制",
+        rules::SYN_FLOOD => "SYN Flood",
+        rules::L7_PATTERN => "L7 指纹",
+        rules::ADAPTIVE => "自适应",
+        rules::API_BLOCK => "手动封禁",
+        rules::PORT_ACL => "端口 ACL",
+        rules::UDP_FLOOD => "UDP Flood",
+        rules::ICMP_FLOOD => "ICMP Flood",
+        rules::GEOIP => "GeoIP",
+        rules::THREAT_INTEL => "威胁情报",
+        rules::PROJECT_POLICY => "防护项目",
+        rules::CONN_TRACK => "连接跟踪",
+        rules::UNKNOWN => "未知",
+        _ => "未知",
+    }
+}
+
+fn block_origin_label(rule_id: u16) -> &'static str {
+    use eshield_common::rules;
+    match rule_id {
+        rules::API_BLOCK => "api",
+        rules::ADAPTIVE => "adaptive",
+        rules::BLACKLIST => "config",
+        rules::GEOIP | rules::THREAT_INTEL | rules::PROJECT_POLICY | rules::PORT_ACL => "policy",
+        _ => "data",
+    }
+}
+
+/// 列出 BLACKLIST map 中仍有效的条目（数据面动态封禁与 API/Hub 封禁）。
+async fn list_blacklist_handler(
+    State(state): State<Arc<WebState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let now_ns = crate::time::monotonic_ns();
+    let entries = {
+        let mut guard = state.control.ebpf.lock().await;
+        let blacklist: LruHashMap<_, IpKey, BlockEntry> = guard
+            .map_mut("BLACKLIST")
+            .ok_or_else(|| api_err(StatusCode::INTERNAL_SERVER_ERROR, "BLACKLIST map not found"))?
+            .try_into()
+            .map_err(|e: aya::maps::MapError| {
+                api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
+            })?;
+        blacklist
+            .iter()
+            .flatten()
+            .filter(|(_, e)| {
+                e.blocked_until_ns == eshield_common::BLOCK_PERMANENT || e.blocked_until_ns > now_ns
+            })
+            .map(|(key, e)| {
+                let reason = e.block_reason as u16;
+                serde_json::json!({
+                    "ip": crate::ip::format_ip_key(&key),
+                    "reason": rule_display_name(reason),
+                    "origin": block_origin_label(reason),
+                    "created_ns": e.first_seen_ns,
+                    "expires_ns": if e.blocked_until_ns == eshield_common::BLOCK_PERMANENT {
+                        0
+                    } else {
+                        e.blocked_until_ns
+                    },
+                    "hits": e.hit_count,
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    Ok(Json(serde_json::json!({
+        "entries": entries,
+        "count": entries.len(),
+    })))
+}
+
+/// 列出当前白名单 CIDR。
+async fn list_whitelist_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let list = state.control.whitelist.lock().await;
+    let entries: Vec<serde_json::Value> = list
+        .iter()
+        .map(|(key, prefix)| {
+            let host = crate::ip::format_ip_key(key);
+            let single = (*prefix == 32 && key.family() == Some(eshield_common::IpFamily::Ipv4))
+                || (*prefix == 128 && key.family() == Some(eshield_common::IpFamily::Ipv6));
+            serde_json::json!({
+                "cidr": format!("{}/{}", host, prefix),
+                "note": if single { "单主机" } else { "" },
+            })
+        })
+        .collect();
+    Json(serde_json::json!({
+        "entries": entries,
+        "count": entries.len(),
+    }))
+}
+
 async fn block_ip_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<BlockIpReq>,
@@ -741,7 +827,24 @@ async fn metrics_series_handler(
     Query(q): Query<SeriesQuery>,
 ) -> Json<serde_json::Value> {
     let series = state.stats.timeseries.read().await.snapshot(q.duration_s);
-    let slim: Vec<TrafficSeriesPoint> = series.iter().map(|p| p.into()).collect();
+    // 时序点内部使用单调秒；额外返回 wall-clock 纳秒，前端无需自行换算。
+    let offset_ns = wall_clock_offset_ns();
+    let slim: Vec<serde_json::Value> = series
+        .iter()
+        .map(|p| {
+            let mut value = serde_json::to_value(TrafficSeriesPoint::from(p)).unwrap_or_default();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "timestamp_ns".to_string(),
+                    serde_json::json!(monotonic_to_wall_ns(
+                        p.timestamp.saturating_mul(1_000_000_000),
+                        offset_ns
+                    )),
+                );
+            }
+            value
+        })
+        .collect();
     Json(serde_json::json!({ "series": slim }))
 }
 
@@ -754,10 +857,13 @@ async fn set_port_acl_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SetPortAclReq>,
 ) -> Result<&'static str, ApiError> {
-    if req.items.len() > 128 {
+    if req.items.len() > eshield_common::MAX_PORT_ACL {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
-            "too many port_acl entries (max 128)",
+            format!(
+                "too many port_acl entries (max {})",
+                eshield_common::MAX_PORT_ACL
+            ),
         ));
     }
     state
@@ -802,10 +908,13 @@ async fn set_l7_patterns_handler(
     State(state): State<Arc<WebState>>,
     Json(req): Json<SetL7PatternsReq>,
 ) -> Result<&'static str, ApiError> {
-    if req.patterns.len() > 16 {
+    if req.patterns.len() > eshield_common::MAX_L7_PATTERNS {
         return Err(api_err(
             StatusCode::BAD_REQUEST,
-            "too many L7 patterns (max 16)",
+            format!(
+                "too many L7 patterns (max {})",
+                eshield_common::MAX_L7_PATTERNS
+            ),
         ));
     }
     state
@@ -1290,21 +1399,7 @@ async fn attack_events_handler(
                 }
                 None => "unknown".to_string(),
             };
-            let rule_name = match e.rule_id {
-                eshield_common::rules::BLACKLIST => "黑名单",
-                eshield_common::rules::RATE_LIMIT => "速率限制",
-                eshield_common::rules::SYN_FLOOD => "SYN Flood",
-                eshield_common::rules::L7_PATTERN => "L7 指纹",
-                eshield_common::rules::ADAPTIVE => "自适应",
-                eshield_common::rules::API_BLOCK => "手动封禁",
-                eshield_common::rules::PORT_ACL => "端口 ACL",
-                eshield_common::rules::UDP_FLOOD => "UDP Flood",
-                eshield_common::rules::ICMP_FLOOD => "ICMP Flood",
-                eshield_common::rules::GEOIP => "GeoIP",
-                eshield_common::rules::THREAT_INTEL => "威胁情报",
-                eshield_common::rules::PROJECT_POLICY => "防护项目",
-                _ => "未知",
-            };
+            let rule_name = rule_display_name(e.rule_id);
             serde_json::json!({
                 "timestamp_ns": monotonic_to_wall_ns(e.timestamp_ns, offset_ns),
                 "src_ip": src_ip,
@@ -1350,105 +1445,6 @@ fn html_bytes(bytes: &'static str) -> Response {
 /// 控制台入口：嵌入的单文件 Vue 3 SPA（`console/` 构建产物）。
 async fn index_handler() -> Response {
     html_bytes(APP_HTML)
-}
-
-/// 旧版控制台静态资源（保留以兼容/回退），新入口为上面的 SPA。
-static STATIC_ASSETS: &[(&str, &str, &[u8])] = &[
-    (
-        "css/tokens.css",
-        MIME_CSS,
-        include_bytes!("../web/css/tokens.css"),
-    ),
-    (
-        "css/components.css",
-        MIME_CSS,
-        include_bytes!("../web/css/components.css"),
-    ),
-    (
-        "css/pages.css",
-        MIME_CSS,
-        include_bytes!("../web/css/pages.css"),
-    ),
-    ("js/main.js", MIME_JS, include_bytes!("../web/js/main.js")),
-    ("js/api.js", MIME_JS, include_bytes!("../web/js/api.js")),
-    ("js/store.js", MIME_JS, include_bytes!("../web/js/store.js")),
-    (
-        "js/router.js",
-        MIME_JS,
-        include_bytes!("../web/js/router.js"),
-    ),
-    (
-        "js/format.js",
-        MIME_JS,
-        include_bytes!("../web/js/format.js"),
-    ),
-    ("js/icons.js", MIME_JS, include_bytes!("../web/js/icons.js")),
-    ("js/ui.js", MIME_JS, include_bytes!("../web/js/ui.js")),
-    (
-        "js/charts.js",
-        MIME_JS,
-        include_bytes!("../web/js/charts.js"),
-    ),
-    (
-        "js/ipdrawer.js",
-        MIME_JS,
-        include_bytes!("../web/js/ipdrawer.js"),
-    ),
-    (
-        "js/pages/overview.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/overview.js"),
-    ),
-    (
-        "js/pages/attacks.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/attacks.js"),
-    ),
-    (
-        "js/pages/packets.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/packets.js"),
-    ),
-    (
-        "js/pages/audit.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/audit.js"),
-    ),
-    (
-        "js/pages/policy.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/policy.js"),
-    ),
-    (
-        "js/pages/rules.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/rules.js"),
-    ),
-    (
-        "js/pages/security.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/security.js"),
-    ),
-    (
-        "js/pages/cluster.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/cluster.js"),
-    ),
-    (
-        "js/pages/settings.js",
-        MIME_JS,
-        include_bytes!("../web/js/pages/settings.js"),
-    ),
-];
-
-const MIME_CSS: &str = "text/css; charset=utf-8";
-const MIME_JS: &str = "application/javascript; charset=utf-8";
-
-async fn static_assets_handler(Path(path): Path<String>) -> Response {
-    if let Some((_, mime, bytes)) = STATIC_ASSETS.iter().find(|(p, _, _)| *p == path) {
-        return ([("content-type", *mime)], *bytes).into_response();
-    }
-    api_err_response(StatusCode::NOT_FOUND, "static asset not found")
 }
 
 async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {

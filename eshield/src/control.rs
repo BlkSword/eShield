@@ -356,7 +356,8 @@ impl ControlState {
             .map_mut("BLACKLIST")
             .context("BLACKLIST map not found")?
             .try_into()?;
-        blacklist.remove(&key)?;
+        // 幂等：条目已不存在时 bpf_map_delete_elem 会报错，按成功处理。
+        let _ = blacklist.remove(&key);
         drop(guard);
 
         self.blacklist.lock().await.retain(|&x| x != key);
@@ -1197,7 +1198,8 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         packet_log_enabled: u8::from(config.packet_log.enabled),
         project_enabled: u8::from(!config.protection_projects.is_empty()),
         port_acl_count: (config.port_acl.len() as u8).min(eshield_common::MAX_PORT_ACL as u8),
-        l7_pattern_count: (config.l7_scan.patterns.len() as u8).min(16),
+        l7_pattern_count: (config.l7_scan.patterns.len() as u8)
+            .min(eshield_common::MAX_L7_PATTERNS as u8),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
         padding: [0; 6],
     };
@@ -1260,11 +1262,15 @@ fn init_l7_patterns_map(
         .try_into()?;
 
     // 先清空旧模式
-    for i in 0..16u32 {
+    for i in 0..eshield_common::MAX_L7_PATTERNS as u32 {
         let _ = patterns.set(i, eshield_common::L7Pattern::default(), 0);
     }
 
-    for (i, pat_cfg) in pattern_cfgs.iter().enumerate().take(16) {
+    for (i, pat_cfg) in pattern_cfgs
+        .iter()
+        .enumerate()
+        .take(eshield_common::MAX_L7_PATTERNS)
+    {
         let pattern_bytes = pat_cfg.pattern.as_bytes();
         if pattern_bytes.len() > 8 {
             anyhow::bail!("L7 pattern {} exceeds 8 bytes", i);
@@ -1300,7 +1306,8 @@ fn init_l7_patterns_map(
 
     // 同步实际模式条数到 CONFIG map，数据面据此跳过空表循环
     sync_config_count(ebpf, |cfg| {
-        cfg.l7_pattern_count = (pattern_cfgs.len() as u8).min(16);
+        cfg.l7_pattern_count =
+            (pattern_cfgs.len() as u8).min(eshield_common::MAX_L7_PATTERNS as u8);
     })?;
 
     Ok(())

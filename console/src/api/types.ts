@@ -76,6 +76,8 @@ export interface ModuleState {
   enabled: boolean
   statsKey?: keyof Stats
   fields: { key: string; label: string; value: number | boolean; type: 'switch' | 'number' }[]
+  /** Patch payload for /api/config when this module is toggled. */
+  patch?: Record<string, unknown>
 }
 
 export interface BlockEntry {

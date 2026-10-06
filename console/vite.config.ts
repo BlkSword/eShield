@@ -8,6 +8,14 @@ import { viteSingleFile } from 'vite-plugin-singlefile'
 export default defineConfig({
   base: './',
   plugins: [vue(), viteSingleFile({ removeViteModuleLoader: true })],
+  // Dev mode: forward API calls to a locally running eShield (8720).
+  // If nothing is listening the client falls back to mock data automatically.
+  server: {
+    proxy: {
+      '/api': 'http://127.0.0.1:8720',
+      '/metrics': 'http://127.0.0.1:8720',
+    },
+  },
   build: {
     target: 'es2020',
     cssCodeSplit: false,

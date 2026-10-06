@@ -25,7 +25,7 @@ function filtered() {
       </div>
       <div class="table-wrap">
         <table class="dt">
-          <thead><tr><th>时间</th><th>源地址</th><th>目的地址</th><th>协议</th><th>TCP 标志</th><th>动作</th><th class="col-num">包长</th><th></th></tr></thead>
+          <thead><tr><th>时间</th><th>源地址</th><th>目的地址</th><th>协议</th><th>TCP 标志</th><th>载荷预览</th><th>动作</th><th class="col-num">包长</th><th></th></tr></thead>
           <tbody>
             <tr v-for="r in filtered()" :key="r.id">
               <td class="mono muted nowrap">{{ fmtTime(r.timestamp_ns) }}</td>
@@ -33,11 +33,12 @@ function filtered() {
               <td class="mono">{{ r.dst_ip }}:{{ r.dst_port }}</td>
               <td><TagPill :text="r.protocol" :kind="r.protocol === 'TCP' ? 'tag-info' : 'tag-violet'" /></td>
               <td class="mono muted">{{ r.tcp_flags || '—' }}</td>
+              <td class="mono muted" style="max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ r.payload_preview || '—' }}</td>
               <td><TagPill :text="r.action" :kind="r.action === 'DROP' ? 'tag-danger' : 'tag-ok'" /></td>
               <td class="col-num mono">{{ r.length }}</td>
               <td class="col-actions"><button class="btn btn-sm btn-ghost" @click="openDrawer('数据包详情', 'packet', r)">查看</button></td>
             </tr>
-            <tr v-if="!filtered().length"><td colspan="8" class="empty"><div class="title">暂无采样包</div>开启包日志采样后此处会显示 DROP 包</td></tr>
+            <tr v-if="!filtered().length"><td colspan="9" class="empty"><div class="title">暂无采样包</div>开启包日志采样后此处会显示 DROP 包</td></tr>
           </tbody>
         </table>
       </div>

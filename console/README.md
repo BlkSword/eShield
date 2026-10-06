@@ -100,3 +100,27 @@ cd console
 npm i -D playwright-core
 node scripts/shot.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe"
 ```
+
+## 前后端接线自检
+
+`scripts/mockapi.py` 按 `eshield/src/web.rs` 的真实返回结构（包括 `{series}`、`{modules}`、
+`{events}`、`{entries}` 等 envelope）提供本地 mock API；`scripts/wiring.mjs` 用无头 Chrome
+驱动构建产物逐页断言「是否拿到 live 数据、字段是否正确、页面是否报错」。
+
+```bash
+# 终端 1：启动 mock API，同时托管 app.html
+python console/scripts/mockapi.py 8898
+
+# 终端 2：运行接线断言（11 个页面 + IP 详情抽屉）
+cd console
+node scripts/wiring.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" http://127.0.0.1:8898
+```
+
+覆盖页面：总览、攻击事件、包日志、审计日志、防护模块、访问控制（黑名单/白名单/端口 ACL）、
+L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置、IP 详情抽屉。
+后端字段或 envelope 变化时，这个脚本会直接失败，作为契约回归。
+
+## 构建产物与二进制
+
+`eshield/src/web.rs` 通过 `include_str!("../web/app.html")` 嵌入 SPA。旧版
+`eshield/web/{index.html,css,js}` 已不再被引用，保留仅为回退参考；后续可整体删除。

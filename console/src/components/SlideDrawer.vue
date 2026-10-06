@@ -1,26 +1,65 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { closeDrawer, drawer } from '../stores/ui'
 import { api } from '../api/client'
 import { toast } from '../stores/app'
 import { fmtAgo, fmtDateTime, fmtInt } from '../utils/format'
 import { makeAttackEvents } from '../api/mock'
 import TagPill from './TagPill.vue'
+import Sparkline from './Sparkline.vue'
+import type { SeriesPoint } from '../api/types'
 
 const busy = ref(false)
+const detail = ref<any>(null)
+const trend = ref<SeriesPoint[]>([])
 const kind = computed(() => drawer.kind)
 const p = computed(() => drawer.payload || {})
+const ip = computed(() => String(p.value.ip || p.value.src_ip || ''))
+
+watch(
+  () => [drawer.open, kind.value, ip.value].join('|'),
+  async () => {
+    detail.value = null
+    trend.value = []
+    if (!drawer.open || kind.value !== 'ip' || !ip.value) return
+    detail.value = await api.ipDetail(ip.value).catch(() => null)
+    trend.value = await api.ipSeries(ip.value).catch(() => [])
+  },
+  { immediate: true },
+)
+
+const TRUST = [
+  { label: '可信', kind: 'tag-ok' },
+  { label: '中性', kind: 'tag-info' },
+  { label: '可疑', kind: 'tag-warn' },
+  { label: '恶意', kind: 'tag-danger' },
+]
+const trust = computed(() => {
+  const lvl = detail.value?.trust_level
+  if (typeof lvl === 'number') return TRUST[Math.min(lvl, 3)]
+  const hits = p.value.count || p.value.hits || 0
+  if (hits > 1_000_000) return TRUST[3]
+  if (hits > 100_000) return TRUST[2]
+  if (hits > 0) return TRUST[1]
+  return { label: '未知', kind: '' }
+})
+const hitCount = computed(() => detail.value?.hit_count ?? p.value.count ?? p.value.hits ?? 0)
+const protoLabel = (v: unknown) => (typeof v === 'number' ? (v === 6 ? 'TCP' : v === 17 ? 'UDP' : v === 1 ? 'ICMP' : 'OTHER') : String(v ?? ''))
 
 const recent = computed(() => {
   if (kind.value !== 'ip') return []
-  return makeAttackEvents(400).filter((e) => e.src_ip === p.value.ip).slice(0, 8)
-})
-const trust = computed(() => {
-  const hits = p.value.count || p.value.hits || 0
-  if (hits > 1_000_000) return { label: '恶意', kind: 'tag-danger' }
-  if (hits > 100_000) return { label: '可疑', kind: 'tag-warn' }
-  if (hits > 0) return { label: '中性', kind: 'tag-info' }
-  return { label: '未知', kind: '' }
+  const samples = detail.value?.recent_samples
+  if (Array.isArray(samples) && samples.length) {
+    return samples.slice(0, 8).map((s: any, i: number) => ({
+      id: `sample-${i}`,
+      timestamp_ns: s.timestamp_ns,
+      action: s.action === 2 ? 'PASS' : 'DROP',
+      reason: s.rule_id ? `规则 ${s.rule_id}` : '采样包',
+      protocol: protoLabel(s.protocol),
+      dst_port: s.dst_port,
+    }))
+  }
+  return makeAttackEvents(400).filter((e) => e.src_ip === ip.value).slice(0, 8)
 })
 
 async function block() {
@@ -59,10 +98,14 @@ async function unblock() {
           <div class="row"><TagPill :text="trust.label" :kind="trust.kind" dot /></div>
         </div>
         <div class="detail-grid" style="margin-top: 16px">
-          <div class="detail-cell"><div class="dc-label">命中次数</div><div class="dc-value">{{ fmtInt(p.count || p.hits || 0) }}</div></div>
-          <div class="detail-cell"><div class="dc-label">首次观测</div><div class="dc-value" style="font-size: 12.5px">{{ fmtDateTime(p.created_ns || Date.now() * 1e6) }}</div></div>
-          <div class="detail-cell"><div class="dc-label">主要协议</div><div class="dc-value">{{ p.protocol || 'TCP' }}</div></div>
-          <div class="detail-cell"><div class="dc-label">主要目的端口</div><div class="dc-value">{{ p.dst_port || 80 }}</div></div>
+          <div class="detail-cell"><div class="dc-label">命中次数</div><div class="dc-value">{{ fmtInt(hitCount) }}</div></div>
+          <div class="detail-cell"><div class="dc-label">首次观测</div><div class="dc-value" style="font-size: 12.5px">{{ fmtDateTime(detail?.first_seen_ns || p.created_ns || Date.now() * 1e6) }}</div></div>
+          <div class="detail-cell"><div class="dc-label">丢弃 / 放行</div><div class="dc-value">{{ fmtInt(detail?.drop_count ?? 0) }} / {{ fmtInt(detail?.pass_count ?? 0) }}</div></div>
+          <div class="detail-cell"><div class="dc-label">信誉分</div><div class="dc-value">{{ detail?.trust_score ?? '—' }}</div></div>
+        </div>
+        <div v-if="trend.length > 1" class="panel" style="margin-top: 16px">
+          <div class="panel-head"><div class="panel-title">近 1 小时命中趋势</div></div>
+          <div style="padding: 10px 12px 4px"><Sparkline :data="trend.map((x) => x.dps)" color="var(--danger)" /></div>
         </div>
         <div class="panel" style="margin-top: 16px">
           <div class="panel-head"><div class="panel-title">最近事件</div></div>
