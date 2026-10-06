@@ -74,8 +74,8 @@ L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置、登�
 
 ## 与旧版控制台的关系
 
-新版 `app.html` 由 `web.rs` 在 `/` 与 `/login` 提供；旧版 `eshield/web/index.html`、
-`css/`、`js/` 仍保留在 `include_bytes!` 静态资源表中，但不再作为入口。后续可移除。
+新版 `app.html` 由 `web.rs` 在 `/` 与 `/login` 提供。旧版 `eshield/web/index.html`、
+`css/`、`js/` 以及 `eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。
 
 ## 示例界面
 
@@ -122,5 +122,6 @@ L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置、IP �
 
 ## 构建产物与二进制
 
-`eshield/src/web.rs` 通过 `include_str!("../web/app.html")` 嵌入 SPA。旧版
-`eshield/web/{index.html,css,js}` 已不再被引用，保留仅为回退参考；后续可整体删除。
+`eshield/src/web.rs` 通过 `include_str!("../web/app.html")` 嵌入 SPA。
+旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js` 与
+`eshield/src/login.html` 已删除；仓库中只保留 `eshield/web/app.html` 这一份构建产物。

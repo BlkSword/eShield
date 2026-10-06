@@ -19,7 +19,7 @@
 
 ### 改进
 
-- 移除 `web.rs` 中不再使用的 ECharts 与旧版控制台静态资源表；旧版 `eshield/web/{index.html,css,js}` 不再嵌入，musl release 二进制由 9.94MB 回落到 8.71MB。
+- 移除 `web.rs` 中不再使用的 ECharts 与旧版控制台静态资源表，并删除 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js`、`eshield/src/login.html`；musl release 二进制由 9.94MB 回落到 8.71MB。
 - `web.rs` 中攻击事件的规则显示名收敛到 `rule_display_name()`，消除重复 match。
 
 ### 测试与文档
