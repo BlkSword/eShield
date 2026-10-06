@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import SideNav from './components/SideNav.vue'
 import TopBar from './components/TopBar.vue'
 import SlideDrawer from './components/SlideDrawer.vue'
@@ -7,11 +7,13 @@ import ModalDialog from './components/ModalDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ToastHost from './components/ToastHost.vue'
 import { commandOpen, initTheme, refresh, store } from './stores/app'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 const sidebarOpen = ref(false)
 const ready = ref(!location.protocol.startsWith('http'))
 const router = useRouter()
+const route = useRoute()
+const isLogin = computed(() => route.path === '/login')
 let timer: number | undefined
 let es: EventSource | undefined
 
@@ -68,17 +70,20 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div v-if="!ready" class="login-page">
+    <div class="muted">正在验证访问令牌…</div>
+  </div>
+  <router-view v-else-if="isLogin" />
+  <div v-else class="app-shell">
     <SideNav :open="sidebarOpen" @navigate="sidebarOpen = false" />
     <div class="main">
       <TopBar @toggle-sidebar="sidebarOpen = !sidebarOpen" />
       <main class="content">
-        <router-view v-if="ready" v-slot="{ Component }">
+        <router-view v-slot="{ Component }">
           <transition name="fade" mode="out-in">
             <component :is="Component" />
           </transition>
         </router-view>
-        <div v-else class="empty"><div class="title">正在验证访问令牌…</div></div>
       </main>
     </div>
   </div>
