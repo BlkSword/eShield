@@ -4,6 +4,17 @@
 # 要挂载 XDP 程序的网卡名
 interface = "eth0"
 
+# XDP 挂载策略（v0.4.8）
+#   auto    —— 先 native(DRV)，失败回退 generic(SKB)，默认
+#   native  —— 只允许 native，失败直接报错退出（避免误以为跑在 native 上）
+#   generic —— 强制 SKB（veth/虚拟网卡或驱动不支持 native）
+# 注意：virtio_net 在宿主机开启 GRO_HW/CSUM 时会拒绝 native XDP；
+# `ethtool -k eth0 | grep rx-gro-hw` 显示 [fixed] 时 guest 无法关闭，只能 generic。
+[xdp]
+mode = "auto"
+disable_offloads = true     # native 失败时尝试关闭 rx-gro-hw/tx-checksum 后重试一次
+auto_reattach = true        # 每 15s 校验挂载状态，被摘掉时自动重挂并使 /ready 降级
+
 # 日志级别: trace, debug, info, warn, error
 log_level = "info"
 
@@ -19,7 +30,10 @@ udp_flood_enabled = false
 # 是否启用 ICMP/ICMPv6 Flood 检测
 icmp_flood_enabled = false
 
-# Web 控制台监听地址，默认 0.0.0.0:8720
+# Web 控制台监听地址，默认 0.0.0.0:8720。
+# 安全提示：控制台/API 默认是明文 HTTP + Bearer Token；对外提供服务时必须放在
+# nginx/Caddy 等 TLS 反向代理之后，否则 token 会被明文嗅探（进程启动会告警）。
+# 若已由反代终结 TLS，设置环境变量 ESHIELD_ASSUME_TLS_PROXY=1 可关闭告警。
 web_bind = "0.0.0.0:8720"
 
 # API 访问 Token。
@@ -65,12 +79,13 @@ enabled = true
 # threshold 是「突发信用」：指数衰减后的计数器稳态 ≈ (每 tick 到达数) / (1 - decay_num/decay_den)。
 # 默认 100ms tick + 7/8 衰减时，稳态约为每 tick 到达数的 8 倍，
 # 即 threshold=200 对应的持续速率约为 25 包/100ms ≈ 250pps（单 IP）。
-# 需要容忍更高持续速率的业务（NAT/CDN 回源），请同时调大 threshold 或调小衰减比例。
-threshold = 200             # 每个 tick 内允许的最大包数（突发信用）
+# 早期版本默认 200（≈250pps 即触发），对 NAT 出口/健康检查/API 客户端过于激进，
+# v0.4.8 起默认 2000（≈2500pps 持续速率）；要更严格可调小，要更宽松可调大。
+threshold = 2000            # 每个 tick 内允许的最大包数（突发信用）
 tick_ms = 100               # 计数窗口
 decay_num = 7
 decay_den = 8               # 指数衰减因子 7/8
-block_duration_s = 300      # 触发后封禁时长
+block_duration_s = 120      # 触发后封禁时长（adaptive 会对重复攻击源自动加长）
 # 计数维度：false=按源 IP 合计（默认）；true=按 源IP+目的端口 分组。
 # NAT / 单 IP 承载多业务端口时建议开启，避免不同业务共享一个计数器互相挤占额度。
 dport_grouping = false

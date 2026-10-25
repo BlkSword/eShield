@@ -1,5 +1,9 @@
 export interface Stats {
   total_packets: number
+  /** XDP 是否真的挂在网卡上（v0.4.8） */
+  xdp_attached?: boolean
+  /** native / generic / unknown */
+  xdp_mode?: string
   total_passed: number
   total_dropped: number
   current_pps: number

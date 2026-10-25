@@ -213,7 +213,8 @@ pub fn handle_ack(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u3
     let ack_seq = u32::from_be(unsafe { (*tcp).ack_seq });
     // ack_seq = cookie + 1，因此期望的 cookie 需要回退
     let expected = ack_seq.wrapping_sub(1);
-    let mss_idx = (expected >> 24) as u8;
+    // 高 2 位是 MSS 档位，低 30 位是校验值（v0.4.8 起由 24 位提升到 30 位）
+    let mss_idx = (expected >> 30) as u8;
 
     let secret = match COOKIE_SECRETS.get(0) {
         Some(s) => s,

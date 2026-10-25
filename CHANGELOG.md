@@ -67,6 +67,43 @@
   (1 - decay)，默认 `200/100ms + 7/8` 对应的持续速率约为 250pps（单 IP），
   高持续速率业务需同时调大 threshold 或调小衰减比例。
 
+## Unreleased (v0.4.8) — 生产可用性硬化
+
+### XDP 挂载可信度（P0）
+
+- 新增 `[xdp]` 配置段：`mode = auto|native|generic`、`disable_offloads`、`auto_reattach`。
+  `mode = "native"` 时挂载失败**直接报错退出**，不再静默降级到 SKB（避免"以为在跑 native、
+  实际性能只有几分之一"）。
+- 挂载失败时输出可执行排障提示（含 `ethtool -k <iface> | grep rx-gro-hw`），并自动尝试关闭
+  `rx-gro-hw` / `tx-checksum` 后重试一次。
+- **根因已定位**：`virtio_net` 在宿主机实现 GRO_HW/CSUM 时 `virtnet_xdp_set()` 直接拒绝
+  native XDP（内核报 `Can't set XDP while host is implementing GRO_HW/CSUM`）；本机
+  `rx-gro-hw` 为 `[fixed]`，guest 侧无法关闭，因此只能 generic。该结论已写入文档。
+- 新增 XDP 巡检任务（15s）：`ip -j link show` 校验网卡上是否真的挂着 `eshield` 程序；
+  被摘掉/驱动重置时 `/ready` 立即返回 503、`/api/stats` 输出 `xdp_attached/xdp_mode`，
+  并按 `auto_reattach` 自动重挂。控制台顶栏显示 `XDP native/generic/未挂载`。
+
+### 误封风险（P0）
+
+- `[rate_limit]` 默认 `threshold` 由 200 提到 2000（≈2500pps 持续速率），默认封禁时长
+  300s 降到 120s。原默认值在 100ms tick + 7/8 衰减下约 250pps 即触发，对 NAT 出口、
+  健康检查、API 客户端过于激进。
+- 配置样例补充"threshold 是突发信用"的公式与换算说明。
+
+### SYN Proxy（实验特性定级）
+
+- Cookie 有效熵由 24 位提升到 30 位（高 2 位 MSS 档位 + 低 30 位校验），新增单测校验位布局。
+- 文档/控制台明确标记为**实验特性**：IPv4-only、30s 挑战窗口内合法连接会失败、
+  带 IP option/载荷的 SYN 仍直接 DROP；不建议作为对外卖点或默认开启。
+
+### 部署安全（P0）
+
+- 控制台在非环回监听且未设置 `ESHIELD_ASSUME_TLS_PROXY=1` 时打印**明文 HTTP 告警**
+  （token 被嗅探即可完全接管）。
+- `eshield-hub` 未配置 `--node-tokens-file` 且非环回监听时告警：master token 可冒充任意
+  `node_name`，多节点环境必须使用 per-node token。
+- `/api/stats` 新增 `xdp_attached` / `xdp_mode`；`/ready` 响应体新增同名字段。
+
 ## 0.4.7 (2026-10-06)
 
 > **控制台入口变更**：`/` 与 `/login` 统一提供 Vue 3 单文件 SPA；旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。新 API：`GET /api/blacklist`、`GET /api/whitelist`。

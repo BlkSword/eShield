@@ -32,6 +32,14 @@ const themeLabel = computed(() => (store.theme === 'system' ? '跟随系统' : s
       <span class="tag" :class="live ? 'tag-ok' : 'tag-warn'">
         <span class="dot" :class="{ pulse: live }"></span>{{ live ? '实时' : '演示数据' }}
       </span>
+      <span
+        class="tag"
+        :class="store.stats?.xdp_attached === false ? 'tag-danger' : store.stats?.xdp_mode === 'generic' ? 'tag-warn' : 'tag-ok'"
+        v-if="store.stats"
+        :title="store.stats?.xdp_attached === false ? 'XDP 程序未挂载，防护已失效' : `XDP 挂载模式：${store.stats?.xdp_mode || 'unknown'}`"
+      >
+        {{ store.stats?.xdp_attached === false ? 'XDP 未挂载' : `XDP ${store.stats?.xdp_mode || '?'}` }}
+      </span>
       <span class="tag tag-danger" v-if="store.stats">
         攻击 {{ fmtRate(store.stats.current_dps) }}
       </span>

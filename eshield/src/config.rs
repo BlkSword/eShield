@@ -98,6 +98,42 @@ pub struct Config {
     pub hub: HubConfig,
     #[serde(default)]
     pub packet_log: PacketLogConfig,
+    /// XDP 挂载策略（v0.4.8）
+    #[serde(default)]
+    pub xdp: XdpConfig,
+}
+
+/// XDP 挂载策略。
+///
+/// 背景：`virtio_net` 在宿主机开启 GRO_HW/CSUM 时会拒绝 native XDP，此时只能跑
+/// SKB generic（性能差数倍）。v0.4.8 之前这里静默回退，运维无从得知；现在：
+/// - `mode` 显式声明期望模式，`native` 失败直接报错退出而不是悄悄降级；
+/// - 挂载状态由后台巡检维护，被摘掉时 `/ready` 返回 503 并自动重挂。
+#[derive(Debug, Clone, Deserialize)]
+pub struct XdpConfig {
+    /// auto（native 优先，失败回退 generic，默认）| native（失败即报错退出）| generic（强制 SKB）
+    #[serde(default = "default_xdp_mode")]
+    pub mode: String,
+    /// native 失败时是否尝试关闭 virtio_net 的 rx-gro-hw / tx-checksum 后重试一次
+    #[serde(default = "default_true")]
+    pub disable_offloads: bool,
+    /// 周期性校验挂载状态，被驱动重置/外部操作摘掉时自动重新挂载
+    #[serde(default = "default_true")]
+    pub auto_reattach: bool,
+}
+
+impl Default for XdpConfig {
+    fn default() -> Self {
+        Self {
+            mode: default_xdp_mode(),
+            disable_offloads: true,
+            auto_reattach: true,
+        }
+    }
+}
+
+fn default_xdp_mode() -> String {
+    "auto".to_string()
 }
 
 fn default_log_level() -> String {
@@ -539,11 +575,11 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            threshold: 200,
+            threshold: 2000,
             tick_ms: 100,
             decay_num: 7,
             decay_den: 8,
-            block_duration_s: 300,
+            block_duration_s: 120,
             dport_grouping: false,
         }
     }
@@ -553,7 +589,11 @@ fn default_true() -> bool {
     true
 }
 fn default_threshold() -> u64 {
-    200
+    // threshold 是"突发信用"而非 pps：稳态 ≈ (每 tick 到达数)/(1 - decay_num/decay_den)。
+    // 默认 100ms tick + 7/8 衰减时，200 只相当于约 250pps 就会被封，
+    // 对 NAT 出口/健康检查/API 客户端太激进；2000 约等于 2500pps 持续速率，
+    // 仍远低于 Flood 级别（几十万 pps），误封风险显著下降。
+    2000
 }
 fn default_tick_ms() -> u64 {
     100
@@ -565,7 +605,8 @@ fn default_decay_den() -> u64 {
     8
 }
 fn default_block_duration_s() -> u64 {
-    300
+    // 误封代价优先：默认封 2 分钟，由 adaptive 对重复攻击源自动加长。
+    120
 }
 
 /// 按目的端口限速参数：对（协议 + 目的端口）维度做速率限制，
@@ -619,6 +660,13 @@ impl Config {
                 "network interface '{}' does not exist or is not visible",
                 self.interface
             );
+        }
+
+        match self.xdp.mode.to_ascii_lowercase().as_str() {
+            "auto" | "native" | "drv" | "generic" | "skb" => {}
+            other => {
+                anyhow::bail!("invalid [xdp].mode '{other}' (expected auto | native | generic)")
+            }
         }
 
         for cidr in &self.whitelist {

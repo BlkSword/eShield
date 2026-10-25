@@ -289,44 +289,81 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         .try_into()?;
     program.load()?;
 
-    // 优先原生模式挂载，失败则回退到通用模式；保存 link_id 用于优雅退出时显式卸载。
-    // ESHIELD_XDP_MODE=skb|generic 可强制 SKB 模式，用于规避 veth/虚拟网卡上
-    // 原生 XDP_TX 可能触发的内核问题。
-    let force_skb = matches!(
-        std::env::var("ESHIELD_XDP_MODE")
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str(),
-        "skb" | "generic"
-    );
-    let xdp_link_id = if force_skb {
+    // XDP 挂载策略（[xdp]）：
+    //   auto    —— 先 native，失败回退 generic（默认）
+    //   native  —— 只允许 native，失败直接报错退出（避免"以为在跑 native、其实跑 SKB"）
+    //   generic —— 强制 SKB（veth/虚拟网卡或驱动不支持 native）
+    // 兼容旧环境变量 ESHIELD_XDP_MODE=skb|generic|native，优先级高于配置文件。
+    let env_mode = std::env::var("ESHIELD_XDP_MODE")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let want_mode = match env_mode.as_str() {
+        "skb" | "generic" => "generic".to_string(),
+        "native" | "drv" => "native".to_string(),
+        _ => config.xdp.mode.to_ascii_lowercase(),
+    };
+    let (attached_mode, link_id) = if want_mode == "generic" {
         info!(
-            "ESHIELD_XDP_MODE=skb, attaching generic XDP on {}",
+            "[xdp].mode/ESHIELD_XDP_MODE=generic, attaching SKB on {}",
             config.interface
         );
         let id = program
             .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
-            .context("failed to attach XDP program in SKB mode")?;
-        Some(id)
+            .with_context(|| format!("failed to attach XDP program on {}", config.interface))?;
+        ("generic", id)
     } else {
-        match program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE) {
-            Ok(id) => {
-                info!("attached XDP in DRV (native) mode on {}", config.interface);
-                Some(id)
-            }
-            Err(e) => {
-                warn!("native XDP attach failed ({}), trying generic mode", e);
+        let native = {
+            let mut attempt =
+                || program.attach(&config.interface, aya::programs::XdpFlags::DRV_MODE);
+            attach_native_prefer(&mut attempt, &config.interface, config.xdp.disable_offloads)
+        };
+        match native {
+            Ok(id) => ("native", id),
+            Err(last_err) => {
+                let hint = native_attach_hint(&config.interface);
+                if want_mode == "native" {
+                    anyhow::bail!(
+                        "native XDP attach failed on {}: {last_err}；{hint}",
+                        config.interface
+                    );
+                }
+                warn!(
+                    "native XDP attach failed ({last_err}), falling back to generic mode; {hint}"
+                );
                 let id = program
                     .attach(&config.interface, aya::programs::XdpFlags::SKB_MODE)
-                    .context("failed to attach XDP program")?;
-                info!("attached XDP in SKB (generic) mode on {}", config.interface);
-                Some(id)
+                    .with_context(|| {
+                        format!("failed to attach XDP program on {}", config.interface)
+                    })?;
+                ("generic", id)
             }
         }
     };
+    state.stats.xdp_attached.store(true, Ordering::Relaxed);
+    state.stats.xdp_mode.store(
+        if attached_mode == "native" { 1 } else { 2 },
+        Ordering::Relaxed,
+    );
+    info!(
+        "attached XDP in {} mode on {} (requested: {})",
+        attached_mode, config.interface, want_mode
+    );
+    let xdp_link_id = Some(link_id);
 
     // Ebpf 状态由控制面、事件消费任务与热加载共享
     let ebpf = Arc::new(tokio::sync::Mutex::new(ebpf));
+
+    // XDP 挂载巡检：程序被驱动重置/外部摘掉时，/ready 立刻降级并自动重挂，
+    // 避免"控制台显示运行中、实际已经裸奔"。
+    {
+        let iface = config.interface.clone();
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        let auto_reattach = config.xdp.auto_reattach;
+        tokio::spawn(async move {
+            monitor_xdp(iface, stats, ebpf, auto_reattach).await;
+        });
+    }
 
     // 可观测性组件：审计后端根据配置选择内存或文件持久化。
     let auditor = if config.audit.enabled {
@@ -423,6 +460,16 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         .as_deref()
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("0.0.0.0:{}", config.web_port));
+    // 控制台默认是明文 HTTP + Bearer Token/Cookie；token 一旦被嗅探即可完全接管。
+    // 非环回监听且未显式声明"已在 TLS 反代之后"时给出显著告警（不阻断启动）。
+    if !bind_is_loopback(&web_bind) && std::env::var("ESHIELD_ASSUME_TLS_PROXY").is_err() {
+        warn!(
+            "控制台以**明文 HTTP** 监听在 {web_bind}：请置于 nginx/Caddy 等 TLS 反向代理之后，\
+             否则控制台口令与 API Token 会在网络上明文传输。\
+             若已由反代终结 TLS，可设置 ESHIELD_ASSUME_TLS_PROXY=1 关闭本告警。"
+        );
+    }
+
     let _web_handle = {
         let stats = state.stats.clone();
         let control = control.clone();
@@ -1022,6 +1069,165 @@ async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
     }
 }
 
+/// 解析 `ip -j link show dev <iface>` 里的 XDP 挂载信息，返回 (程序名, mode 数值)。
+/// 返回 None 表示接口未挂 XDP 或 iproute2 不可用。
+fn probe_xdp(iface: &str) -> Option<(String, u32)> {
+    let out = std::process::Command::new("ip")
+        .args(["-j", "link", "show", "dev", iface])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let xdp = value.get(0)?.get("xdp")?;
+    let name = xdp
+        .get("prog")
+        .and_then(|p| p.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mode = xdp.get("mode").and_then(|m| m.as_u64()).unwrap_or(0) as u32;
+    Some((name, mode))
+}
+
+/// 尝试关闭 virtio_net 上会导致 native XDP 挂载失败的 offload，返回实际关闭成功的项。
+///
+/// 内核在 `virtnet_xdp_set()` 里检查：宿主机实现 GRO_HW/CSUM 时直接拒绝 native XDP。
+/// 部分云主机允许 guest 关闭，部分显示 `[fixed]` 由宿主机固定开启（此时无解，只能 SKB）。
+fn disable_virtio_offloads(iface: &str) -> Vec<String> {
+    const FEATURES: [&str; 3] = ["rx-gro-hw", "tx-checksum-ip-generic", "tx-checksum-ipv4"];
+    let mut changed = Vec::new();
+    for feature in FEATURES {
+        if let Ok(out) = std::process::Command::new("ethtool")
+            .args(["-K", iface, feature, "off"])
+            .output()
+        {
+            if out.status.success() {
+                changed.push(feature.to_string());
+            }
+        }
+    }
+    changed
+}
+
+/// 尝试 native 挂载；失败时按需关闭 virtio_net offload 再重试一次。
+///
+/// 用泛型 `T`/`E` 承接 `attach()` 的返回值与错误类型，避免在本模块里写死 aya 的
+/// link id / ProgramError 类型（跨 aya 版本更稳）。
+fn attach_native_prefer<F, T, E>(
+    attach: &mut F,
+    iface: &str,
+    disable_offloads: bool,
+) -> Result<T, String>
+where
+    F: FnMut() -> Result<T, E>,
+    E: std::fmt::Display,
+{
+    let first_err = match attach() {
+        Ok(id) => return Ok(id),
+        Err(e) => e.to_string(),
+    };
+
+    if disable_offloads {
+        let changed = disable_virtio_offloads(iface);
+        if !changed.is_empty() {
+            info!(
+                "为支持 native XDP 已关闭 {iface} 的 offload: {}",
+                changed.join(", ")
+            );
+            return attach().map_err(|e| e.to_string());
+        }
+    }
+    Err(first_err)
+}
+
+/// native 挂载失败时的可执行排障提示。
+fn native_attach_hint(iface: &str) -> String {
+    format!(
+        "若网卡是 virtio_net，这是宿主机开启 GRO_HW/CSUM 导致的已知限制：\
+         请检查 `ethtool -k {iface} | grep -E 'rx-gro-hw|tx-checksum'`；\
+         若显示 [fixed] 表示由宿主机固定开启、guest 无法关闭，只能使用 generic 模式\
+         （或改用支持 XDP 的网卡系列，如 AWS ENA / 阿里云弹性网卡 / Intel i40e/ice）。"
+    )
+}
+
+/// 周期性校验 XDP 是否真的挂在内核里；被摘掉时更新状态并（可选）自动重挂。
+async fn monitor_xdp(
+    iface: String,
+    stats: Arc<crate::state::Stats>,
+    ebpf: Arc<tokio::sync::Mutex<Ebpf>>,
+    auto_reattach: bool,
+) {
+    use aya::programs::XdpFlags;
+
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
+    interval.tick().await; // 首次 tick 立即返回，跳过
+    loop {
+        interval.tick().await;
+
+        match probe_xdp(&iface) {
+            Some((name, mode)) if name == "eshield" => {
+                stats.xdp_attached.store(true, Ordering::Relaxed);
+                stats
+                    .xdp_mode
+                    .store(if mode == 2 { 2 } else { 1 }, Ordering::Relaxed);
+            }
+            other => {
+                let was = stats.xdp_attached.swap(false, Ordering::Relaxed);
+                let desc = match &other {
+                    Some((n, m)) => format!("{n}(mode {m})"),
+                    None => "无 XDP 程序".to_string(),
+                };
+                if was {
+                    tracing::error!("检测到 XDP 程序已不在 {iface} 上（当前: {desc}），防护已失效");
+                }
+                if !auto_reattach {
+                    continue;
+                }
+                let Ok(mut guard) = ebpf.try_lock() else {
+                    continue;
+                };
+                let Some(prog) = guard.program_mut("eshield") else {
+                    continue;
+                };
+                if let Ok(xdp) = prog.try_into() as Result<&mut Xdp, _> {
+                    let native = {
+                        let mut attempt = || xdp.attach(&iface, XdpFlags::DRV_MODE);
+                        attach_native_prefer(&mut attempt, &iface, true)
+                    };
+                    let attached_mode: Option<&'static str> = match native {
+                        Ok(_id) => Some("native"),
+                        Err(e) => {
+                            warn!("native 重挂失败（{e}），回退 generic 模式");
+                            match xdp.attach(&iface, XdpFlags::SKB_MODE) {
+                                Ok(_id) => Some("generic"),
+                                Err(e2) => {
+                                    tracing::error!("XDP 自动重挂失败: {e2}");
+                                    None
+                                }
+                            }
+                        }
+                    };
+                    if let Some(mode) = attached_mode {
+                        stats.xdp_attached.store(true, Ordering::Relaxed);
+                        stats
+                            .xdp_mode
+                            .store(if mode == "native" { 1 } else { 2 }, Ordering::Relaxed);
+                        tracing::info!("XDP 已在 {iface} 上自动重新挂载（{mode}）");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 判断 Web 监听地址是否仅绑定环回（环回上明文 HTTP 风险可接受）。
+fn bind_is_loopback(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
+    host == "localhost" || host.starts_with("127.") || host == "[::1]" || host == "::1"
+}
+
 /// 周期采样 eBPF 各 LRU map 的当前条目数，缓存到 Stats.map_entries。
 ///
 /// `/metrics` 每次被抓取都要输出 map 使用量；若在请求处理时直接遍历可能各含
@@ -1251,6 +1457,32 @@ async fn sync_top_attackers(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crat
         stats.top_attackers.clear();
         for (key, count) in next {
             stats.top_attackers.insert(key, AtomicU64::new(count));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bind_is_loopback;
+
+    #[test]
+    fn test_bind_is_loopback() {
+        for ok in [
+            "127.0.0.1:8720",
+            "127.0.0.1",
+            "localhost:8720",
+            "[::1]:8720",
+            "::1",
+        ] {
+            assert!(bind_is_loopback(ok), "{ok} 应判定为环回");
+        }
+        for not_ok in [
+            "0.0.0.0:8720",
+            "172.23.83.38:8720",
+            "[::]:8720",
+            "example.com:80",
+        ] {
+            assert!(!bind_is_loopback(not_ok), "{not_ok} 不应判定为环回");
         }
     }
 }

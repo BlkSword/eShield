@@ -283,7 +283,9 @@ sudo bash scripts/benchmark.sh
 
 - `interface` / `web_bind`：XDP 挂载网卡与 Web/API 监听地址（默认 `0.0.0.0:8720`）。
 - `whitelist` / `blacklist`：启动时加载的静态 CIDR 白名单与永久黑名单。
-- `[rate_limit]`：per-IP 速率限制。
+- `[xdp]`：XDP 挂载策略（`mode = auto|native|generic`、`disable_offloads`、`auto_reattach`）。
+- `[rate_limit]`：per-IP 速率限制（默认 threshold=2000、封禁 120s；threshold 是"突发信用"，
+  稳态 ≈ 每 tick 到达数/(1-decay)，默认约对应 2500pps 持续速率）。
 - `[syn_proxy]`：IPv4 SYN Cookie 代理开关。
 - `udp_flood_enabled` / `icmp_flood_enabled`：无连接 Flood 防护顶层开关。
 - `[l7_scan]`：TCP 首包指纹匹配。
@@ -411,10 +413,21 @@ sync_rules_enabled = true
 
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
 - **SYN Cookie 代理**：仅 IPv4 TCP；采用降级式挑战，只有超过 SYN Flood 阈值的源会被 Cookie 挑战并暂时拉黑，正常连接与合法客户端验证后直通（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
-  挑战包只支持 20 字节 IPv4 头 + 20/24 字节 TCP 头（单 MSS option）；**带 timestamps/SACK 等选项的 SYN 无法构造挑战包，此类源一旦触发阈值会被直接 DROP，最多持续 `CHALLENGE_TIMEOUT_NS`（30s）**（v0.4.8 修复：此前会静默 PASS，等于让带选项的 SYN Flood 绕过防护；代价是该 IP 的合法连接在此期间也会失败）。若要覆盖这类流量，可关闭 `syn_proxy` 改用 SYN Flood 检测；面向真实客户端的高流量服务不建议开启该模块。
+  **该模块标记为实验特性（默认关闭），不建议作为卖点或默认开启。**
+  - Cookie 有效熵 v0.4.8 起为 30 位（原 24 位），仍不足以对抗有算力的定向爆破；
+  - 仅 IPv4；不支持 IPv6 挑战；
+  - 20–60 字节 TCP 头（含 timestamps/SACK）已可通过 `bpf_xdp_adjust_tail` 截断重建挑战，
+    但带 IP option 或携带数据的 SYN 仍会被直接 DROP；被挑战源的合法连接最长 30s 内失败
+    （`CHALLENGE_TIMEOUT_NS`）；
+  - 面向真实客户端的高流量服务建议关闭该模块、改用 SYN Flood 检测 + 限速。
 - **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击；非首片 IPv4 分片会跳过端口/L4 模块，仅保留黑名单/限速/GeoIP 等源地址级判断。
 - **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
-- **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
+- **XDP 挂载**：由 `[xdp].mode` 控制（auto/native/generic，默认 auto）。native 失败时按
+  `disable_offloads` 尝试关闭 virtio_net 的 rx-gro-hw/tx-checksum 后重试；仍失败则
+  auto 回退 generic（native 模式直接报错退出，避免静默降级）。
+  已知限制：virtio_net 在宿主机开启 GRO_HW/CSUM 时会拒绝 native XDP，`ethtool -k` 显示
+  `rx-gro-hw: on [fixed]` 时 guest 侧无解，只能跑 generic（性能显著低于 native）。
+  挂载状态由后台任务每 15s 校验：程序被摘掉时 `/ready` 返回 503 并自动重挂。
 - **eBPF 构建**：debug 构建因 `overflow-checks` 与未内联代码容易导致 verifier/bpf-linker 失败，因此工作空间默认 `opt-level = 3`；发布构建使用 `panic = abort`、`lto = true`、`strip = true`。
 
 ---

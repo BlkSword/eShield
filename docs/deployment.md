@@ -1,5 +1,18 @@
 # eShield 部署指南
 
+## 控制台 TLS 与 XDP 模式（v0.4.8）
+
+- **控制台必须置于 TLS 反代之后**：默认 `web_bind = "0.0.0.0:8720"` 是明文 HTTP +
+  Bearer Token/Cookie，token 被嗅探等于控制台被完全接管。进程在非环回监听且未设置
+  `ESHIELD_ASSUME_TLS_PROXY=1` 时会打印告警；反代需转发 `X-Forwarded-Proto: https`，
+  后端才会给 Cookie 加 `Secure`。
+- **XDP 模式**：`[xdp].mode = auto|native|generic`。生产想确认跑在 native，可看启动日志
+  `attached XDP in native mode` 或 `/api/stats` 的 `xdp_mode`；若显示 generic，检查
+  `ethtool -k <iface> | grep -E "rx-gro-hw|tx-checksum"`。virtio_net 上 `rx-gro-hw`
+  显示 `[fixed]` 时只能 generic（宿主机限制）。
+- **多节点 Hub 必须启用 per-node token**（`--node-tokens-file`）：只配 master token 时
+  任何持有者都能冒充任意 `node_name`，Hub 启动会告警。
+
 ## 系统要求
 
 - Linux 内核 >= 5.10，启用 BTF：

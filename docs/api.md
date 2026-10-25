@@ -19,7 +19,7 @@ Authorization: Bearer <token>
 | 端点 | 方法 | 说明 |
 |---|---|---|
 | `/healthz` | GET | 健康检查 |
-| `/ready` | GET | 就绪检查 |
+| `/ready` | GET | 就绪检查（v0.4.8 起反映真实挂载状态，见下方说明） |
 | `/login` | GET | 控制台登录入口（Vue SPA，登录态由 SPA 处理） |
 | `/blocked` | GET | 403 封禁示例页 |
 | `/api/auth/login` | POST | 控制台登录验证（成功后下发 HttpOnly `eshield-token` Cookie） |
@@ -179,7 +179,13 @@ Prometheus 指标。
 
 ### GET /ready
 
-服务就绪检查（eBPF 已挂载、接口正常）。
+服务就绪检查。v0.4.8 起不再只检查"程序对象是否存在"，而是检查 **XDP 是否真的挂在网卡上**
+（由后台任务每 15s 校验）：
+
+- 已挂载：`200 {"status":"ready","xdp_attached":true,"xdp_mode":"native|generic"}`
+- 未挂载/被摘掉/重挂失败：`503 {"status":"not ready","xdp_attached":false,"xdp_mode":"...","error":"XDP program is not attached to the interface"}`
+
+`/healthz` 只表示进程存活，不反映防护是否生效。
 
 ---
 

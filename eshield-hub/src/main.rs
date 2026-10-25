@@ -98,6 +98,12 @@ fn load_node_tokens(path: &std::path::Path) -> Result<HashMap<String, String>> {
     Ok(tokens)
 }
 
+/// bind 地址是否仅环回（环回上单 token 风险可接受）。
+fn bind_is_loopback(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
+    host == "localhost" || host.starts_with("127.") || host == "[::1]" || host == "::1"
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -117,6 +123,16 @@ async fn main() -> Result<()> {
         Some(path) => load_node_tokens(path)?,
         None => HashMap::new(),
     };
+
+    // 多节点安全红线：只有 master token 时，任何持有它的客户端都能以任意
+    // node_name 推送/删除策略（Hub 无法区分节点，策略可被伪造）。
+    if node_tokens.is_empty() && !bind_is_loopback(&args.bind) {
+        tracing::warn!(
+            "Hub 未配置 --node-tokens-file，仅使用 master token 认证：\
+             多节点环境下任何持有该 token 的客户端都能冒充任意 node_name 推送策略。\
+             生产环境请为每个节点配置独立 token（每行 node_name:token）。"
+        );
+    }
 
     if let Some(parent) = args.store_path.parent() {
         std::fs::create_dir_all(parent).context("create store directory")?;

@@ -303,6 +303,10 @@ struct StatsResponse {
     trust_malicious: u64,
     /// 全局危险等级 0/1/2（v0.4.0）
     danger_level: u64,
+    /// XDP 是否真的挂在内核里（v0.4.8）
+    xdp_attached: bool,
+    /// XDP 挂载模式：native / generic / unknown
+    xdp_mode: String,
 }
 
 #[derive(Serialize)]
@@ -528,9 +532,11 @@ async fn protection_modules_handler(State(state): State<Arc<WebState>>) -> Json<
     let modules = vec![
         serde_json::json!({
             "id": "syn_flood",
-            "name": "SYN Flood 防护",
+            "name": "SYN Flood 防护（实验特性）",
             "category": "DDoS",
-            "description": "基于 SYN 代理/ cookie 抵御 SYN Flood 攻击。",
+            "description": "基于 SYN 代理 / Cookie 抵御 SYN Flood（实验特性，默认关闭）：\
+        仅支持 IPv4；Cookie 校验位 30 位；被挑战源在 30s 内合法连接也会失败，\
+        面向真实客户端的高流量服务建议用 SYN Flood 检测 + 限速替代。",
             "enabled": rt.syn_proxy_enabled,
             "stats_key": "syn_flood_blocked",
             "editable_fields": [field_switch("enabled", "启用防护", rt.syn_proxy_enabled)]
@@ -1653,6 +1659,8 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         trust_suspicious: stats.trust_suspicious.load(Ordering::Relaxed),
         trust_malicious: stats.trust_malicious.load(Ordering::Relaxed),
         danger_level: stats.danger_level.load(Ordering::Relaxed),
+        xdp_attached: stats.xdp_attached.load(Ordering::Relaxed),
+        xdp_mode: stats.xdp_mode_str().to_string(),
     }
 }
 

@@ -136,7 +136,10 @@ fn build_cookie_words(
     for word in words {
         mix(&mut h, word);
     }
-    ((mss_idx as u32) << 24) | (h & 0x00ff_ffff)
+    // 高 2 位放 MSS 档位，低 30 位是校验值。
+    // v0.4.8 起由 24 位提升到 30 位：伪造 ACK 的穷举成本从 2^24 提到 2^30，
+    // 同时仍然兼容只支持 20/24 字节 TCP 头的老客户端。
+    ((mss_idx as u32) << 30) | (h & 0x3fff_ffff)
 }
 
 /// eBPF 专用 SYN Cookie 构造：参数打包为 4 个寄存器，标记 inline(never)
@@ -550,6 +553,21 @@ mod tests {
         let reset = conn_track_step(9, 1_000_000_000, 20_000_000_000, true, false, 2, window);
         assert_eq!(reset.half_open, 1);
         assert!(!reset.drop);
+    }
+
+    #[test]
+    fn test_cookie_entropy_bits_and_mss_field() {
+        let secret = [0x5au8; COOKIE_SECRET_LEN];
+        for mss_idx in 0u8..=2 {
+            let c = build_cookie(0x0a000001, 0x0a000002, 40000, 80, 3, mss_idx, &secret);
+            assert_eq!(c >> 30, mss_idx as u32, "高 2 位必须是 MSS 档位");
+            assert_eq!(c & 0x3fff_ffff, c, "低 30 位之外的位不应出现");
+            assert!(c & 0x3fff_ffff > 0, "校验位不应恒为 0");
+        }
+        // 不同源端口必须得到不同 cookie（30 位空间内碰撞概率可忽略）
+        let a = build_cookie(0x0a000001, 0x0a000002, 40000, 80, 3, 1, &secret);
+        let b = build_cookie(0x0a000001, 0x0a000002, 40001, 80, 3, 1, &secret);
+        assert_ne!(a & 0x3fff_ffff, b & 0x3fff_ffff);
     }
 
     #[test]

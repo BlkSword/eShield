@@ -1,7 +1,7 @@
 use dashmap::DashMap;
 use eshield_common::{DropEvent, IpKey};
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
@@ -47,6 +47,11 @@ pub struct Stats {
     pub map_entries: DashMap<&'static str, u64>,
     /// 最近一次 map 条目数采样的单调时钟纳秒（0 表示尚未采集）。
     pub map_entries_updated_ns: AtomicU64,
+    /// XDP 程序当前是否真的挂在网卡上（启动流程 + 后台巡检维护）。
+    /// `/ready` 直接读它：程序被驱动重置/外部摘掉时立刻降级，避免"看着在跑其实没防"。
+    pub xdp_attached: AtomicBool,
+    /// 挂载模式：0=未知，1=native(DRV)，2=generic(SKB)
+    pub xdp_mode: AtomicU8,
     /// 最近攻击事件环形缓冲（最多 1000 条）
     pub recent_attacks: Mutex<VecDeque<DropEvent>>,
     pub timeseries: Arc<RwLock<TimeSeriesWindow>>,
@@ -94,6 +99,8 @@ impl Default for Stats {
             danger_level: AtomicU64::new(0),
             map_entries: DashMap::new(),
             map_entries_updated_ns: AtomicU64::new(0),
+            xdp_attached: AtomicBool::new(false),
+            xdp_mode: AtomicU8::new(0),
             recent_attacks: Mutex::new(VecDeque::new()),
             timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(8640, 10))),
         }
@@ -101,6 +108,15 @@ impl Default for Stats {
 }
 
 impl Stats {
+    /// XDP 挂载模式的可读名称（/api/stats、/ready 使用）。
+    pub fn xdp_mode_str(&self) -> &'static str {
+        match self.xdp_mode.load(Ordering::Relaxed) {
+            1 => "native",
+            2 => "generic",
+            _ => "unknown",
+        }
+    }
+
     /// 批量聚合上报：减少高并发 DROP 事件下的原子操作与 DashMap 竞争。
     ///
     /// 注意：Top 攻击源已由 eBPF 数据面通过 `TOP_ATTACKERS` Map 直接维护，
