@@ -120,6 +120,37 @@ fn map_data(map: &aya::maps::Map) -> Option<&aya::maps::MapData> {
     }
 }
 
+/// eBPF map 的静态元信息（name / type / max_entries）。
+/// max_entries 在程序生命周期内不变，启动时采集一次即可，
+/// /metrics 无需每此抓取都去拿全局 Ebpf 锁（否则锁竞争时指标族会缺失）。
+#[derive(Debug, Clone)]
+pub struct MapInfo {
+    pub name: String,
+    pub map_type: String,
+    pub max_entries: u64,
+}
+
+/// 启动时采集全部 map 的静态元信息。
+pub fn collect_map_infos(ebpf: &aya::Ebpf) -> Vec<MapInfo> {
+    let mut out = Vec::new();
+    for (name, map) in ebpf.maps() {
+        if let Some(data) = map_data(map) {
+            if let Ok(info) = data.info() {
+                out.push(MapInfo {
+                    name: name.to_string(),
+                    map_type: info
+                        .map_type()
+                        .map(|t| format!("{:?}", t))
+                        .unwrap_or_default(),
+                    max_entries: u64::from(info.max_entries()),
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 pub struct WebState {
     pub stats: Arc<Stats>,
     pub control: Arc<ControlState>,
@@ -127,6 +158,7 @@ pub struct WebState {
     pub auth: AuthState,
     pub login_limiter: Arc<LoginLimiter>,
     pub packet_log: Arc<PacketLog>,
+    pub map_infos: Arc<Vec<MapInfo>>,
 }
 
 pub async fn run(
@@ -136,6 +168,7 @@ pub async fn run(
     auth: AuthState,
     bind: String,
     packet_log: Arc<PacketLog>,
+    map_infos: Arc<Vec<MapInfo>>,
 ) -> anyhow::Result<()> {
     let state = Arc::new(WebState {
         stats,
@@ -144,6 +177,7 @@ pub async fn run(
         auth,
         login_limiter: Arc::new(LoginLimiter::new()),
         packet_log,
+        map_infos,
     });
 
     let public = Router::new()
@@ -1695,31 +1729,14 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
     ));
 
     // eBPF map 指标：
-    // - max_entries 读取 map info（廉价，不遍历）；
-    // - 当前条目数来自后台 30s 采样缓存（Stats.map_entries_*），抓取路径不再遍历大表。
-    // 整段用 try_lock：Prometheus 抓取绝不排队等待全局 Ebpf 锁，抢不到就跳过 map 段，
-    // 否则一次抓取可能把事件消费/策略写入堵住数百毫秒。
-    if let Ok(guard) = state.control.ebpf.try_lock() {
-        body.push_str("\n# HELP eshield_map_max_entries eBPF map max entries\n# TYPE eshield_map_max_entries gauge\n");
-        for (name, map) in guard.maps() {
-            if let Some(data) = map_data(map) {
-                if let Ok(info) = data.info() {
-                    let map_type_str = info
-                        .map_type()
-                        .map(|t| format!("{:?}", t))
-                        .unwrap_or_default();
-                    body.push_str(&format!(
-                        "eshield_map_max_entries{{interface=\"{}\",name=\"{}\",map_type=\"{}\"}} {}\n",
-                        interface,
-                        name,
-                        map_type_str,
-                        info.max_entries()
-                    ));
-                }
-            }
-        }
-    } else {
-        tracing::debug!("/metrics: ebpf lock busy, skipping map metrics");
+    // - max_entries 来自启动时采集的静态元信息（无需加锁，也不会因锁竞争缺指标）；
+    // - 当前条目数来自后台 30s 采样缓存（Stats.map_entries_*），抓取路径不遍历大表。
+    body.push_str("\n# HELP eshield_map_max_entries eBPF map max entries\n# TYPE eshield_map_max_entries gauge\n");
+    for info in state.map_infos.iter() {
+        body.push_str(&format!(
+            "eshield_map_max_entries{{interface=\"{}\",name=\"{}\",map_type=\"{}\"}} {}\n",
+            interface, info.name, info.map_type, info.max_entries
+        ));
     }
 
     body.push_str(

@@ -9,6 +9,8 @@
 - **`scripts/install.sh` 发布链路断裂**：仓库名写死为不存在的 `eshield/eshield`（实际为 `BlkSword/eShield`）且 `curl` 未加 `-f`，404 的 HTML 会被当作二进制安装；版本兜底 0.4.1、workspace 根 Cargo.toml 无 version 导致版本解析失败。现已修正仓库名/版本解析，加入 `curl -f`、ELF 头校验与 SHA256SUMS 校验，安装写入改为 `install -m 0755`，并将探测到的活动网卡写入默认配置。
 - **`/metrics` 与 Trust 分布在大表下长时间持有全局 Ebpf 锁**：抓取路径原实现会遍历 `BLACKLIST`/`RATE_MAP`（各可达 10 万条）并与事件消费互斥。现在 map 当前条目数由后台 30s 采样任务缓存到原子量，抓取只读缓存；`map_max_entries` 段改用 `try_lock`，抢不到锁就跳过；Trust 分布同步降频到 30s 且改为 `try_lock`。
 
+- **`/metrics` 的 map 指标族会随锁竞争偶发缺失**：上一版把 map 段改成 `try_lock` 后，抓取恰好撞上 Ebpf 锁时会整段跳过，导致 `eshield_map_max_entries` 时有时无（Prometheus 报警会抖）。现在改为启动时采集一次 map 静态元信息（name/type/max_entries）常驻内存，抓取路径完全不加锁。
+- **`POST /api/geoip/reload` 与运行时开关不一致**：`apply_geoip_map` 原先在配置文件 `geoip.enabled=false` 时直接清空 4 张 LPM Trie 并返回。若用户通过 API 在运行时打开了 GeoIP 再触发 reload，数据面规则会被静默清空、控制台却仍显示已启用。现在无论 `enabled` 取值都重建规则表，`enabled` 只控制数据面是否生效（`CONFIG.geoip_enabled`）。
 ### 变更
 
 - **控制台认证改为纯 Cookie**：前端不再把 `api_token` 写入 `localStorage`（使 `HttpOnly` 形同虚设），令牌只在内存中保留一份用于 Bearer 兜底；登录页在 401/429/网络错误时明确报错，不再静默进入"演示数据"模式（避免把样例数据误当成真实防护状态）。

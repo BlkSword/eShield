@@ -1662,17 +1662,10 @@ async fn apply_geoip_map(
         }
     }
 
-    // 关闭 GeoIP 时清空旧规则（block / allow 各 4 张表）。
-    if !config.geoip.enabled {
-        remove_geoip_entries(
-            ebpf,
-            &old_blocks_v4,
-            &old_blocks_v6,
-            &old_allows_v4,
-            &old_allows_v6,
-        )?;
-        return Ok(());
-    }
+    // 无论配置里的 enabled 是什么都重建规则表：enabled 只控制数据面是否启用
+    // （CONFIG.geoip_enabled），规则本身必须与配置文件保持一致。
+    // 旧实现会在 enabled=false 时直接清空表并返回 —— 于是「运行时用 API 打开
+    // GeoIP + POST /api/geoip/reload」会静默把数据面规则清空且不报错。
     if config.geoip.db_path.is_some() {
         warn!(
             "geoip.db_path (MaxMind MMDB) is reserved but not supported yet; use CSV lists instead"

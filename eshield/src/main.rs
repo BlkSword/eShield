@@ -210,6 +210,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         "../../target/bpfel-unknown-none/release/eshield"
     ))?;
 
+    // map 的静态元信息（name/type/max_entries）在程序生命周期内不变，
+    // 启动时采集一次交给 /metrics 使用，避免每次抓取都要抢全局 Ebpf 锁。
+    let map_infos = Arc::new(web::collect_map_infos(&ebpf));
+
     // 用户态统计状态需要在 XDP 挂载前创建，这样 program_start_ns 才能过滤掉
     // 任何在 ring buffer 中残留的 stale 事件。
     let state = Arc::new(AppStateInner::new());
@@ -424,8 +428,11 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let control = control.clone();
         let auditor = auditor.clone();
         let packet_log = packet_log.clone();
+        let map_infos = map_infos.clone();
         tokio::spawn(async move {
-            if let Err(e) = web::run(stats, control, auditor, auth, web_bind, packet_log).await {
+            if let Err(e) =
+                web::run(stats, control, auditor, auth, web_bind, packet_log, map_infos).await
+            {
                 warn!("web server exited: {}", e);
             }
         })
