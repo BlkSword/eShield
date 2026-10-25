@@ -1,5 +1,6 @@
 use crate::maps::{BLACKLIST, GLOBAL_STATS, TRUST_MAP};
-use eshield_common::{BlockEntry, IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
+use eshield_common::pure::merge_block_entry;
+use eshield_common::{IpKey, TrustEntry, BLOCK_PERMANENT, TRUST_DEFAULT, TRUST_MIN};
 
 /// 新增黑名单时递增全局代数，供用户态即时同步。
 #[inline(always)]
@@ -61,8 +62,12 @@ pub fn is_blacklisted(src: &IpKey, now_ns: u64) -> bool {
 
 /// 将源 IP 加入黑名单。同时将 Trust Score 强制归零，
 /// 防止攻击者先积累信任再发起攻击的「信誉洗白」行为。
+///
+/// 已有有效条目时**保留首次触发原因**，只把新原因记到 `last_reason`，
+/// 并取两者中更晚的到期时间 —— 否则后触发的模块（如自适应）会覆盖掉
+/// 真正的触发源（速率限制/SYN Flood 等），控制台就查不到根因。
 pub fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64, reason: u8) {
-    let blocked_until_ns = if block_duration_s == 0 {
+    let new_until_ns = if block_duration_s == 0 {
         BLOCK_PERMANENT
     } else {
         let block_ns = if block_duration_s > u64::MAX / 1_000_000_000 {
@@ -73,13 +78,13 @@ pub fn add_to_blacklist(src: &IpKey, now_ns: u64, block_duration_s: u64, reason:
         now_ns.saturating_add(block_ns)
     };
 
-    let entry = BlockEntry {
-        blocked_until_ns,
-        block_reason: reason,
-        hit_count: 0,
-        first_seen_ns: now_ns,
-        padding: [0; 3],
-    };
+    let entry = merge_block_entry(
+        unsafe { BLACKLIST.get(src) }.copied(),
+        now_ns,
+        new_until_ns,
+        reason,
+        false,
+    );
 
     let _ = BLACKLIST.insert(src, &entry, 0);
     bump_blacklist_gen();

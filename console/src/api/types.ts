@@ -83,6 +83,8 @@ export interface ModuleState {
 export interface BlockEntry {
   ip: string
   reason: string
+  /** 首次触发后其它模块叠加的原因（空字符串表示无叠加） */
+  last_reason?: string
   origin: string
   created_ns: number
   expires_ns: number

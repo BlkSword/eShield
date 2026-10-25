@@ -14,7 +14,7 @@ const whites = ref<WhitelistEntry[]>([])
 const acls = ref<PortAclEntry[]>([])
 const q = ref('')
 
-const shownBlocks = computed(() => blocks.value.filter((b) => !q.value || (b.ip + b.reason + b.origin).includes(q.value)))
+const shownBlocks = computed(() => blocks.value.filter((b) => !q.value || (b.ip + b.reason + (b.last_reason || '') + b.origin).includes(q.value)))
 
 async function load() {
   const [b, w, a] = await Promise.all([api.blacklist(), api.whitelist(), api.portAcl()])
@@ -66,7 +66,7 @@ async function saveAcl() {
             <tbody>
               <tr v-for="b in shownBlocks" :key="b.ip">
                 <td><span class="mono cell-main" style="cursor: pointer" @click="openDrawer('IP 详情', 'ip', { ip: b.ip, count: b.hits })">{{ b.ip }}</span></td>
-                <td>{{ b.reason }}</td>
+                <td>{{ b.reason }}<span v-if="b.last_reason" class="muted" style="font-size: 11px"> / 叠加 {{ b.last_reason }}</span></td>
                 <td><TagPill :text="b.origin" :kind="b.origin === 'api' ? 'tag-info' : b.origin === 'adaptive' ? 'tag-violet' : 'tag-warn'" /></td>
                 <td class="mono">{{ fmtInt(b.hits) }}</td>
                 <td><span v-if="!b.expires_ns" class="tag tag-danger">永久</span><span v-else class="muted mono">{{ fmtDuration(b.expires_ns) }}</span></td>

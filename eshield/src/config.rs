@@ -75,6 +75,9 @@ pub struct Config {
     pub store_path: String,
     #[serde(default = "default_timeseries_retention_days")]
     pub timeseries_retention_days: u64,
+    /// eBPF map 条目数采样周期（秒）。/metrics 只读该缓存，不做实时遍历。
+    #[serde(default = "default_metrics_interval_s")]
+    pub metrics_interval_s: u64,
     #[serde(default)]
     pub alert_webhook_url: Option<String>,
     #[serde(default = "default_alert_webhook_type")]
@@ -110,6 +113,10 @@ fn default_store_path() -> String {
 }
 
 fn default_timeseries_retention_days() -> u64 {
+    30
+}
+
+fn default_metrics_interval_s() -> u64 {
     30
 }
 
@@ -522,6 +529,10 @@ pub struct RateLimitConfig {
     pub decay_den: u64,
     #[serde(default = "default_block_duration_s")]
     pub block_duration_s: u64,
+    /// 计数维度：false=按源 IP 合计（默认）；true=按 源IP+目的端口 分组，
+    /// 适合 NAT / 单 IP 多业务端口场景，避免不同业务共享一个计数器互相挤占额度。
+    #[serde(default)]
+    pub dport_grouping: bool,
 }
 
 impl Default for RateLimitConfig {
@@ -533,6 +544,7 @@ impl Default for RateLimitConfig {
             decay_num: 7,
             decay_den: 8,
             block_duration_s: 300,
+            dport_grouping: false,
         }
     }
 }

@@ -31,15 +31,10 @@ pub async fn sync_all_feeds(control: Arc<ControlState>, feeds: Vec<crate::config
     for feed in feeds {
         let control = control.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(feed.interval_s));
-            // 首次立即执行一次
-            if let Err(e) = sync_feed(&control, &feed).await {
-                tracing::warn!(
-                    "threat intel feed '{}' initial sync failed: {}",
-                    feed.name,
-                    e
-                );
-            }
+            // 注意：tokio interval 的第一次 tick 会立即返回，因此循环本身就是
+            // 「启动即同步一次」。不要再额外手动 sync 一次，否则启动时会重复
+            // 拉取两次 feed（会把同一批 IP 重复写黑名单、审计里出现两条记录）。
+            let mut interval = tokio::time::interval(Duration::from_secs(feed.interval_s.max(1)));
             loop {
                 interval.tick().await;
                 if let Err(e) = sync_feed(&control, &feed).await {

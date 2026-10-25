@@ -5,8 +5,8 @@ use aya_ebpf::{
 use eshield_common::{
     BlockEntry, ConnTrackEntry, CookieSecret, GeoIpKeyV4, GeoIpKeyV6, GlobalStats, IpKey,
     L7Pattern, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
-    RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6, MAX_L7_PATTERNS,
-    MAX_PORT_ACL,
+    RateLimitConfig, RateLimitPortKey, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+    MAX_L7_PATTERNS, MAX_PORT_ACL,
 };
 
 /// IPv4 白名单 CIDR 匹配（LPM Trie）
@@ -70,6 +70,13 @@ pub static RATE_MAP: LruHashMap<IpKey, RateCounter> = LruHashMap::with_max_entri
 /// 按目的端口限速参数（复用 RateLimitConfig 结构，block_duration_s 不使用）
 #[map]
 pub static PORT_RATE_LIMIT_CFG: Array<RateLimitConfig> = Array::with_max_entries(1, 0);
+
+/// 全局限速的「源 IP + 目的端口」计数器（LRU Hash）。
+/// 仅当 config.rate_limit.dport_grouping=true 时使用，用于 NAT / 单 IP 多业务场景，
+/// 避免不同业务端口共享一个 per-IP 计数器而互相挤占额度。
+#[map]
+pub static RATE_MAP_PORT: LruHashMap<RateLimitPortKey, RateCounter> =
+    LruHashMap::with_max_entries(100000, 0);
 
 /// 按目的端口限速计数器（LRU Hash）：key = 协议 + 目的端口。
 /// 防换源 IP 绕过：源 IP 随机化时 per-IP 限速失效，端口维度仍累计。

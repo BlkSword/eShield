@@ -1,7 +1,7 @@
-use crate::maps::{CONFIG, RATE_LIMIT_CFG, RATE_MAP};
+use crate::maps::{CONFIG, RATE_LIMIT_CFG, RATE_MAP, RATE_MAP_PORT};
 use crate::trust;
 use eshield_common::pure::decay_counter;
-use eshield_common::{IpKey, RateCounter};
+use eshield_common::{IpKey, RateCounter, RateLimitPortKey};
 
 /// 速率更新结果。调用者在栈上分配并通过 `&mut` 传入，避免 eBPF 中返回聚合类型。
 pub struct RateUpdate {
@@ -75,6 +75,82 @@ pub fn update_rate_counter(src: &IpKey, now_ns: u64, out: &mut RateUpdate) -> bo
     let effective_threshold = if runtime.trust_enabled != 0 {
         let trust_f = trust::trust_factor(src); // 范围 333..=1000
         let danger_f = trust::danger_factor(runtime.danger_level); // 500/750/1000
+        modulate_threshold(cfg.threshold, trust_f, danger_f)
+    } else {
+        cfg.threshold
+    };
+
+    out.counter = counter;
+    out.threshold = effective_threshold;
+    out.block_duration_s = cfg.block_duration_s;
+    true
+}
+
+/// 与 `update_rate_counter` 相同，但计数维度是「源 IP + 目的端口」。
+///
+/// 仅在 `rate_limit.dport_grouping = 1` 时由全局限速调用；Flood 模块仍用 per-IP。
+/// 拆成独立函数是为了让两张表的 key 类型各自静态确定，避免热路径里做动态分支。
+#[inline(never)]
+pub fn update_rate_counter_port(
+    src: &IpKey,
+    dport: u16,
+    now_ns: u64,
+    out: &mut RateUpdate,
+) -> bool {
+    let cfg = match RATE_LIMIT_CFG.get(0) {
+        Some(c) => c,
+        None => return false,
+    };
+
+    let tick_ns = if cfg.tick_ms > u64::MAX / 1_000_000 {
+        u64::MAX
+    } else {
+        cfg.tick_ms.wrapping_mul(1_000_000)
+    };
+    if tick_ns == 0 {
+        return false;
+    }
+
+    let key = RateLimitPortKey {
+        ip: *src,
+        dport: dport.to_be(),
+        padding: [0; 6],
+    };
+
+    let mut counter: u64 = 1;
+    let mut last_decay_ns: u64 = now_ns;
+
+    if let Some(entry) = unsafe { RATE_MAP_PORT.get(&key) } {
+        let elapsed_ns = now_ns.saturating_sub(entry.last_decay_ns);
+        let decayed = decay_counter(
+            entry.counter,
+            elapsed_ns,
+            tick_ns,
+            cfg.decay_num,
+            cfg.decay_den,
+        );
+        counter = decayed.saturating_add(1);
+        let ticks = elapsed_ns / tick_ns;
+        last_decay_ns = entry
+            .last_decay_ns
+            .wrapping_add(ticks.wrapping_mul(tick_ns))
+            .min(now_ns);
+    }
+
+    let updated = RateCounter {
+        counter,
+        last_decay_ns,
+        padding: [0; 16],
+    };
+    let _ = RATE_MAP_PORT.insert(&key, &updated, 0);
+
+    let runtime = match CONFIG.get(0) {
+        Some(r) => r,
+        None => return false,
+    };
+    let effective_threshold = if runtime.trust_enabled != 0 {
+        let trust_f = trust::trust_factor(src);
+        let danger_f = trust::danger_factor(runtime.danger_level);
         modulate_threshold(cfg.threshold, trust_f, danger_f)
     } else {
         cfg.threshold

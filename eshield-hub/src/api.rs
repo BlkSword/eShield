@@ -8,10 +8,10 @@ use crate::{
     time::now_ns,
 };
 use axum::{
-    extract::{ConnectInfo, Extension, Query, State},
+    extract::{ConnectInfo, Extension, Query, Request, State},
     http::StatusCode,
-    middleware::{self},
-    response::{Html, IntoResponse},
+    middleware::{self, Next},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -20,6 +20,11 @@ use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::limit::RequestBodyLimitLayer;
+
+/// 单次删除请求允许的最大 IP 数，避免 1MB 请求体塞入数万条策略导致长事务。
+const MAX_DELETE_IPS: usize = 10_000;
+/// node_name 最大长度，防止伪造超长名字撑大注册表/限流桶。
+const MAX_NODE_NAME_LEN: usize = 128;
 
 #[derive(Deserialize)]
 struct PullParams {
@@ -33,11 +38,35 @@ struct DeletedParams {
     limit: Option<usize>,
 }
 
+/// Hub 侧请求日志（与节点侧 web.rs 的 request_logger 对齐，便于统一排障）。
+async fn request_logger(
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let start = std::time::Instant::now();
+    let response = next.run(request).await;
+    tracing::info!(
+        event_type = "http",
+        component = "hub",
+        client_ip = %addr.ip(),
+        method = %method,
+        path = %path,
+        status = response.status().as_u16(),
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "hub http request"
+    );
+    response
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     let auth = state.auth.clone();
     let public = Router::new()
         .route("/", get(index_handler))
         .route("/login", get(login_handler))
+        .layer(middleware::from_fn(request_logger))
         .with_state(Arc::clone(&state));
 
     let protected = Router::new()
@@ -54,6 +83,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/stats", get(stats))
         .layer(middleware::from_fn_with_state(auth, auth_layer))
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
+        .layer(middleware::from_fn(request_logger))
         .with_state(state);
 
     public.merge(protected)
@@ -81,7 +111,18 @@ async fn push_policies(
     }
 
     match state.store.merge(&node_name, &push.policies) {
-        Ok(merged) => Ok(Json(json!({ "merged": merged }))),
+        Ok(merged) => {
+            tracing::info!(
+                event_type = "hub_audit",
+                actor = %node_name,
+                action = "push_policies",
+                count = push.policies.len(),
+                merged,
+                %addr,
+                "hub policy push"
+            );
+            Ok(Json(json!({ "merged": merged })))
+        }
         Err(err) => {
             tracing::error!(%addr, node = %node_name, "failed to merge policies: {err}");
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -116,6 +157,15 @@ async fn heartbeat(
     Json(hb): Json<NodeHeartbeat>,
 ) -> StatusCode {
     let node_name = identity.0.unwrap_or(hb.node_name);
+    if node_name.is_empty() || node_name.len() > MAX_NODE_NAME_LEN {
+        tracing::warn!(%addr, len = node_name.len(), "rejected heartbeat: invalid node_name");
+        return StatusCode::BAD_REQUEST;
+    }
+    // 心跳也走令牌桶：否则伪造大量 node_name 可以无成本撑大注册表与限流桶。
+    if !state.rate_limiter.check(&node_name, now_ns()) {
+        tracing::warn!(%addr, node = %node_name, "heartbeat rate limit exceeded");
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
     tracing::debug!(%addr, node = %node_name, "heartbeat received");
     state.registry.heartbeat(node_name, now_ns());
     StatusCode::OK
@@ -151,20 +201,30 @@ async fn delete_policies(
         tracing::warn!(%addr, node = %node_name, "rate limit exceeded");
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
-
-    let mut removed = 0usize;
-    for ip in &req.ips {
-        match state.store.delete_policy(ip) {
-            Ok(true) => removed += 1,
-            Ok(false) => {}
-            Err(err) => {
-                tracing::error!(%addr, node = %node_name, "failed to delete policy: {err}");
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
+    if req.ips.len() > MAX_DELETE_IPS {
+        tracing::warn!(%addr, node = %node_name, count = req.ips.len(), "rejected delete: too many ips");
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    Ok(Json(json!({ "removed": removed })))
+    // 批量删除：单个写事务完成，避免逐 IP 各开一次事务造成的 fsync 放大。
+    match state.store.delete_policies(&req.ips) {
+        Ok(removed) => {
+            tracing::info!(
+                event_type = "hub_audit",
+                actor = %node_name,
+                action = "delete_policies",
+                requested = req.ips.len(),
+                removed,
+                %addr,
+                "hub policy delete"
+            );
+            Ok(Json(json!({ "removed": removed })))
+        }
+        Err(err) => {
+            tracing::error!(%addr, node = %node_name, "failed to delete policies: {err}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
 }
 
 async fn deleted_policies(

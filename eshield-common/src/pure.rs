@@ -3,6 +3,75 @@
 //! 这些函数不依赖任何 eBPF 运行时类型，因此可以在用户态通过 `cargo test`
 //! 直接进行单元测试，覆盖 SYN Cookie、校验和、速率衰减、端口 ACL 等核心逻辑。
 
+use crate::{BlockEntry, BLOCK_PERMANENT};
+
+/// 合并一次黑名单写入，返回要写进 map 的新条目。
+///
+/// 规则（v0.4.8 起统一由数据面/控制面共用，避免两边逻辑漂移）：
+/// - 已有**仍在有效期内**的条目时，默认**保留首次触发原因**，把本次原因记到
+///   `last_reason`，到期时间取两者中更晚的一个。这样后续模块（自适应、威胁情报等）
+///   不会把真正的根因（速率限制/SYN Flood 等）覆盖掉。
+/// - `explicit = true` 表示管理 API / 静态配置等显式来源：本次原因成为权威原因，
+///   旧原因转入 `last_reason`（运维能看出"这条是人工封的，之前因为什么被封"）。
+/// - 无条目或已过期：以本次原因作为首因。
+pub fn merge_block_entry(
+    prev: Option<BlockEntry>,
+    now_ns: u64,
+    blocked_until_ns: u64,
+    reason: u8,
+    explicit: bool,
+) -> BlockEntry {
+    match prev {
+        Some(p) if p.blocked_until_ns == BLOCK_PERMANENT || p.blocked_until_ns > now_ns => {
+            let until = match (p.blocked_until_ns, blocked_until_ns) {
+                (BLOCK_PERMANENT, _) | (_, BLOCK_PERMANENT) => BLOCK_PERMANENT,
+                (a, b) => {
+                    if a > b {
+                        a
+                    } else {
+                        b
+                    }
+                }
+            };
+            if explicit {
+                BlockEntry {
+                    blocked_until_ns: until,
+                    first_seen_ns: p.first_seen_ns,
+                    hit_count: p.hit_count,
+                    block_reason: reason,
+                    last_reason: if p.block_reason != reason {
+                        p.block_reason
+                    } else {
+                        p.last_reason
+                    },
+                    padding: [0; 2],
+                }
+            } else {
+                BlockEntry {
+                    blocked_until_ns: until,
+                    first_seen_ns: p.first_seen_ns,
+                    hit_count: p.hit_count,
+                    block_reason: p.block_reason,
+                    last_reason: if reason != p.block_reason {
+                        reason
+                    } else {
+                        p.last_reason
+                    },
+                    padding: [0; 2],
+                }
+            }
+        }
+        _ => BlockEntry {
+            blocked_until_ns,
+            block_reason: reason,
+            hit_count: 0,
+            first_seen_ns: now_ns,
+            last_reason: 0,
+            padding: [0; 2],
+        },
+    }
+}
+
 /// SYN Cookie 构造中的 32 位混合函数。
 #[inline(always)]
 pub fn mix(h: &mut u32, v: u32) {
@@ -495,5 +564,80 @@ mod tests {
             expected,
             build_cookie_runtime(addr_pair, port_bucket, &secret, mss_idx)
         );
+    }
+
+    // ---------------------------------------------------- BlockEntry 合并语义
+    const RATE_LIMIT: u8 = 2;
+    const ADAPTIVE: u8 = 5;
+
+    fn entry(until: u64, reason: u8, last: u8, first_seen: u64) -> BlockEntry {
+        BlockEntry {
+            blocked_until_ns: until,
+            first_seen_ns: first_seen,
+            hit_count: 7,
+            block_reason: reason,
+            last_reason: last,
+            padding: [0; 2],
+        }
+    }
+
+    #[test]
+    fn test_merge_block_entry_first_block() {
+        let e = merge_block_entry(None, 1_000, 500_000, RATE_LIMIT, false);
+        assert_eq!(e.block_reason, RATE_LIMIT);
+        assert_eq!(e.last_reason, 0);
+        assert_eq!(e.blocked_until_ns, 500_000);
+        assert_eq!(e.first_seen_ns, 1_000);
+        assert_eq!(e.hit_count, 0);
+    }
+
+    #[test]
+    fn test_merge_block_entry_keeps_first_reason_and_records_overlay() {
+        // 已被速率限制封禁到 500_000，自适应在 2_000 再封到 900_000
+        let prev = entry(500_000, RATE_LIMIT, 0, 1_000);
+        let e = merge_block_entry(Some(prev), 2_000, 900_000, ADAPTIVE, false);
+        assert_eq!(e.block_reason, RATE_LIMIT, "首次原因不能被覆盖");
+        assert_eq!(e.last_reason, ADAPTIVE, "叠加原因要记录");
+        assert_eq!(e.blocked_until_ns, 900_000, "到期时间取更晚者");
+        assert_eq!(e.first_seen_ns, 1_000, "首次时间保留");
+        assert_eq!(e.hit_count, 7, "命中次数保留");
+    }
+
+    #[test]
+    fn test_merge_block_entry_shorter_block_does_not_shorten() {
+        let prev = entry(900_000, RATE_LIMIT, 0, 1_000);
+        let e = merge_block_entry(Some(prev), 2_000, 100_000, ADAPTIVE, false);
+        assert_eq!(e.blocked_until_ns, 900_000);
+    }
+
+    #[test]
+    fn test_merge_block_entry_permanent_wins() {
+        let prev = entry(BLOCK_PERMANENT, RATE_LIMIT, 0, 1_000);
+        let e = merge_block_entry(Some(prev), 2_000, 500_000, ADAPTIVE, false);
+        assert_eq!(e.blocked_until_ns, BLOCK_PERMANENT);
+
+        let prev2 = entry(500_000, RATE_LIMIT, 0, 1_000);
+        let e2 = merge_block_entry(Some(prev2), 2_000, BLOCK_PERMANENT, ADAPTIVE, false);
+        assert_eq!(e2.blocked_until_ns, BLOCK_PERMANENT);
+    }
+
+    #[test]
+    fn test_merge_block_entry_expired_prev_resets_first_reason() {
+        // prev 已过期（until < now）→ 以本次原因重新开始
+        let prev = entry(500, RATE_LIMIT, ADAPTIVE, 100);
+        let e = merge_block_entry(Some(prev), 1_000, 2_000, ADAPTIVE, false);
+        assert_eq!(e.block_reason, ADAPTIVE);
+        assert_eq!(e.last_reason, 0);
+        assert_eq!(e.first_seen_ns, 1_000);
+        assert_eq!(e.hit_count, 0);
+    }
+
+    #[test]
+    fn test_merge_block_entry_explicit_overrides_and_keeps_old_as_last() {
+        let prev = entry(500_000, RATE_LIMIT, 0, 1_000);
+        let e = merge_block_entry(Some(prev), 2_000, 900_000, 6 /* API_BLOCK */, true);
+        assert_eq!(e.block_reason, 6, "显式封禁以本次原因为准");
+        assert_eq!(e.last_reason, RATE_LIMIT, "旧原因转入叠加原因");
+        assert_eq!(e.blocked_until_ns, 900_000);
     }
 }

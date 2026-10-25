@@ -95,6 +95,18 @@ else
     echo "WARNING: clang not found; Test 1.5 (tcp_reset_on_drop) may fail on veth"
 fi
 
+# 轮询 API 就绪，替代固定 sleep（不同机器启动耗时差异大）
+wait_ready() {
+    for _ in $(seq 1 40); do
+        if ip netns exec eshield-server curl -sf --max-time 2 http://127.0.0.1:8720/ready >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    echo "WARN: eShield API not ready within 10s"
+    return 1
+}
+
 mktemp_cfg=$(mktemp /tmp/eshield-XXXXXX.toml)
 cat > "$mktemp_cfg" <<'TOML'
 interface = "veth-server"
@@ -105,7 +117,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 echo "=== Test 1: blacklist source IP 10.0.0.2 should be dropped ==="
 if ip netns exec eshield-client ping -c 3 -W 2 10.0.0.1 >/dev/null 2>&1; then
@@ -133,7 +145,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 ip netns exec eshield-server tcpdump -i veth-server -nn -c 5 -w /tmp/t15_server.pcap tcp port 12345 2>/dev/null &
 SVR_DUMP=$!
@@ -187,7 +199,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 先确认正常 ping 可达
 if ! ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
@@ -234,7 +246,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 先确认正常 ping 可达
 if ! ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1; then
@@ -327,7 +339,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 启动服务端 nc 监听 8080，后台接收数据
 rm -f /tmp/l7_server_recv
@@ -394,7 +406,7 @@ TOML
 cp target/x86_64-unknown-linux-musl/release/eshield /tmp/eshield
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 if ! ip netns exec eshield-client ping -c 2 -W 2 10.0.0.1 >/dev/null 2>&1; then
     echo "FAIL: initial ping blocked before reload"
@@ -463,7 +475,7 @@ TOML
 cp target/x86_64-unknown-linux-musl/release/eshield /tmp/eshield
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 先确认 ping 能通
 if ! ip netns exec eshield-client ping -c 2 -W 2 10.0.0.1 >/dev/null 2>&1; then
@@ -630,7 +642,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 8080 命中项目 DROP：数据无法送达
 ip netns exec eshield-server nc -l 10.0.0.1 8080 > /tmp/pp_recv_drop 2>/dev/null &
@@ -682,7 +694,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 高阈值（默认 200）下正常握手不应被挑战，保持透明
 ip netns exec eshield-server nc -l 10.0.0.1 9010 > /tmp/sc_base 2>/dev/null &
@@ -737,7 +749,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 10.0.0.2 在 allow 列表（10.0.0.0/24,CN）内：普通包与大包分片都应放行
 if ip netns exec eshield-client ping -c 1 -W 2 10.0.0.1 >/dev/null 2>&1 &&    ip netns exec eshield-client ping -s 2000 -c 2 -W 2 10.0.0.1 >/dev/null 2>&1; then
@@ -789,7 +801,7 @@ TOML
 
 ip netns exec eshield-server /tmp/eshield start --config "$mktemp_cfg" &
 ESHIELD_PID=$!
-sleep 2
+wait_ready || true
 
 # 3 个未完成握手的 SYN，阈值 2，应触发连接跟踪 DROP
 ip netns exec eshield-client hping3 -S -p 80 -c 3 -i u10000 10.0.0.1 >/dev/null 2>&1 || true

@@ -233,6 +233,15 @@ cargo test --workspace --exclude eshield-ebpf
 # 单节点防御能力（netns + veth）
 sudo bash tests/netns_test.sh
 
+# 黑名单原因链 + 限速计数维度（dport_grouping）
+sudo SKIP_BUILD=1 bash tests/blacklist_reason_test.sh
+
+# SYN Proxy 对带 TCP 选项 SYN 的兜底丢弃
+sudo SKIP_BUILD=1 bash tests/syn_proxy_options_test.sh
+
+# 本地压测：混合洪水 soak + 黑名单 map 饱和
+sudo SKIP_BUILD=1 DURATION=60 SATURATE=10000 bash tests/stress_local.sh
+
 # 完整攻防场景
 sudo bash tests/full_attack_test.sh
 

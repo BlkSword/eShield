@@ -65,7 +65,8 @@ tcp_reset_on_drop = true
 
 [rate_limit]
 enabled = false            # 关闭速率限制，避免它抢在 Flood 模块之前丢弃
-threshold = 10000          # SYN/UDP/ICMP Flood 模块共享该阈值；基线压测不应触发
+threshold = 500           # SYNUDP/ICMP Flood 模块共享该阈值（500/100ms）；
+                          # 正常 HTTP 基线远低于它，hping3 --flood 可稳定触发
 
 [adaptive]
 enabled = false
@@ -127,8 +128,30 @@ ip netns exec "$SERVER_NS" curl -s "http://127.0.0.1:8443/api/config" | jq -c '.
 echo "[baseline] 初始状态: $(api_stats)"
 echo ""
 
-# 5. 正常 HTTP 基线测试
-echo "--- 测试 1: 正常 HTTP 请求基线 (wrk -> /) ---"
+# ---- 断言辅助：本脚本此前所有检查都是 `|| true`，永远返回成功，等于没有测试 ----
+FAILS=0
+check() {
+    local name="$1" ok="$2" detail="$3"
+    if [ "$ok" = "1" ]; then
+        echo "[PASS] $name ${detail}"
+    else
+        echo "[FAIL] $name ${detail}"
+        FAILS=$((FAILS + 1))
+    fi
+}
+stat() { ip netns exec "$SERVER_NS" curl -sS "http://127.0.0.1:8443/api/stats" | jq -r ".$1 // 0"; }
+# 每个阶段前解封客户端：否则被前一模块封禁后，后续流量会全部命中黑名单，
+# 看起来像"模块没生效"（实测踩到过：UDP 先封掉客户端，ICMP/SYN 计数为 0）。
+unblock_client() {
+    ip netns exec "$SERVER_NS" curl -sS -o /dev/null -X DELETE \
+        -H 'Content-Type: application/json' -d "{\"ip\":\"${CLIENT_IP}\"}" \
+        "http://127.0.0.1:8443/api/blacklist" || true
+    sleep 0.5
+}
+
+# 5. 正常 HTTP 基线测试（应放行）
+echo "--- 测试 1: 正常 HTTP 请求基线 ---"
+B_PASSED=$(stat total_passed)
 if command -v wrk >/dev/null 2>&1; then
     ip netns exec "$CLIENT_NS" wrk -t2 -c50 -d${DURATION}s "http://${SERVER_IP}/" || true
 else
@@ -139,27 +162,46 @@ else
     done
 fi
 sleep 2
+A_PASSED=$(stat total_passed)
+check "正常流量被放行" "$([ "$A_PASSED" -gt "$B_PASSED" ] && echo 1 || echo 0)" "passed +$((A_PASSED - B_PASSED))"
 echo "测试后状态: $(api_stats)"
 echo ""
 
 # 6. UDP Flood 测试
 echo "--- 测试 2: UDP Flood (hping3 -> :53) ---"
+unblock_client
+B_UDP=$(stat udp_flood_blocked)
 timeout 3s ip netns exec "$CLIENT_NS" hping3 --flood --udp -p 53 "$SERVER_IP" >/dev/null 2>&1 || true
 sleep 2
+A_UDP=$(stat udp_flood_blocked)
+check "UDP Flood 触发 udp_flood_blocked" "$([ "$A_UDP" -gt "$B_UDP" ] && echo 1 || echo 0)" "+$((A_UDP - B_UDP))"
+check "UDP 丢弃计入 udp_dropped" "$([ "$(stat udp_dropped)" -gt 0 ] && echo 1 || echo 0)" ""
 echo "测试后状态: $(api_stats)"
 echo ""
 
 # 7. ICMP Flood 测试
 echo "--- 测试 3: ICMP Flood (hping3 -> icmp) ---"
+unblock_client
+B_ICMP=$(stat icmp_flood_blocked)
 timeout 3s ip netns exec "$CLIENT_NS" hping3 --flood --icmp "$SERVER_IP" >/dev/null 2>&1 || true
 sleep 2
+A_ICMP=$(stat icmp_flood_blocked)
+check "ICMP Flood 触发 icmp_flood_blocked" "$([ "$A_ICMP" -gt "$B_ICMP" ] && echo 1 || echo 0)" "+$((A_ICMP - B_ICMP))"
+check "ICMP 丢弃计入 icmp_dropped" "$([ "$(stat icmp_dropped)" -gt 0 ] && echo 1 || echo 0)" ""
 echo "测试后状态: $(api_stats)"
 echo ""
 
-# 8. SYN Flood + 速率限制测试（放最后，因为会触发黑名单）
-echo "--- 测试 4: SYN Flood + 速率限制 (hping3 -> :80) ---"
+# 8. SYN Flood 测试（放最后，因为会触发黑名单）
+echo "--- 测试 4: SYN Flood (hping3 -> :80) ---"
+unblock_client
+B_SYN=$(stat syn_flood_blocked)
 timeout 3s ip netns exec "$CLIENT_NS" hping3 --flood -S -p 80 "$SERVER_IP" >/dev/null 2>&1 || true
 sleep 2
+A_SYN=$(stat syn_flood_blocked)
+check "SYN Flood 触发 syn_flood_blocked" "$([ "$A_SYN" -gt "$B_SYN" ] && echo 1 || echo 0)" "+$((A_SYN - B_SYN))"
+check "SYN 丢弃计入 tcp_dropped" "$([ "$(stat tcp_dropped)" -gt 0 ] && echo 1 || echo 0)" ""
+BSL_IP=$(ip netns exec "$SERVER_NS" curl -sS "http://127.0.0.1:8443/api/blacklist" | jq -r '.entries | length')
+check "攻击源进入黑名单" "$([ "$BSL_IP" -gt 0 ] && echo 1 || echo 0)" "entries=$BSL_IP"
 echo "测试后状态: $(api_stats)"
 echo ""
 
@@ -168,4 +210,8 @@ echo "--- TOP 10 攻击源 ---"
 ip netns exec "$SERVER_NS" curl -fs "http://127.0.0.1:8443/api/stats" 2>/dev/null | jq -r '.top_attackers[] | "\(.ip): \(.count)"' 2>/dev/null | head -10 || true
 
 echo ""
-echo "=== 测试完成 ==="
+if [ "$FAILS" -ne 0 ]; then
+    echo "=== 测试失败：$FAILS 项未通过 ==="
+    exit 1
+fi
+echo "=== 测试完成：全部断言通过 ==="

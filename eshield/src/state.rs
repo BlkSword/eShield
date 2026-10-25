@@ -42,10 +42,9 @@ pub struct Stats {
     pub trust_malicious: AtomicU64,
     /// 全局危险等级 0/1/2（v0.4.0）
     pub danger_level: AtomicU64,
-    /// eBPF map 当前条目数（由后台任务每 30s 采样一次）。
-    /// /metrics 直接读这两个原子量，避免每次抓取都在全局 Ebpf 锁内遍历大表。
-    pub map_entries_blacklist: AtomicU64,
-    pub map_entries_rate: AtomicU64,
+    /// eBPF LRU map 当前条目数（map 名 → 计数），由后台低频任务采样。
+    /// /metrics 只读这份缓存，抓取路径不触碰全局 Ebpf 锁。
+    pub map_entries: DashMap<&'static str, u64>,
     /// 最近一次 map 条目数采样的单调时钟纳秒（0 表示尚未采集）。
     pub map_entries_updated_ns: AtomicU64,
     /// 最近攻击事件环形缓冲（最多 1000 条）
@@ -93,8 +92,7 @@ impl Default for Stats {
             trust_suspicious: AtomicU64::new(0),
             trust_malicious: AtomicU64::new(0),
             danger_level: AtomicU64::new(0),
-            map_entries_blacklist: AtomicU64::new(0),
-            map_entries_rate: AtomicU64::new(0),
+            map_entries: DashMap::new(),
             map_entries_updated_ns: AtomicU64::new(0),
             recent_attacks: Mutex::new(VecDeque::new()),
             timeseries: Arc::new(RwLock::new(TimeSeriesWindow::new(8640, 10))),

@@ -111,9 +111,13 @@ pub struct BlockEntry {
     pub blocked_until_ns: u64,
     pub first_seen_ns: u64,
     pub hit_count: u32,
+    /// 首次/权威的封禁原因（rules::*）。后续自动模块再次命中时保持不变，
+    /// 避免「自适应把速率限制的原因覆盖掉」导致运维看不到真正的触发源。
     pub block_reason: u8,
+    /// 最近一次叠加的触发原因（0 表示没有叠加）。控制台展示为「叠加原因」。
+    pub last_reason: u8,
     /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
-    pub padding: [u8; 3],
+    pub padding: [u8; 2],
 }
 
 /// `blocked_until_ns == 0` 表示永久封禁。使用常量避免与 unix epoch 混淆。
@@ -287,8 +291,10 @@ pub struct RuntimeConfig {
     pub port_rate_limit_enabled: u8,
     /// 连接跟踪模块开关：0=关闭（零开销跳过），1=开启
     pub conn_track_enabled: u8,
+    /// 全局限速计数维度：0=按源 IP 合计（默认），1=按 源IP+目的端口 分组
+    pub rate_limit_dport_grouping: u8,
     /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
-    pub padding: [u8; 6],
+    pub padding: [u8; 5],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）
@@ -407,6 +413,16 @@ pub mod project_action {
     pub const DEFEND: u8 = 3;
 }
 
+/// 全局限速的「源 IP + 目的端口」键（`rate_limit.dport_grouping = true` 时使用）。
+/// 与 `PortRateKey`（只按协议+端口聚合）区分：本键保留源 IP 维度。
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RateLimitPortKey {
+    pub ip: IpKey,
+    pub dport: u16,
+    pub padding: [u8; 6],
+}
+
 /// 按目的端口限速键：协议 + 目的端口（网络字节序）。
 /// 用于防换源 IP 绕过：不管源 IP 怎么变，打在同一个端口上就累计。
 #[repr(C)]
@@ -438,7 +454,8 @@ mod userspace_impls {
     use super::{
         BlockEntry, ConnTrackEntry, CookieSecret, DropEvent, GeoIpKeyV4, GeoIpKeyV6, GlobalStats,
         IpKey, L7Pattern, PacketSample, PortAclEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey,
-        RateCounter, RateLimitConfig, RuntimeConfig, TrustEntry, WhitelistKeyV4, WhitelistKeyV6,
+        RateCounter, RateLimitConfig, RateLimitPortKey, RuntimeConfig, TrustEntry, WhitelistKeyV4,
+        WhitelistKeyV6,
     };
     use aya::Pod;
 
@@ -449,6 +466,7 @@ mod userspace_impls {
     unsafe impl Pod for L7Pattern {}
     unsafe impl Pod for PortAclEntry {}
     unsafe impl Pod for PortRateKey {}
+    unsafe impl Pod for RateLimitPortKey {}
     unsafe impl Pod for ProjectPolicy {}
     unsafe impl Pod for ProjectPolicyKey {}
     unsafe impl Pod for WhitelistKeyV4 {}

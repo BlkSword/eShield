@@ -24,6 +24,49 @@
 - 新增 `.gitattributes`（文本文件统一 LF，二进制资源标记 binary），并规范化仓库内全部 `*.sh`：此前 Windows 检出得到的 CRLF 脚本在 Linux 上会直接 `syntax error near unexpected token 'do\r'`，本次远端构建时实际命中（`scripts/publish-release.sh`）。
 - `docs/dev-linux.md` 重写：补充 musl-tools / `x86_64-linux-musl-gcc` 软链、bpf-linker 版本必须固定 0.10.4（实测 0.12.0 生成被 verifier 拒绝的 `R11 is invalid` 代码）、以及「verifier 只在 attach 时校验，编译通过 != 能挂载」的最小挂载自检方法。
 
+### 控制台与可观测性
+
+- **黑名单保留首次触发原因**：`BlockEntry` 新增 `last_reason`，数据面/自适应/威胁情报再次
+  命中同一 IP 时不再覆盖首因，控制台黑名单页显示「原因 / 叠加 原因」，运维能看到真正的
+  触发源（例：`速率限制 / 叠加 自适应`）。合并逻辑抽到 `eshield_common::pure::merge_block_entry`，
+  数据面与控制面共用并有 6 个单元测试。
+- **`/metrics` 覆盖全部 LRU 表**：除 `BLACKLIST`/`RATE_MAP` 外新增 `PORT_RATE_MAP`/`TRUST_MAP`/
+  `CONN_TRACK`/`SYN_PROXY_CONN`/`TOP_ATTACKERS`/`PROJECT_POLICY` 条目数（后台采样，
+  `metrics_interval_s` 可配，抓取路径零加锁）。
+- **控制台 SPA gzip**：1.26MB 单文件 HTML 按 `Accept-Encoding` 协商下发 gzip（约 420KB），
+  带 `Vary: Accept-Encoding`。
+
+### 数据面
+
+- **SYN Proxy 支持带 TCP 选项的 SYN**：对 20–60 字节 TCP 头（timestamps/SACK 等），用
+  `bpf_xdp_adjust_tail` 裁掉多余选项字节并重建 24 字节头（含 MSS option），不再直接丢弃；
+  仅对"纯 SYN（无载荷）"生效，带 IP option 或携带数据的 SYN 仍按 SYN Flood 丢弃。
+- 威胁情报启动时**只同步一次**（此前 interval 首次 tick 与显式调用叠加，导致重复拉取/重复审计）。
+
+### Hub
+
+- 心跳接口增加**令牌桶限流**与 `node_name` 长度校验（防伪造名字撑大注册表/限流桶）。
+- 策略删除改为**单事务批量删除**（`Store::delete_policies`），不再逐 IP 各开一次写事务；
+  单请求最多 10000 个 IP。
+- Hub 增加请求日志中间件与结构化审计事件（`hub_audit`: push/delete/auth_failed）。
+- 修复：`/api/geoip/reload` 用配置文件 `enabled` 决定是否写规则，导致运行时开关与数据面不一致
+  （已在上一提交修复，此处补充说明）。
+
+### 测试与工具
+
+- `scripts/install.sh` 支持 `ESHIELD_INSTALL_{BIN,CFG,STORE_PATH,SERVICE_FILE,SKIP_SYSTEMD}`
+  覆盖安装路径，便于无副作用验证安装流程；已实测「下载失败干净退出」与「源码构建安装」两条路径。
+- `tests/full_attack_test.sh` 增加失败断言（此前全部 `|| true`，永远返回成功）。
+- `tests/netns_test.sh` 启动等待改为轮询 API 就绪，减少固定 sleep。
+- 新增 `tests/stress_local.sh`：本地混合洪水 soak + 威胁情报批量封禁把 `BLACKLIST`
+  灌到 1 万条，验证压测期间控制面可用、计数单调、指标族数量不退化（实测 30s 处理
+  4554 万包、指标族 57→59、饱和后 healthz 仍 200）。
+- 新增 `tests/blacklist_reason_test.sh`：黑名单「首因 + 叠加原因」与
+  `rate_limit.dport_grouping` 双向回归（分组开启不误封 / 关闭后仍封禁）。
+- 配置样例补充「threshold 是突发信用」的说明：指数衰减稳态 ≈ 每 tick 到达数 /
+  (1 - decay)，默认 `200/100ms + 7/8` 对应的持续速率约为 250pps（单 IP），
+  高持续速率业务需同时调大 threshold 或调小衰减比例。
+
 ## 0.4.7 (2026-10-06)
 
 > **控制台入口变更**：`/` 与 `/login` 统一提供 Vue 3 单文件 SPA；旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。新 API：`GET /api/blacklist`、`GET /api/whitelist`。

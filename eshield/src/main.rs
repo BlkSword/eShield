@@ -430,8 +430,10 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         let packet_log = packet_log.clone();
         let map_infos = map_infos.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                web::run(stats, control, auditor, auth, web_bind, packet_log, map_infos).await
+            if let Err(e) = web::run(
+                stats, control, auditor, auth, web_bind, packet_log, map_infos,
+            )
+            .await
             {
                 warn!("web server exited: {}", e);
             }
@@ -595,11 +597,12 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
     };
 
     // 启动 eBPF map 条目数采样任务：/metrics 只读缓存值，不在抓取路径遍历大表
+    let map_entries_interval_s = config.metrics_interval_s;
     let _map_entries_handle = {
         let stats = state.stats.clone();
         let ebpf = ebpf.clone();
         tokio::spawn(async move {
-            sync_map_entries(ebpf, stats).await;
+            sync_map_entries(ebpf, stats, map_entries_interval_s).await;
         })
     };
 
@@ -1019,13 +1022,23 @@ async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
     }
 }
 
-/// 每 30 秒采样一次 BLACKLIST / RATE_MAP 的当前条目数，缓存到 Stats 原子量。
+/// 周期采样 eBPF 各 LRU map 的当前条目数，缓存到 Stats.map_entries。
 ///
-/// `/metrics` 每被 Prometheus 抓取一次都要输出 map 使用量；若在请求处理时直接
-/// 遍历两张可能各含 10 万条目的 LRU Hash，会长时间持有全局 Ebpf 锁并阻塞事件消费。
-/// 因此把遍历挪到后台低频任务，抓取路径只读原子量。
-async fn sync_map_entries(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(30));
+/// `/metrics` 每次被抓取都要输出 map 使用量；若在请求处理时直接遍历可能各含
+/// 10 万条目的 LRU Hash，会长时间持有全局 Ebpf 锁并阻塞事件消费。因此把遍历
+/// 挪到后台低频任务（`metrics_interval_s` 可配），抓取路径只读缓存。
+async fn sync_map_entries(
+    ebpf: Arc<tokio::sync::Mutex<Ebpf>>,
+    stats: Arc<crate::state::Stats>,
+    interval_s: u64,
+) {
+    use eshield_common::{
+        BlockEntry, ConnTrackEntry, PortRateKey, ProjectPolicy, ProjectPolicyKey, RateCounter,
+        TrustEntry,
+    };
+    const CAP: usize = 20_000;
+
+    let mut interval = tokio::time::interval(Duration::from_secs(interval_s.max(5)));
     loop {
         interval.tick().await;
         let Ok(mut guard) = ebpf.try_lock() else {
@@ -1033,25 +1046,53 @@ async fn sync_map_entries(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate:
             continue;
         };
 
-        let mut blacklist_entries: Option<u64> = None;
+        let mut sampled: Vec<(&'static str, u64)> = Vec::new();
+
+        // 每张表的 key/value 类型不同，逐个分支统计；CAP 限制单表遍历成本。
         if let Some(map) = guard.map_mut("BLACKLIST") {
-            if let Ok(m) = LruHashMap::<_, IpKey, eshield_common::BlockEntry>::try_from(map) {
-                blacklist_entries = Some(m.iter().take(10_000).count() as u64);
+            if let Ok(m) = LruHashMap::<_, IpKey, BlockEntry>::try_from(map) {
+                sampled.push(("BLACKLIST", m.iter().take(CAP).count() as u64));
             }
         }
-        let mut rate_entries: Option<u64> = None;
         if let Some(map) = guard.map_mut("RATE_MAP") {
-            if let Ok(m) = LruHashMap::<_, IpKey, eshield_common::RateCounter>::try_from(map) {
-                rate_entries = Some(m.iter().take(10_000).count() as u64);
+            if let Ok(m) = LruHashMap::<_, IpKey, RateCounter>::try_from(map) {
+                sampled.push(("RATE_MAP", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("PORT_RATE_MAP") {
+            if let Ok(m) = LruHashMap::<_, PortRateKey, RateCounter>::try_from(map) {
+                sampled.push(("PORT_RATE_MAP", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("TRUST_MAP") {
+            if let Ok(m) = LruHashMap::<_, IpKey, TrustEntry>::try_from(map) {
+                sampled.push(("TRUST_MAP", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("CONN_TRACK") {
+            if let Ok(m) = LruHashMap::<_, IpKey, ConnTrackEntry>::try_from(map) {
+                sampled.push(("CONN_TRACK", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("SYN_PROXY_CONN") {
+            if let Ok(m) = LruHashMap::<_, IpKey, u64>::try_from(map) {
+                sampled.push(("SYN_PROXY_CONN", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("TOP_ATTACKERS") {
+            if let Ok(m) = LruHashMap::<_, IpKey, u64>::try_from(map) {
+                sampled.push(("TOP_ATTACKERS", m.iter().take(CAP).count() as u64));
+            }
+        }
+        if let Some(map) = guard.map_mut("PROJECT_POLICY") {
+            if let Ok(m) = LruHashMap::<_, ProjectPolicyKey, ProjectPolicy>::try_from(map) {
+                sampled.push(("PROJECT_POLICY", m.iter().take(CAP).count() as u64));
             }
         }
         drop(guard);
 
-        if let Some(v) = blacklist_entries {
-            stats.map_entries_blacklist.store(v, Ordering::Relaxed);
-        }
-        if let Some(v) = rate_entries {
-            stats.map_entries_rate.store(v, Ordering::Relaxed);
+        for (name, count) in sampled {
+            stats.map_entries.insert(name, count);
         }
         stats
             .map_entries_updated_ns

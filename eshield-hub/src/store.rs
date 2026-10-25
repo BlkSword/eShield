@@ -247,53 +247,74 @@ impl Store {
         Ok((policies_removed, tombstones_removed))
     }
 
-    /// 从策略库中删除指定 IP，并写入 tombstone，供下游节点同步解封。
-    pub fn delete_policy(&self, ip: &IpKey) -> Result<bool> {
+    /// 批量删除策略，并写入 tombstone 供下游节点同步解封。
+    ///
+    /// 单个 redb 写事务内完成：此前 API 对每个 IP 各开一次事务（1MB 请求体可放大成
+    /// 数万次 fsync），既是 DoS 面也会拖慢整个 Hub。
+    pub fn delete_policies(&self, ips: &[IpKey]) -> Result<usize> {
+        if ips.is_empty() {
+            return Ok(0);
+        }
         let now_ns = now_ns();
         let write_txn = self.db.begin_write()?;
-        let mut removed = false;
+        let mut removed = 0usize;
         {
             let mut policies = write_txn.open_table(POLICIES_TABLE)?;
             let mut index = write_txn.open_table(POLICY_INDEX_TABLE)?;
-            let index_key = ip_index_key(ip);
 
-            let existing = {
-                let guard = index.get(&index_key)?;
-                guard.map(|v| *v.value())
-            };
-            match existing {
-                Some(composite) => {
-                    if policies.remove(&composite)?.is_some() {
-                        removed = true;
-                    }
-                    index.remove(&index_key)?;
-                }
-                None => {
-                    // 旧库没有索引时退化为一次扫描，并顺手补齐索引删除。
-                    let mut to_remove = Vec::new();
-                    for result in policies.iter()? {
-                        let (k, v) = result?;
-                        let stored: SharedPolicy = serde_json::from_slice(v.value())?;
-                        if stored.ip == *ip {
-                            to_remove.push(*k.value());
+            for ip in ips {
+                let index_key = ip_index_key(ip);
+                let existing = {
+                    let guard = index.get(&index_key)?;
+                    guard.map(|v| *v.value())
+                };
+                match existing {
+                    Some(composite) => {
+                        if policies.remove(&composite)?.is_some() {
+                            removed += 1;
                         }
+                        index.remove(&index_key)?;
                     }
-                    for key in to_remove {
-                        policies.remove(&key)?;
-                        removed = true;
+                    None => {
+                        // 旧库没有索引时退化为一次扫描，并顺手补齐索引删除。
+                        let mut to_remove = Vec::new();
+                        for result in policies.iter()? {
+                            let (k, v) = result?;
+                            let stored: SharedPolicy = serde_json::from_slice(v.value())?;
+                            if stored.ip == *ip {
+                                to_remove.push(*k.value());
+                            }
+                        }
+                        for key in to_remove {
+                            policies.remove(&key)?;
+                            removed += 1;
+                        }
+                        let _ = index.remove(&index_key);
                     }
-                    let _ = index.remove(&index_key);
                 }
             }
         }
 
-        let mut tombstones = write_txn.open_table(TOMBSTONES_TABLE)?;
-        let tkey = composite_key(now_ns, ip);
-        tombstones.insert(&tkey, &[] as &[u8])?;
-        drop(tombstones);
+        {
+            let mut tombstones = write_txn.open_table(TOMBSTONES_TABLE)?;
+            for ip in ips {
+                // tombstone 键含 IP，同一批次内不会互相覆盖
+                let tkey = composite_key(now_ns, ip);
+                tombstones.insert(&tkey, &[] as &[u8])?;
+            }
+        }
 
         write_txn.commit()?;
         Ok(removed)
+    }
+
+    /// 从策略库中删除指定 IP，并写入 tombstone，供下游节点同步解封。
+    ///
+    /// API 批量删除走 `delete_policies`（单事务）；本方法保留单条语义供测试与后续调用，
+    /// 因此允许在非测试构建中暂未使用。
+    #[allow(dead_code)]
+    pub fn delete_policy(&self, ip: &IpKey) -> Result<bool> {
+        Ok(self.delete_policies(std::slice::from_ref(ip))? > 0)
     }
 
     /// 查询自 `since_ns` 以来被删除的策略。

@@ -1,4 +1,9 @@
-use aya_ebpf::{bindings::xdp_action, helpers::gen::bpf_csum_diff, programs::XdpContext};
+use aya_ebpf::{
+    bindings::{xdp_action, xdp_md},
+    helpers::gen::{bpf_csum_diff, bpf_xdp_adjust_tail},
+    programs::XdpContext,
+    EbpfContext,
+};
 use core::mem;
 
 use crate::maps::{COOKIE_SECRETS, SYN_PROXY_CONN};
@@ -60,15 +65,21 @@ pub fn handle_syn(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u3
     }
 
     // 以下为挑战路径：解析 MSS、构造 Cookie、回 SYN-ACK
-    // 仅支持标准 20 字节 IP 头；TCP 头仅支持无 options(20) 或单个 MSS option(24)。
-    // 若是"已触发阈值但包头无法挑战"（例如带 timestamps/SACK 的 40 字节 TCP 头、
-    // 或带 IP option 的头），必须直接丢弃：放行等于在开启 SYN Proxy 时让这类
-    // SYN Flood 直通内核（该包已被计入 RATE_MAP，全局限速也不会再处理它）。
+    // 仅支持标准 20 字节 IP 头；TCP 头支持 20 字节（无 options）、24 字节（单 MSS）
+    // 以及带其它选项的更长头部（v0.4.8：截断为 24 字节并重写 MSS 选项）。
+    // 仍无法处理时直接丢弃：放行等于在开启 SYN Proxy 时让这类 SYN Flood
+    // 直通内核（该包已被计入 RATE_MAP，全局限速也不会再处理它）。
     if pc.ip_hdr_len != 20 {
         return xdp_action::XDP_DROP;
     }
     let tcp_hdr_len = (unsafe { (*tcp).doff() } as usize) * 4;
-    if tcp_hdr_len != 20 && tcp_hdr_len != 24 {
+    if !(20..=60).contains(&tcp_hdr_len) {
+        return xdp_action::XDP_DROP;
+    }
+    // 只对"纯 SYN"（无 TCP 载荷）做挑战：adjust_tail 只能裁掉帧尾的选项字节，
+    // SYN 携带数据（TFO 等）时无法安全重建，直接丢弃。
+    let ip_tot_len = u16::from_be(unsafe { (*ip).tot_len }) as usize;
+    if ip_tot_len != pc.ip_hdr_len + tcp_hdr_len {
         return xdp_action::XDP_DROP;
     }
 
@@ -266,6 +277,11 @@ fn parse_mss(ctx: &XdpContext, tcp_offset: usize, tcp_hdr_len: usize) -> Option<
 /// 将原始 SYN 包改写为 SYN-ACK 并从同一网卡发出。
 /// 调用者已通过 ptr_at_mut 保证 eth/ip/tcp 头可访问。
 /// 独立栈帧：内联会与 syn_challenge 帧叠加撑爆 BPF 512 字节组合栈。
+///
+/// 原始 TCP 头 >24 字节（带 timestamps/SACK 等选项）时：纯 SYN 没有载荷，
+/// TCP 头就在帧尾，用 `bpf_xdp_adjust_tail` 裁掉多余选项字节，重建为
+/// 24 字节头（含我们自己写的 MSS option）。这样带选项的正常客户端也能走
+/// Cookie 挑战，而不是被直接丢弃。
 #[inline(never)]
 fn send_synack(
     pc: &PacketCtxRef,
@@ -276,28 +292,33 @@ fn send_synack(
 ) -> Result<(), ()> {
     let ctx = pc.ctx;
 
-    // 复用原始 SYN 的 TCP options 空间回传 MSS；没有空间则保持 20 字节头。
-    let new_tcp_hdr_len = original_tcp_hdr_len;
+    // 目标头长：原始 20 字节 → 保持 20（无 MSS 选项）；否则重建为 24 字节（带 MSS）。
+    let new_tcp_hdr_len = if original_tcp_hdr_len >= 24 { 24 } else { 20 };
 
-    // 改写 TCP 头前再次确认访问边界（含 option 空间）
-    if new_tcp_hdr_len == 24 {
-        unsafe { ptr_at_mut::<[u8; 24]>(ctx, ETH_HDR_LEN + pc.ip_hdr_len).ok_or(())? };
+    if original_tcp_hdr_len > new_tcp_hdr_len {
+        let shrink = (original_tcp_hdr_len - new_tcp_hdr_len) as i32;
+        // 返回值 < 0 表示失败（verifier 也会校验返回值范围）
+        if unsafe { bpf_xdp_adjust_tail(ctx.as_ptr() as *mut xdp_md, -shrink) } < 0 {
+            return Err(());
+        }
     }
+
+    // adjust_tail 之后 data/data_end 变化，所有包指针失效，必须重新派生
+    let eth: *mut EthHdr = unsafe { ptr_at_mut::<EthHdr>(ctx, 0).ok_or(())? };
+    let ip_mut: *mut IpHdr = unsafe { ptr_at_mut::<IpHdr>(ctx, ETH_HDR_LEN).ok_or(())? };
     let tcp_mut: *mut TcpHdr =
         unsafe { ptr_at_mut::<TcpHdr>(ctx, ETH_HDR_LEN + pc.ip_hdr_len).ok_or(())? };
-
     // 改写以太网头：交换 MAC
-    let eth: *mut EthHdr = unsafe { ptr_at_mut::<EthHdr>(ctx, 0).ok_or(())? };
     unsafe {
         mem::swap(&mut (*eth).src, &mut (*eth).dst);
     }
 
-    // 改写 IP 头：交换地址、重置 TTL（校验和在独立函数中计算）
-    let ip_mut: *mut IpHdr = unsafe { ptr_at_mut::<IpHdr>(ctx, ETH_HDR_LEN).ok_or(())? };
+    // 改写 IP 头：交换地址、重置 TTL、同步总长度（纯 SYN-ACK 无载荷）
     unsafe {
         mem::swap(&mut (*ip_mut).saddr, &mut (*ip_mut).daddr);
         (*ip_mut).ttl = 64;
         (*ip_mut).check = 0;
+        (*ip_mut).tot_len = ((pc.ip_hdr_len + new_tcp_hdr_len) as u16).to_be();
     }
 
     unsafe {

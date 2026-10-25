@@ -26,9 +26,12 @@ if [ -z "${VERSION:-}" ]; then
     fi
     VERSION="${VERSION:-$DEFAULT_VERSION}"
 fi
-INSTALL_BIN="/usr/local/bin/eshield"
-INSTALL_CFG="/etc/eshield/config.toml"
-STORE_PATH="/var/lib/eshield/rules.redb"
+# 安装路径可用环境变量覆盖（便于无副作用地验证安装脚本本身）
+INSTALL_BIN="${ESHIELD_INSTALL_BIN:-/usr/local/bin/eshield}"
+INSTALL_CFG="${ESHIELD_INSTALL_CFG:-/etc/eshield/config.toml}"
+STORE_PATH="${ESHIELD_STORE_PATH:-/var/lib/eshield/rules.redb}"
+SERVICE_FILE="${ESHIELD_SERVICE_FILE:-/etc/systemd/system/eshield.service}"
+SKIP_SYSTEMD="${ESHIELD_INSTALL_SKIP_SYSTEMD:-0}"
 WEB_PORT=8720
 
 # ── 环境检测 ──
@@ -276,7 +279,6 @@ EOF
     echo "已创建默认配置文件: $INSTALL_CFG"
 fi
 
-SERVICE_FILE="/etc/systemd/system/eshield.service"
 if [ -f "packaging/eshield.service" ]; then
     install -m 0644 "packaging/eshield.service" "$SERVICE_FILE"
 else
@@ -284,14 +286,18 @@ else
 fi
 chmod 644 "$SERVICE_FILE"
 
-systemctl daemon-reload
-systemctl enable eshield
-
-# 如果已经在运行则热加载配置，否则启动
-if systemctl is-active --quiet eshield; then
-    systemctl reload eshield
+if [ "$SKIP_SYSTEMD" = "1" ]; then
+    warn "ESHIELD_INSTALL_SKIP_SYSTEMD=1，跳过 systemd 注册（用于安装脚本自测）"
 else
-    systemctl start eshield
+    systemctl daemon-reload
+    systemctl enable eshield
+
+    # 如果已经在运行则热加载配置，否则启动
+    if systemctl is-active --quiet eshield; then
+        systemctl reload eshield
+    else
+        systemctl start eshield
+    fi
 fi
 
 echo ""

@@ -95,6 +95,9 @@ pub struct RateLimitParams {
     pub decay_num: u64,
     pub decay_den: u64,
     pub block_duration_s: u64,
+    /// 计数维度（仅全局限速使用）：false=per-IP，true=per-IP+目的端口
+    #[serde(default)]
+    pub dport_grouping: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -251,17 +254,17 @@ impl ControlState {
                 .context("BLACKLIST map not found")?
                 .try_into()?;
             for key in &keys {
-                blacklist.insert(
-                    *key,
-                    BlockEntry {
-                        blocked_until_ns,
-                        block_reason: reason,
-                        hit_count: 0,
-                        first_seen_ns: now_ns,
-                        padding: [0; 3],
-                    },
-                    0,
-                )?;
+                // 保留首次触发原因 / first_seen：批量封禁（威胁情报等）不应把
+                // 数据面已经记录的根因（速率限制、Flood 等）冲掉。语义见
+                // eshield_common::pure::merge_block_entry（数据面与控制面共用同一份逻辑）。
+                let entry = eshield_common::pure::merge_block_entry(
+                    blacklist.get(key, 0).ok(),
+                    now_ns,
+                    blocked_until_ns,
+                    reason,
+                    false,
+                );
+                blacklist.insert(*key, entry, 0)?;
             }
         }
 
@@ -323,25 +326,27 @@ impl ControlState {
             .context("BLACKLIST map not found")?
             .try_into()?;
 
+        let now_ns = crate::time::monotonic_ns();
         let blocked_until_ns = if duration_s == 0 {
             BLOCK_PERMANENT
         } else {
-            let now_ns = crate::time::monotonic_ns();
             let block_ns = duration_s.saturating_mul(1_000_000_000);
             now_ns.saturating_add(block_ns)
         };
 
-        blacklist.insert(
-            key,
-            BlockEntry {
-                blocked_until_ns,
-                block_reason: reason,
-                hit_count: 0,
-                first_seen_ns: crate::time::monotonic_ns(),
-                padding: [0; 3],
-            },
-            0,
-        )?;
+        // 显式来源（管理 API / 静态配置）以本次原因为准，把旧原因记到 last_reason；
+        // 自动/策略来源（Hub、威胁情报）保留首次触发原因，只记录叠加原因。
+        // 语义与数据面共用 eshield_common::pure::merge_block_entry。
+        let explicit = reason == rules::API_BLOCK as u8 || reason == rules::BLACKLIST as u8;
+        let entry = eshield_common::pure::merge_block_entry(
+            blacklist.get(&key, 0).ok(),
+            now_ns,
+            blocked_until_ns,
+            reason,
+            explicit,
+        );
+
+        blacklist.insert(key, entry, 0)?;
         Ok(())
     }
 
@@ -607,6 +612,7 @@ impl ControlState {
             cfg.packet_log_sample_rate = snapshot.packet_log_sample_rate;
             cfg.project_enabled = u8::from(snapshot.protection_projects_enabled);
             cfg.port_rate_limit_enabled = u8::from(snapshot.port_rate_limit.enabled);
+            cfg.rate_limit_dport_grouping = u8::from(snapshot.rate_limit.dport_grouping);
             config_array.set(0, cfg, 0)?;
         }
 
@@ -1136,6 +1142,7 @@ impl RuntimeConfigSnapshot {
                 decay_num: config.rate_limit.decay_num,
                 decay_den: config.rate_limit.decay_den,
                 block_duration_s: config.rate_limit.block_duration_s,
+                dport_grouping: config.rate_limit.dport_grouping,
             },
             port_rate_limit: RateLimitParams {
                 enabled: config.port_rate_limit.enabled,
@@ -1144,6 +1151,7 @@ impl RuntimeConfigSnapshot {
                 decay_num: 0,
                 decay_den: 0,
                 block_duration_s: 0,
+                dport_grouping: false,
             },
             port_acl: config.port_acl.clone(),
             protection_projects: config.protection_projects.clone(),
@@ -1205,7 +1213,8 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
         l7_pattern_count: (config.l7_scan.patterns.len() as u8)
             .min(eshield_common::MAX_L7_PATTERNS as u8),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
-        padding: [0; 6],
+        rate_limit_dport_grouping: u8::from(config.rate_limit.dport_grouping),
+        padding: [0; 5],
     };
     tracing::debug!(
         "init_config_map: tcp_reset_on_drop={} trust={}/{} geoip_default={}",
@@ -1624,7 +1633,8 @@ async fn apply_blacklist_map(
                 block_reason: rules::BLACKLIST as u8,
                 hit_count: 0,
                 first_seen_ns: 0,
-                padding: [0; 3],
+                last_reason: 0,
+                padding: [0; 2],
             };
             blacklist.insert(*key, entry, 0)?;
             info!("added static blacklist entry: {}", format_ip_key(key));

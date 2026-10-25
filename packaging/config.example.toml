@@ -30,6 +30,9 @@ web_bind = "0.0.0.0:8720"
 # 动态规则持久化路径（redb）
 store_path = "/var/lib/eshield/rules.redb"
 
+# eBPF map 条目数采样周期（秒，默认 30；/metrics 只读该缓存，不做实时遍历）
+metrics_interval_s = 30
+
 # 时序指标在 redb 中的保留天数（默认 30 天）
 timeseries_retention_days = 30
 
@@ -59,11 +62,18 @@ max_size_mb = 100
 
 [rate_limit]
 enabled = true
-threshold = 200             # 每个 tick 内允许的最大包数
+# threshold 是「突发信用」：指数衰减后的计数器稳态 ≈ (每 tick 到达数) / (1 - decay_num/decay_den)。
+# 默认 100ms tick + 7/8 衰减时，稳态约为每 tick 到达数的 8 倍，
+# 即 threshold=200 对应的持续速率约为 25 包/100ms ≈ 250pps（单 IP）。
+# 需要容忍更高持续速率的业务（NAT/CDN 回源），请同时调大 threshold 或调小衰减比例。
+threshold = 200             # 每个 tick 内允许的最大包数（突发信用）
 tick_ms = 100               # 计数窗口
 decay_num = 7
 decay_den = 8               # 指数衰减因子 7/8
 block_duration_s = 300      # 触发后封禁时长
+# 计数维度：false=按源 IP 合计（默认）；true=按 源IP+目的端口 分组。
+# NAT / 单 IP 承载多业务端口时建议开启，避免不同业务共享一个计数器互相挤占额度。
+dport_grouping = false
 
 # 按目的端口限速：对 (协议 + 目的端口) 维度限速，防换源 IP 绕过 per-IP 限速
 # （源 IP 随机化时 per-IP 计数失效，端口维度恒定累计）。

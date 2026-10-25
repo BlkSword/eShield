@@ -419,8 +419,8 @@ async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<Str
     Html(html)
 }
 
-async fn login_handler() -> Response {
-    html_bytes(APP_HTML)
+async fn login_handler(headers: axum::http::HeaderMap) -> Response {
+    app_html_response(&headers)
 }
 
 async fn login_api_handler(
@@ -566,7 +566,8 @@ async fn protection_modules_handler(State(state): State<Arc<WebState>>) -> Json<
                 field_number("tick_ms", "窗口 Tick (ms)", rt.rate_limit.tick_ms),
                 field_number("decay_num", "衰减分子", rt.rate_limit.decay_num),
                 field_number("decay_den", "衰减分母", rt.rate_limit.decay_den),
-                field_number("block_duration_s", "封禁时长 (s)", rt.rate_limit.block_duration_s)
+                field_number("block_duration_s", "封禁时长 (s)", rt.rate_limit.block_duration_s),
+                field_switch("dport_grouping", "按目的端口分别计数", rt.rate_limit.dport_grouping)
             ]
         }),
         serde_json::json!({
@@ -756,10 +757,18 @@ async fn list_blacklist_handler(
             })
             .map(|(key, e)| {
                 let reason = e.block_reason as u16;
+                let last_reason = e.last_reason as u16;
                 serde_json::json!({
                     "ip": crate::ip::format_ip_key(&key),
                     "reason": rule_display_name(reason),
                     "origin": block_origin_label(reason),
+                    // 叠加原因：首次触发后，其它模块（自适应/威胁情报等）再命中的原因。
+                    // 空字符串表示没有叠加，便于控制台区分「只触发一次」和「多模块命中」。
+                    "last_reason": if last_reason != 0 && last_reason != reason {
+                        rule_display_name(last_reason)
+                    } else {
+                        ""
+                    },
                     "created_ns": e.first_seen_ns,
                     "expires_ns": if e.blocked_until_ns == eshield_common::BLOCK_PERMANENT {
                         0
@@ -1539,13 +1548,57 @@ fn html_bytes(bytes: &'static str) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::VARY, "accept-encoding")
         .body(Body::from(bytes))
         .unwrap()
 }
 
-/// 控制台入口：嵌入的单文件 Vue 3 SPA（`console/` 构建产物）。
-async fn index_handler() -> Response {
+/// 控制台 SPA 的 gzip 缓存（首次请求时压缩一次，之后复用）。
+/// 1.26MB 的 HTML 压缩后约 420KB，明显降低首屏加载与内网带宽占用。
+static APP_HTML_GZIP: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+
+fn accepts_gzip(headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(',').map(|part| part.trim()).any(|part| {
+                part.split(';')
+                    .next()
+                    .unwrap_or("")
+                    .eq_ignore_ascii_case("gzip")
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 控制台 HTML 响应：支持 gzip 协商（带 Vary: Accept-Encoding）。
+fn app_html_response(headers: &axum::http::HeaderMap) -> Response {
+    if accepts_gzip(headers) {
+        let gz = APP_HTML_GZIP.get_or_init(|| {
+            use std::io::Write;
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+            if enc.write_all(APP_HTML.as_bytes()).is_err() {
+                return Vec::new();
+            }
+            enc.finish().unwrap_or_default()
+        });
+        if !gz.is_empty() {
+            return Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+                .header(header::CONTENT_ENCODING, "gzip")
+                .header(header::VARY, "accept-encoding")
+                .body(Body::from(gz.clone()))
+                .unwrap();
+        }
+    }
     html_bytes(APP_HTML)
+}
+
+/// 控制台入口：嵌入的单文件 Vue 3 SPA（`console/` 构建产物）。
+async fn index_handler(headers: axum::http::HeaderMap) -> Response {
+    app_html_response(&headers)
 }
 
 async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
@@ -1742,20 +1795,24 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
     body.push_str(
         "\n# HELP eshield_map_entries eBPF map current entries\n# TYPE eshield_map_entries gauge\n",
     );
-    body.push_str(&format!(
-        "eshield_map_entries{{interface=\"{}\",name=\"BLACKLIST\"}} {}\n\
-         eshield_map_entries{{interface=\"{}\",name=\"RATE_MAP\"}} {}\n",
-        interface,
-        state
-            .stats
-            .map_entries_blacklist
-            .load(std::sync::atomic::Ordering::Relaxed),
-        interface,
-        state
-            .stats
-            .map_entries_rate
-            .load(std::sync::atomic::Ordering::Relaxed),
-    ));
+    // 采样顺序固定，保证 /metrics 输出稳定；尚未采集到的表先输出 0。
+    const COUNTED_MAPS: &[&str] = &[
+        "BLACKLIST",
+        "RATE_MAP",
+        "PORT_RATE_MAP",
+        "TRUST_MAP",
+        "CONN_TRACK",
+        "SYN_PROXY_CONN",
+        "TOP_ATTACKERS",
+        "PROJECT_POLICY",
+    ];
+    for name in COUNTED_MAPS {
+        let count = state.stats.map_entries.get(name).map(|v| *v).unwrap_or(0);
+        body.push_str(&format!(
+            "eshield_map_entries{{interface=\"{}\",name=\"{}\"}} {}\n",
+            interface, name, count
+        ));
+    }
 
     ([("content-type", "text/plain; charset=utf-8")], body).into_response()
 }

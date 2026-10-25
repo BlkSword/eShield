@@ -657,7 +657,7 @@ fn check_rate_limit_drop(pc: &mut PacketCtx) -> u32 {
     if pc.rate_counted {
         return NO_ACTION;
     }
-    if rate_limit::check_rate_limit(pc.src, pc.now_ns) {
+    if rate_limit::check_rate_limit(pc.src, pc.dport, pc.now_ns) {
         pc.rule_id = rules::RATE_LIMIT;
         unsafe {
             with_stats(|s| {

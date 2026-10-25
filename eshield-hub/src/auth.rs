@@ -72,7 +72,17 @@ pub async fn auth_layer(
             request.extensions_mut().insert(NodeIdentity(identity));
             Ok(next.run(request).await)
         }
-        None => Err(StatusCode::UNAUTHORIZED),
+        None => {
+            // 认证失败留痕：Hub 侧原本只有裸 401，没有任何可追溯记录。
+            tracing::warn!(
+                event_type = "hub_audit",
+                action = "auth_failed",
+                path = %request.uri().path(),
+                has_header = header.is_some(),
+                "hub authentication failed"
+            );
+            Err(StatusCode::UNAUTHORIZED)
+        }
     }
 }
 

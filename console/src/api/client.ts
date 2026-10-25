@@ -167,6 +167,7 @@ function normalizeBlocks(raw: any): BlockEntry[] {
   return list.map((b: any) => ({
     ip: String(b.ip ?? ''),
     reason: String(b.reason ?? ''),
+    last_reason: String(b.last_reason ?? ''),
     origin: String(b.origin ?? ''),
     created_ns: Number(b.created_ns ?? Date.now() * 1e6),
     expires_ns: Number(b.expires_ns ?? 0),

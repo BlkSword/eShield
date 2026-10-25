@@ -93,13 +93,16 @@ impl AdaptiveEngine {
                 .ok_or_else(|| anyhow::anyhow!("BLACKLIST map not found"))?
                 .try_into()?;
 
-            let entry = BlockEntry {
+            // 保留首次触发原因：若该源已被其它模块（速率限制/SYN Flood 等）封禁，
+            // 只记录「叠加原因=自适应」并延长到更晚的到期时间，不覆盖根因。
+            let now_ns = crate::time::monotonic_ns();
+            let entry = eshield_common::pure::merge_block_entry(
+                blacklist.get(&src_ip, 0).ok(),
+                now_ns,
                 blocked_until_ns,
-                block_reason: rules::ADAPTIVE as u8,
-                hit_count: 0,
-                first_seen_ns: crate::time::monotonic_ns(),
-                padding: [0; 3],
-            };
+                rules::ADAPTIVE as u8,
+                false,
+            );
             blacklist.insert(src_ip, entry, 0)?;
 
             // 记录封禁截止时间，避免重复写入 map；永久封禁用 u64::MAX 标记，
