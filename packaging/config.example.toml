@@ -22,7 +22,9 @@ icmp_flood_enabled = false
 # Web 控制台监听地址，默认 0.0.0.0:8720
 web_bind = "0.0.0.0:8720"
 
-# API 访问 Token（未设置则允许匿名访问）
+# API 访问 Token。
+# 未设置时进程启动会生成随机 Token（日志只打印前缀），外部请求仍必须携带 Bearer Token；
+# 本机 127.0.0.1/::1 的 CLI/TUI 请求免校验。可用 `eshield reset-token` 生成新 Token。
 # api_token = "changeme"
 
 # 动态规则持久化路径（redb）
@@ -73,6 +75,10 @@ tick_ms = 100                # 固定窗口；该模块不使用 decay_num/decay
 
 [syn_proxy]
 enabled = false             # SYN Flood 源进入 Cookie 挑战（降级式：正常连接直通，合法客户端验证后解除）
+# 挑战包仅支持 20 字节 IPv4 头 + 20/24 字节 TCP 头（单 MSS option）。
+# 带 timestamps/SACK 等选项的 SYN（常见 40 字节头）无法构造 Cookie 挑战，此类源一旦
+# 触发阈值会被直接丢弃（最长 30s，期间该源的新连接都会失败），否则这类 SYN Flood 会
+# 绕过防护直通内核。面向真实客户端的高流量服务建议保持关闭，改用 SYN Flood 检测。
 
 [l7_scan]
 enabled = false

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased（v0.4.8 计划）
+
+### 修复
+
+- **SYN Proxy 开启时带 TCP 选项的 SYN Flood 会直通内核**：挑战包只支持 20/24 字节 TCP 头（单 MSS option），真实客户端的 SYN 普遍带 timestamps/SACK（40 字节头）。此前 `handle_syn` 对这些包头返回 `NO_ACTION`，主流程随即放行，且该包的 `rate_counted` 已置位导致全局限速也被跳过 —— 等于开启 SYN Proxy 后放弃对这类 SYN Flood 的防护。现在 `syn_cookie::handle_syn` 在挑战路径内对无法构造挑战包的包头直接返回 XDP_DROP（非 SYN 包行为不变），统一计入 `syn_flood_blocked`；同时把挑战标记有效期从 120s 降为 30s，控制对同一 IP 正常连接的误伤窗口。`tests/netns_test.sh` 的 Test 3 相应改为「被挑战源的带选项 SYN 必须被丢弃 + 未被挑战的源连接正常」，并新增 `tests/syn_proxy_options_test.sh` 专门回归该场景。
+- **热加载在 `geoip.default_action=drop` 下会切断自身管理连接**：`reload_config_file` 原先先写 `CONFIG`（把默认动作翻到 drop）再重建 allow 列表，中间存在"allow 列表为空 + 默认丢弃"窗口。现在改为最后写 `CONFIG`，且 GeoIP 规则改为"先写新条目、再删旧条目"的增量顺序。启动路径同样调整。
+- **`scripts/install.sh` 发布链路断裂**：仓库名写死为不存在的 `eshield/eshield`（实际为 `BlkSword/eShield`）且 `curl` 未加 `-f`，404 的 HTML 会被当作二进制安装；版本兜底 0.4.1、workspace 根 Cargo.toml 无 version 导致版本解析失败。现已修正仓库名/版本解析，加入 `curl -f`、ELF 头校验与 SHA256SUMS 校验，安装写入改为 `install -m 0755`，并将探测到的活动网卡写入默认配置。
+- **`/metrics` 与 Trust 分布在大表下长时间持有全局 Ebpf 锁**：抓取路径原实现会遍历 `BLACKLIST`/`RATE_MAP`（各可达 10 万条）并与事件消费互斥。现在 map 当前条目数由后台 30s 采样任务缓存到原子量，抓取只读缓存；`map_max_entries` 段改用 `try_lock`，抢不到锁就跳过；Trust 分布同步降频到 30s 且改为 `try_lock`。
+
+### 变更
+
+- **控制台认证改为纯 Cookie**：前端不再把 `api_token` 写入 `localStorage`（使 `HttpOnly` 形同虚设），令牌只在内存中保留一份用于 Bearer 兜底；登录页在 401/429/网络错误时明确报错，不再静默进入"演示数据"模式（避免把样例数据误当成真实防护状态）。
+- 新增 `POST /api/auth/logout` 清除会话 Cookie；控制台退出登录改为调用该接口。
+- HTTPS（含反代 `X-Forwarded-Proto: https`）场景下会话 Cookie 追加 `Secure`；新增 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 与（HTTPS 时）`Strict-Transport-Security` 响应头。
+- 文档同步：`AGENTS.md` 的控制台章节（指向 `console/` 与 `app.html` 嵌入方式）、`docs/deployment.md`（版本号、`rules.redb`、K8s 清单、Hub 内置 TLS）、`console/README.md` 的 `include_str!`、`docs/api.md` 新增 logout 端点。
+- 仓库整理：删除与 `packaging/eshield.service` 完全重复的 `packaging/systemd/` 与根 `systemd/`；`.gitignore` 移除对已跟踪文件（`/docs`、`AGENTS.md`、`ROADMAP.md`）的忽略，避免新增文档被静默漏提交。
+- CI 新增 `console-build` job（`npm ci` + `vue-tsc` + `vite build`，并校验 `console/dist/index.html` 与 `eshield/web/app.html` 字节一致）；集成测试 job 修正 `sudo` 重置环境变量导致找不到 cargo 的问题，并以 `SKIP_BUILD=1` 复用已构建产物。
+- 测试脚本：`netns_test.sh` / `hub_node_test.sh` 改为自动探测 cargo（不再硬编码 `/root/.cargo`），进程清理限定为 `/tmp/eshield*`，并在测试前备份、退出时恢复宿主 `/var/lib/eshield/rules.redb`。
+- `scripts/build-release.sh` 补上 Hub 二进制产物，与 `publish-release.sh` 期望的资产对齐。
+- 新增 `.gitattributes`（文本文件统一 LF，二进制资源标记 binary），并规范化仓库内全部 `*.sh`：此前 Windows 检出得到的 CRLF 脚本在 Linux 上会直接 `syntax error near unexpected token 'do\r'`，本次远端构建时实际命中（`scripts/publish-release.sh`）。
+- `docs/dev-linux.md` 重写：补充 musl-tools / `x86_64-linux-musl-gcc` 软链、bpf-linker 版本必须固定 0.10.4（实测 0.12.0 生成被 verifier 拒绝的 `R11 is invalid` 代码）、以及「verifier 只在 attach 时校验，编译通过 != 能挂载」的最小挂载自检方法。
+
 ## 0.4.7 (2026-10-06)
 
 > **控制台入口变更**：`/` 与 `/login` 统一提供 Vue 3 单文件 SPA；旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。新 API：`GET /api/blacklist`、`GET /api/whitelist`。

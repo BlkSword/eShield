@@ -14,27 +14,20 @@ target
 **/mutants.out*/
 
 # RustRover
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
+#  JetBrains specific template is maintained in a separate .gitignore file that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
 # Local helpers / secrets
 .remote_pass
 .env
-ROADMAP.md
-
-# Sync logs
-sync*.log
-ROADMAP.md
-
-# Local runtime config
 config.toml
-/docs
-/dist
-AGENTS.md
+sync*.log
 
-# Console frontend
+# 构建产物（发布包、前端产物）
+/dist
 console/node_modules
 console/dist
+
+# 说明：docs/、AGENTS.md、ROADMAP.md 都会被 Git 跟踪，
+# 不要再加入忽略列表，否则新增文档会被静默漏提交。

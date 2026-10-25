@@ -165,6 +165,7 @@ pub async fn run(
         )
         .route("/api/config/reload", post(reload_config_handler))
         .route("/api/auth/check", get(auth_check_handler))
+        .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/reset-token", post(reset_token_handler))
         .route("/api/protection-modules", get(protection_modules_handler))
         .route(
@@ -213,7 +214,9 @@ pub async fn run(
         ))
         .with_state(state.clone());
 
-    let app = public.merge(protected);
+    let app = public
+        .merge(protected)
+        .layer(middleware::from_fn(security_headers));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("web dashboard listening on http://{}", bind);
@@ -324,6 +327,56 @@ struct SetL7PatternsReq {
 
 const BLOCKED_HTML: &str = include_str!("blocked.html");
 
+/// 安全响应头：控制台是内部管理面，禁止被第三方站点内嵌/嗅探。
+async fn security_headers(request: Request, next: Next) -> Response {
+    let secure = request_is_https(request.headers());
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        "x-content-type-options",
+        header::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert("x-frame-options", header::HeaderValue::from_static("DENY"));
+    headers.insert(
+        "referrer-policy",
+        header::HeaderValue::from_static("no-referrer"),
+    );
+    if secure {
+        headers.insert(
+            "strict-transport-security",
+            header::HeaderValue::from_static("max-age=31536000"),
+        );
+    }
+    response
+}
+
+/// 判断当前请求是否经由 TLS（直连时 aya/axum 没有 TLS，通常由同机或上游反代终结）。
+fn request_is_https(headers: &axum::http::HeaderMap) -> bool {
+    if let Some(proto) = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+    {
+        return proto.eq_ignore_ascii_case("https");
+    }
+    headers
+        .get("forwarded")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase().contains("proto=https"))
+        .unwrap_or(false)
+}
+
+/// 构造会话 Cookie。HTTPS 场景（反代终结 TLS）追加 Secure，避免明文链路下发凭据。
+fn session_cookie(token: &str, secure: bool) -> String {
+    if secure {
+        format!(
+            "eshield-token={}; Path=/; HttpOnly; Secure; SameSite=Lax",
+            token
+        )
+    } else {
+        format!("eshield-token={}; Path=/; HttpOnly; SameSite=Lax", token)
+    }
+}
+
 async fn blocked_handler(ConnectInfo(addr): ConnectInfo<SocketAddr>) -> Html<String> {
     let html = BLOCKED_HTML
         .replace("{ip}", &addr.ip().to_string())
@@ -339,6 +392,7 @@ async fn login_handler() -> Response {
 async fn login_api_handler(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginReq>,
 ) -> Response {
     let ip = addr.ip();
@@ -357,10 +411,7 @@ async fn login_api_handler(
                 Some(ip.to_string()),
             )
             .await;
-        let cookie = format!(
-            "eshield-token={}; Path=/; HttpOnly; SameSite=Lax",
-            req.token
-        );
+        let cookie = session_cookie(&req.token, request_is_https(&headers));
         Response::builder()
             .status(StatusCode::OK)
             .header("Set-Cookie", cookie)
@@ -386,7 +437,26 @@ async fn auth_check_handler() -> &'static str {
     "OK"
 }
 
-async fn reset_token_handler(State(state): State<Arc<WebState>>) -> Response {
+/// 退出登录：清除 HttpOnly 会话 Cookie。
+/// 注意：若节点配置了 api_token，令牌本身仍然有效（本机 CLI 与其它会话不受影响），
+/// 这里只清理当前浏览器的会话。
+async fn logout_handler(headers: axum::http::HeaderMap) -> Response {
+    let mut cookie = String::from("eshield-token=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    if request_is_https(&headers) {
+        cookie.push_str("; Secure");
+    }
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Set-Cookie", cookie)
+        .body(Body::from("OK"))
+        .unwrap()
+        .into_response()
+}
+
+async fn reset_token_handler(
+    State(state): State<Arc<WebState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     let new_token = state.auth.reset_token().await;
     state
         .auditor
@@ -398,10 +468,7 @@ async fn reset_token_handler(State(state): State<Arc<WebState>>) -> Response {
         )
         .await;
     // 同步刷新 cookie，否则 EventSource（只能携带 cookie）会在旧 token 失效后断流。
-    let cookie = format!(
-        "eshield-token={}; Path=/; HttpOnly; SameSite=Lax",
-        new_token
-    );
+    let cookie = session_cookie(&new_token, request_is_https(&headers));
     Response::builder()
         .status(StatusCode::OK)
         .header("Set-Cookie", cookie)
@@ -1627,9 +1694,12 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         interface, 0, interface, cumulative
     ));
 
-    // eBPF map usage metrics
-    {
-        let mut guard = state.control.ebpf.lock().await;
+    // eBPF map 指标：
+    // - max_entries 读取 map info（廉价，不遍历）；
+    // - 当前条目数来自后台 30s 采样缓存（Stats.map_entries_*），抓取路径不再遍历大表。
+    // 整段用 try_lock：Prometheus 抓取绝不排队等待全局 Ebpf 锁，抢不到就跳过 map 段，
+    // 否则一次抓取可能把事件消费/策略写入堵住数百毫秒。
+    if let Ok(guard) = state.control.ebpf.try_lock() {
         body.push_str("\n# HELP eshield_map_max_entries eBPF map max entries\n# TYPE eshield_map_max_entries gauge\n");
         for (name, map) in guard.maps() {
             if let Some(data) = map_data(map) {
@@ -1648,32 +1718,27 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
                 }
             }
         }
-
-        body.push_str("\n# HELP eshield_map_entries eBPF map current entries\n# TYPE eshield_map_entries gauge\n");
-        use aya::maps::HashMap as LruHashMap;
-        use eshield_common::{BlockEntry, IpKey, RateCounter};
-
-        if let Some(map) = guard.map_mut("BLACKLIST") {
-            let m: Result<LruHashMap<_, IpKey, BlockEntry>, _> = map.try_into();
-            if let Ok(m) = m {
-                body.push_str(&format!(
-                    "eshield_map_entries{{interface=\"{}\",name=\"BLACKLIST\"}} {}\n",
-                    interface,
-                    m.iter().take(10_000).count()
-                ));
-            }
-        }
-        if let Some(map) = guard.map_mut("RATE_MAP") {
-            let m: Result<LruHashMap<_, IpKey, RateCounter>, _> = map.try_into();
-            if let Ok(m) = m {
-                body.push_str(&format!(
-                    "eshield_map_entries{{interface=\"{}\",name=\"RATE_MAP\"}} {}\n",
-                    interface,
-                    m.iter().take(10_000).count()
-                ));
-            }
-        }
+    } else {
+        tracing::debug!("/metrics: ebpf lock busy, skipping map metrics");
     }
+
+    body.push_str(
+        "\n# HELP eshield_map_entries eBPF map current entries\n# TYPE eshield_map_entries gauge\n",
+    );
+    body.push_str(&format!(
+        "eshield_map_entries{{interface=\"{}\",name=\"BLACKLIST\"}} {}\n\
+         eshield_map_entries{{interface=\"{}\",name=\"RATE_MAP\"}} {}\n",
+        interface,
+        state
+            .stats
+            .map_entries_blacklist
+            .load(std::sync::atomic::Ordering::Relaxed),
+        interface,
+        state
+            .stats
+            .map_entries_rate
+            .load(std::sync::atomic::Ordering::Relaxed),
+    ));
 
     ([("content-type", "text/plain; charset=utf-8")], body).into_response()
 }

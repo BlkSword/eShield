@@ -489,9 +489,11 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             pc.rule_id = rules::SYN_FLOOD;
             unsafe {
                 with_stats(|s| {
-                    if action == xdp_action::XDP_TX {
-                        s.syn_flood_blocked += 1;
-                    } else {
+                    // XDP_TX：已回 Cookie 挑战包；XDP_DROP：包头无法构造挑战
+                    //（如带 timestamps/SACK 的 40 字节 TCP 头）或回包失败。
+                    // 两者都是"该 SYN 被拦下"，统一计入 syn_flood_blocked。
+                    s.syn_flood_blocked += 1;
+                    if action != xdp_action::XDP_TX {
                         s.total_dropped += 1;
                         inc_protocol_dropped(s, parser::IPPROTO_TCP);
                     }
@@ -505,6 +507,9 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             trust_pass_sampled(pc.src, pc.now_ns, pc.trust_add_divisor);
             return action;
         }
+        // 兜底：该源已进入挑战态，但当前包头不支持 Cookie 挑战
+        // （例如带 timestamps/SACK 的 40 字节 TCP 头）。handle_syn 内部已直接返回
+        // XDP_DROP，此处不再放行。
         // IPv4 + SYN Proxy 开启时，SYN Flood 检测由 handle_syn 内部完成
         //（计数一次），此处不再重复检测，避免同一 SYN 被计数两次。
         return NO_ACTION;

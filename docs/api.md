@@ -22,8 +22,9 @@ Authorization: Bearer <token>
 | `/ready` | GET | 就绪检查 |
 | `/login` | GET | 控制台登录入口（Vue SPA，登录态由 SPA 处理） |
 | `/blocked` | GET | 403 封禁示例页 |
-| `/api/auth/login` | POST | 控制台登录验证 |
+| `/api/auth/login` | POST | 控制台登录验证（成功后下发 HttpOnly `eshield-token` Cookie） |
 | `/api/auth/check` | GET | 登录状态检查 |
+| `/api/auth/logout` | POST | 清除控制台会话 Cookie（v0.4.8） |
 | `/api/auth/reset-token` | POST | 重置访问令牌 |
 | `/` | GET | Web Dashboard（Vue 3 单文件 SPA，`console/` 构建后嵌入 `eshield/web/app.html`） |
 | `/api/stats` | GET | 运行统计 |

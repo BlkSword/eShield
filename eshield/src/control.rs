@@ -146,7 +146,6 @@ impl ControlState {
         // 初始化运行时配置与策略
         {
             let mut guard = state.ebpf.lock().await;
-            init_config_map(&mut guard, config)?;
             init_rate_limit_map(&mut guard, config)?;
             init_port_rate_map(&mut guard, config)?;
             init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
@@ -159,6 +158,9 @@ impl ControlState {
             apply_blacklist_map(&mut guard, config, &mut blacklist).await?;
             apply_whitelist_map(&mut guard, config, &mut whitelist).await?;
             apply_geoip_map(&mut guard, config, &mut geoip_blocks, &mut geoip_allows).await?;
+            // CONFIG 最后写入：geoip_default_action 翻转到 drop 时，
+            // 白名单与 GeoIP allow 列表必须已经就绪，否则会出现"全员被丢"的窗口。
+            init_config_map(&mut guard, config)?;
         }
 
         Ok(state)
@@ -176,7 +178,6 @@ impl ControlState {
         let mut geoip_blocks = self.geoip_blocks.lock().await;
         let mut geoip_allows = self.geoip_allows.lock().await;
 
-        init_config_map(&mut guard, &config)?;
         init_rate_limit_map(&mut guard, &config)?;
         init_port_rate_map(&mut guard, &config)?;
         init_l7_patterns_map(&mut guard, &config.l7_scan.patterns)?;
@@ -185,6 +186,9 @@ impl ControlState {
         apply_whitelist_map(&mut guard, &config, &mut whitelist).await?;
         apply_blacklist_map(&mut guard, &config, &mut blacklist).await?;
         apply_geoip_map(&mut guard, &config, &mut geoip_blocks, &mut geoip_allows).await?;
+        // CONFIG 最后写入，避免 geoip_default_action 先翻到 drop、allow 列表尚未重建
+        // 导致管理连接被自己切断（见 docs/test-report-2026-10.md 6.1）。
+        init_config_map(&mut guard, &config)?;
 
         let prev_danger = self.runtime.read().await.danger_level;
         let mut new_snapshot = RuntimeConfigSnapshot::from_config(&config);
@@ -1658,45 +1662,15 @@ async fn apply_geoip_map(
         }
     }
 
-    // 清空旧规则（block / allow 各 4 张表）。
-    {
-        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
-            .map_mut("GEOIP_BLOCKED_V4")
-            .context("GEOIP_BLOCKED_V4 map not found")?
-            .try_into()?;
-        for (addr, prefix) in old_blocks_v4 {
-            map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
-        }
-    }
-    {
-        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
-            .map_mut("GEOIP_BLOCKED_V6")
-            .context("GEOIP_BLOCKED_V6 map not found")?
-            .try_into()?;
-        for (addr, prefix) in old_blocks_v6 {
-            map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
-        }
-    }
-    {
-        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
-            .map_mut("GEOIP_ALLOWED_V4")
-            .context("GEOIP_ALLOWED_V4 map not found")?
-            .try_into()?;
-        for (addr, prefix) in old_allows_v4 {
-            map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }))?;
-        }
-    }
-    {
-        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
-            .map_mut("GEOIP_ALLOWED_V6")
-            .context("GEOIP_ALLOWED_V6 map not found")?
-            .try_into()?;
-        for (addr, prefix) in old_allows_v6 {
-            map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }))?;
-        }
-    }
-
+    // 关闭 GeoIP 时清空旧规则（block / allow 各 4 张表）。
     if !config.geoip.enabled {
+        remove_geoip_entries(
+            ebpf,
+            &old_blocks_v4,
+            &old_blocks_v6,
+            &old_allows_v4,
+            &old_allows_v6,
+        )?;
         return Ok(());
     }
     if config.geoip.db_path.is_some() {
@@ -1792,6 +1766,40 @@ async fn apply_geoip_map(
         }
     }
 
+    // 旧条目在新规则写入后再清理：顺序反过来会在 reload 期间出现
+    // "allow 列表为空 + default_action=drop" 的窗口，把管理连接一起切断。
+    let keep_blocks_v4: HashSet<(u32, u32)> = new_blocks_v4.iter().copied().collect();
+    let keep_blocks_v6: HashSet<([u8; 16], u32)> = new_blocks_v6.iter().copied().collect();
+    let keep_allows_v4: HashSet<(u32, u32)> = new_allows_v4.iter().copied().collect();
+    let keep_allows_v6: HashSet<([u8; 16], u32)> = new_allows_v6.iter().copied().collect();
+    let stale_blocks_v4: Vec<(u32, u32)> = old_blocks_v4
+        .iter()
+        .copied()
+        .filter(|k| !keep_blocks_v4.contains(k))
+        .collect();
+    let stale_blocks_v6: Vec<([u8; 16], u32)> = old_blocks_v6
+        .iter()
+        .copied()
+        .filter(|k| !keep_blocks_v6.contains(k))
+        .collect();
+    let stale_allows_v4: Vec<(u32, u32)> = old_allows_v4
+        .iter()
+        .copied()
+        .filter(|k| !keep_allows_v4.contains(k))
+        .collect();
+    let stale_allows_v6: Vec<([u8; 16], u32)> = old_allows_v6
+        .iter()
+        .copied()
+        .filter(|k| !keep_allows_v6.contains(k))
+        .collect();
+    remove_geoip_entries(
+        ebpf,
+        &stale_blocks_v4,
+        &stale_blocks_v6,
+        &stale_allows_v4,
+        &stale_allows_v6,
+    )?;
+
     // 容量预警：LPM Trie 上限 4096 条/族，接近上限时提醒用户收敛网段粒度。
     let v4_used = new_blocks_v4.len() + new_allows_v4.len();
     let v6_used = new_blocks_v6.len() + new_allows_v6.len();
@@ -1808,6 +1816,53 @@ async fn apply_geoip_map(
         );
     }
 
+    Ok(())
+}
+
+/// 从 4 张 GeoIP LPM Trie 中删除指定条目（幂等：条目不存在时忽略）。
+fn remove_geoip_entries(
+    ebpf: &mut Ebpf,
+    blocks_v4: &[(u32, u32)],
+    blocks_v6: &[([u8; 16], u32)],
+    allows_v4: &[(u32, u32)],
+    allows_v6: &[([u8; 16], u32)],
+) -> anyhow::Result<()> {
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V4")
+            .context("GEOIP_BLOCKED_V4 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in blocks_v4 {
+            let _ = map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }));
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_BLOCKED_V6")
+            .context("GEOIP_BLOCKED_V6 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in blocks_v6 {
+            let _ = map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }));
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV4, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V4")
+            .context("GEOIP_ALLOWED_V4 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in allows_v4 {
+            let _ = map.remove(&LpmKey::new(prefix, GeoIpKeyV4 { addr: addr.to_be() }));
+        }
+    }
+    {
+        let mut map: LpmTrie<_, GeoIpKeyV6, u8> = ebpf
+            .map_mut("GEOIP_ALLOWED_V6")
+            .context("GEOIP_ALLOWED_V6 map not found")?
+            .try_into()?;
+        for &(addr, prefix) in allows_v6 {
+            let _ = map.remove(&LpmKey::new(prefix, GeoIpKeyV6 { addr }));
+        }
+    }
     Ok(())
 }
 

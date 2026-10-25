@@ -12,13 +12,25 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 在 sudo 环境下 $HOME 可能变成 /root，因此显式指向 ubuntu 用户的 Rust 环境
-CARGO="${CARGO:-/root/.cargo/bin/cargo}"
+# 在 sudo 环境下 $HOME / PATH 可能被重置，因此依次探测：显式变量 → PATH → $HOME → /root。
+if [ -z "${CARGO:-}" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+        CARGO="$(command -v cargo)"
+    elif [ -x "$HOME/.cargo/bin/cargo" ]; then
+        CARGO="$HOME/.cargo/bin/cargo"
+    elif [ -x /root/.cargo/bin/cargo ]; then
+        CARGO=/root/.cargo/bin/cargo
+    else
+        echo "FAIL: cargo not found (set CARGO=/path/to/cargo)"
+        exit 1
+    fi
+fi
 EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
-RUSTUP="${RUSTUP:-/root/.cargo/bin/rustup}"
-export PATH="/root/.cargo/bin:$PATH"
-export RUSTUP_HOME="${RUSTUP_HOME:-/root/.rustup}"
-export CARGO_HOME="${CARGO_HOME:-/root/.cargo}"
+CARGO_ROOT="$(cd "$(dirname "$CARGO")/.." && pwd)"
+RUSTUP="${RUSTUP:-$(dirname "$CARGO")/rustup}"
+export PATH="$(dirname "$CARGO"):$PATH"
+export RUSTUP_HOME="${RUSTUP_HOME:-$CARGO_ROOT/.rustup}"
+export CARGO_HOME="${CARGO_HOME:-$CARGO_ROOT/.cargo}"
 
 cd "$(dirname "$0")/.."
 
@@ -28,16 +40,29 @@ if [ -z "$SKIP_BUILD" ]; then
     "$CARGO" build --package eshield --target x86_64-unknown-linux-musl --release -q
 fi
 
-# 确保没有旧进程占用测试二进制
-pkill -9 -x eshield 2>/dev/null || true
+# 确保没有旧进程占用测试二进制（只杀 /tmp/eshield，避免误伤宿主机上的生产实例）
+pkill -9 -f '^/tmp/eshield( |$)' 2>/dev/null || true
 sleep 0.5
 rm -f /tmp/eshield /tmp/eshield.ebpf
 cp "target/x86_64-unknown-linux-musl/release/eshield" /tmp/eshield
 cp "target/bpfel-unknown-none/release/eshield" /tmp/eshield.ebpf
 
+# 测试配置未指定 store_path，会写入宿主机默认路径。测试前备份、退出时恢复，
+# 避免跑一次集成测试就把开发机/生产机上的动态规则清空。
+STORE_FILE="/var/lib/eshield/rules.redb"
+STORE_BAK=""
+if [ -f "$STORE_FILE" ]; then
+    STORE_BAK="$(mktemp /tmp/eshield-store-XXXXXX.bak)"
+    cp -a "$STORE_FILE" "$STORE_BAK"
+fi
+mktemp_cfg=""
 cleanup() {
     ip netns del eshield-client 2>/dev/null || true
     ip netns del eshield-server 2>/dev/null || true
+    if [ -n "$STORE_BAK" ] && [ -f "$STORE_BAK" ]; then
+        mv -f "$STORE_BAK" "$STORE_FILE" 2>/dev/null || true
+    fi
+    rm -f "$mktemp_cfg" /tmp/dummy_xdp.o /tmp/sc_recv1 /tmp/sc_recv2 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -189,7 +214,7 @@ wait $ESHIELD_PID 2>/dev/null || true
 sleep 1
 rm -f /var/lib/eshield/rules.redb
 
-echo "=== Test 3: SYN flood should enter challenge mode; legitimate retry succeeds ==="
+echo "=== Test 3: SYN flood enters challenge mode; challenged source with TCP options is dropped ==="
 cat > "$mktemp_cfg" <<'TOML'
 interface = "veth-server"
 log_level = "info"
@@ -238,34 +263,42 @@ if ! echo "$SC_STATS" | grep -q '"syn_flood_blocked":[1-9]'; then
 fi
 echo "PASS: SYN flood challenge triggered"
 
-# 挑战模式下的第一次连接：SYN 被 Cookie 挑战；合法客户端可能在同一次连接内
-# 完成 ACK 验证并重传 SYN，因此这里不再强制要求第一次一定失败。
+# 语义说明（v0.4.8）：
+# 挑战包只能构造 20/24 字节 TCP 头。Linux 客户端（nc）的 SYN 带 timestamps，
+# 属"挑战态但无法挑战"的包头，会被直接 DROP（否则带选项的 SYN Flood 会直通内核）。
+# 因此这里断言两件事：
+#   1) 被挑战源 10.0.0.2 的后续连接被丢弃（不再直通）；
+#   2) 未被挑战的另一个源 10.0.0.3 建立连接完全正常（不误伤其他业务）。
 ip netns exec eshield-server nc -l 10.0.0.1 9002 > /tmp/sc_recv1 2>/dev/null &
 NC_PID=$!
 sleep 0.5
-echo -n "FIRST" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9002 || true
+echo -n "CHALLENGED" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9002 || true
 sleep 0.5
 kill $NC_PID 2>/dev/null || true
 
-# 重试连接：客户端 ACK 已通过 Cookie 验证并解除挑战，SYN 直通内核正常握手
+# 干净源（未被挑战）验证业务不受影响
+ip -n eshield-client addr add 10.0.0.3/24 dev veth-client 2>/dev/null || true
 ip netns exec eshield-server nc -l 10.0.0.1 9003 > /tmp/sc_recv2 2>/dev/null &
 NC_PID=$!
 sleep 0.5
-echo -n "RETRY" | timeout 3 ip netns exec eshield-client nc -q 1 -w 2 10.0.0.1 9003 || true
+echo -n "CLEAN" | timeout 3 ip netns exec eshield-client nc -s 10.0.0.3 -q 1 -w 2 10.0.0.1 9003 || true
 sleep 0.5
 kill $NC_PID 2>/dev/null || true
 
-FIRST_OUT=$(cat /tmp/sc_recv1 2>/dev/null)
-RETRY_OUT=$(cat /tmp/sc_recv2 2>/dev/null)
-if [ "$RETRY_OUT" = "RETRY" ]; then
-    echo "PASS: SYN flood challenged, legitimate connection succeeded after cookie validation (first='${FIRST_OUT:-<challenged>}')"
-else
-    echo "FAIL: SYN Cookie challenge behavior unexpected"
-    echo "first: '$FIRST_OUT'"
-    echo "retry: '$RETRY_OUT'"
+CHALLENGED_OUT=$(cat /tmp/sc_recv1 2>/dev/null)
+CLEAN_OUT=$(cat /tmp/sc_recv2 2>/dev/null)
+if [ "$CHALLENGED_OUT" = "CHALLENGED" ]; then
+    echo "FAIL: 被挑战源的带选项 SYN 被直通（SYN Proxy 兜底未生效）"
     kill $ESHIELD_PID 2>/dev/null || true
     exit 1
 fi
+if [ "$CLEAN_OUT" != "CLEAN" ]; then
+    echo "FAIL: 未被挑战的干净源连接失败（误伤正常业务）"
+    echo "clean: '$CLEAN_OUT'"
+    kill $ESHIELD_PID 2>/dev/null || true
+    exit 1
+fi
+echo "PASS: 被挑战源(带TCP选项)被丢弃，未挑战源连接正常"
 
 kill $ESHIELD_PID 2>/dev/null || true
 wait $ESHIELD_PID 2>/dev/null || true

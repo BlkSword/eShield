@@ -1,7 +1,7 @@
 # eShield Console
 
 eShield 控制台前端工程。Vue 3 + TypeScript + Vite，构建产物是**单文件 HTML**，
-由 `eshield/src/web.rs` 通过 `include_bytes!("../web/app.html")` 嵌入二进制。
+由 `eshield/src/web.rs` 通过 `include_str!("../web/app.html")` 嵌入二进制。
 
 ## 技术选型
 

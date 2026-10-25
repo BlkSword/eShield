@@ -6,9 +6,20 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-CARGO="${CARGO:-/root/.cargo/bin/cargo}"
+if [ -z "${CARGO:-}" ]; then
+    if command -v cargo >/dev/null 2>&1; then
+        CARGO="$(command -v cargo)"
+    elif [ -x "$HOME/.cargo/bin/cargo" ]; then
+        CARGO="$HOME/.cargo/bin/cargo"
+    elif [ -x /root/.cargo/bin/cargo ]; then
+        CARGO=/root/.cargo/bin/cargo
+    else
+        echo "FAIL: cargo not found (set CARGO=/path/to/cargo)"
+        exit 1
+    fi
+fi
 EBPF_TOOLCHAIN="${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}"
-export PATH="/root/.cargo/bin:$PATH"
+export PATH="$(dirname "$CARGO"):$PATH"
 
 cd "$(dirname "$0")/.."
 
@@ -19,8 +30,9 @@ if [ -z "$SKIP_BUILD" ]; then
     "$CARGO" build --package eshield-hub --release -q
 fi
 
-pkill -9 -x eshield 2>/dev/null || true
-pkill -9 -x eshield-hub 2>/dev/null || true
+# 只清理本测试使用的 /tmp 二进制对应进程，避免误伤宿主机上的生产实例
+pkill -9 -f '^/tmp/eshield( |$)' 2>/dev/null || true
+pkill -9 -f '^/tmp/eshield-hub( |$)' 2>/dev/null || true
 sleep 0.5
 
 rm -f /tmp/eshield /tmp/eshield.ebpf /tmp/eshield-hub

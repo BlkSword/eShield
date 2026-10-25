@@ -64,8 +64,12 @@ export function openSearch(seed = '') {
   commandOpen.value = true
 }
 
-export function logout() {
+export async function logout() {
   setToken('')
+  // 清掉后端下发的 HttpOnly 会话 Cookie，否则刷新页面仍会被自动认证。
+  try {
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
+  } catch { /* 离线/演示模式忽略 */ }
   location.hash = '#/login'
 }
 export const tokenPresent = () => !!getToken()

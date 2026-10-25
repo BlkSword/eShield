@@ -38,6 +38,9 @@ pub struct AuditEntry {
 }
 
 /// 审计日志后端 trait
+// clippy 1.99 起对 async_trait 展开出的 `#[must_use]` 报 double_must_use；
+// 这里不是可修的实际问题，显式放行以免 `-D warnings` 下阻断 CI。
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait AuditBackend: Send + Sync {
     async fn append(&self, entry: AuditEntry) -> anyhow::Result<()>;

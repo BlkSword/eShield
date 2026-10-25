@@ -18,6 +18,9 @@ impl RateLimiter {
         }
     }
 
+    // clippy 1.99 起 `Atomic::fetch_update` 被标记 deprecated（新名字 try_update）。
+    // 为兼容项目锁定的工具链继续用旧方法，并在函数级放行该 lint。
+    #[allow(deprecated)]
     pub fn check(&self, node_name: &str, now_ns: u64) -> bool {
         let entry = self
             .buckets

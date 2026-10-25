@@ -11,12 +11,18 @@ info()  { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()   { echo -e "${RED}[FAIL]${NC} $1"; }
 
-REPO="eshield/eshield"
-# 优先从环境变量读取版本；未设置时尝试从 Cargo.toml 解析；最后回退到默认版本。
-DEFAULT_VERSION="0.4.1"
+# GitHub 仓库（与 scripts/publish-release.sh 保持一致；可用 ESHIELD_REPO 覆盖）
+REPO="${ESHIELD_REPO:-BlkSword/eShield}"
+# 优先从环境变量读取版本；未设置时依次尝试 workspace / eshield crate 的 Cargo.toml；最后回退到默认版本。
+DEFAULT_VERSION="0.4.7"
 if [ -z "${VERSION:-}" ]; then
-    if [ -f "Cargo.toml" ] && command -v grep >/dev/null 2>&1; then
-        VERSION=$(grep -E '^version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    if [ -f "Cargo.toml" ] && grep -qE '^\[workspace\]' Cargo.toml 2>/dev/null; then
+        # workspace 根 Cargo.toml 不含 version，版本在 eshield/Cargo.toml
+        if [ -f "eshield/Cargo.toml" ]; then
+            VERSION=$(grep -m1 -E '^version\s*=' eshield/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+        fi
+    elif [ -f "Cargo.toml" ]; then
+        VERSION=$(grep -m1 -E '^version\s*=' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
     fi
     VERSION="${VERSION:-$DEFAULT_VERSION}"
 fi
@@ -42,7 +48,11 @@ info "root 权限检查通过"
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64) TARGET="x86_64-unknown-linux-musl" ;;
-    aarch64) TARGET="aarch64-unknown-linux-musl" ;;
+    aarch64) TARGET="aarch64-unknown-linux-musl"
+             if [ "${1:-}" != "--build" ]; then
+                 warn "官方 Release 目前仅提供 x86_64 产物；aarch64 建议使用源码构建:"
+                 warn "  sudo bash scripts/install.sh --build"
+             fi ;;
     *) err "不支持的架构: $ARCH（目前仅支持 x86_64 和 aarch64）"; exit 1 ;;
 esac
 info "CPU 架构: $ARCH → $TARGET"
@@ -149,14 +159,46 @@ build_local() {
     rustup component add rust-src --toolchain "${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" >/dev/null 2>&1 || true
     cargo +"${ESHIELD_EBPF_TOOLCHAIN:-nightly-2026-07-31}" build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
     cargo build --package eshield --target "$TARGET" --release
-    cp "target/$TARGET/release/eshield" "$INSTALL_BIN"
+    install -m 0755 "target/$TARGET/release/eshield" "$INSTALL_BIN"
 }
 
 download_release() {
     URL="https://github.com/${REPO}/releases/download/v${VERSION}/eshield-${TARGET}"
+    TMP_BIN="$(mktemp /tmp/eshield-download.XXXXXX)"
     echo "下载 eShield v${VERSION} (${TARGET})..."
-    curl -sSL "$URL" -o "$INSTALL_BIN"
-    chmod +x "$INSTALL_BIN"
+    echo "  $URL"
+    # -f：HTTP 错误直接失败（否则 404 的 HTML 会被当成二进制装进 /usr/local/bin）
+    if ! curl -fsSL --retry 3 --retry-delay 2 "$URL" -o "$TMP_BIN"; then
+        rm -f "$TMP_BIN"
+        err "下载失败: $URL"
+        err "  请检查版本号 v${VERSION} 是否存在该架构产物，或改用源码构建:"
+        err "  sudo bash scripts/install.sh --build"
+        exit 1
+    fi
+    if [ ! -s "$TMP_BIN" ] || [ "$(head -c 4 "$TMP_BIN" | od -An -tx1 | tr -d ' \n')" != "7f454c46" ]; then
+        rm -f "$TMP_BIN"
+        err "下载内容不是 ELF 可执行文件（可能命中了错误页面），已中止安装"
+        exit 1
+    fi
+
+    # 若 release 提供了 SHA256SUMS 则校验；缺失时给出明确警告而不是静默安装。
+    SUMS_URL="https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS"
+    if curl -fsSL --retry 2 "$SUMS_URL" -o /tmp/eshield-SHA256SUMS 2>/dev/null; then
+        EXPECTED=$(awk -v f="eshield-${TARGET}" '$2 == f || $2 == "*"f {print $1; exit}' /tmp/eshield-SHA256SUMS)
+        ACTUAL=$(sha256sum "$TMP_BIN" | awk '{print $1}')
+        if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$ACTUAL" ]; then
+            rm -f "$TMP_BIN" /tmp/eshield-SHA256SUMS
+            err "SHA256 校验失败（期望 $EXPECTED，实际 $ACTUAL），已中止安装"
+            exit 1
+        fi
+        [ -n "$EXPECTED" ] && info "SHA256 校验通过"
+        rm -f /tmp/eshield-SHA256SUMS
+    else
+        warn "未找到 SHA256SUMS，跳过二进制校验（建议核对下载来源）"
+    fi
+
+    install -m 0755 "$TMP_BIN" "$INSTALL_BIN"
+    rm -f "$TMP_BIN"
 }
 
 if [ "${1:-}" = "--build" ]; then
@@ -182,6 +224,8 @@ icmp_flood_enabled = false
 tcp_reset_on_drop = false
 
 web_bind = "0.0.0.0:8720"
+# 未设置时进程会启动时生成随机 Token 并在日志输出前缀，外部访问仍必须携带；
+# 本机 127.0.0.1/::1 免校验（供 CLI/TUI 使用）。
 # api_token = "changeme"
 
 store_path = "/var/lib/eshield/rules.redb"
@@ -225,16 +269,18 @@ default_action = "pass"
 [threat_intel]
 enabled = false
 EOF
+    # 使用探测到的活动网卡，而不是硬编码 eth0
+    if [ "$DEFAULT_IFACE" != "eth0" ]; then
+        sed -i "s/^interface = \"eth0\"/interface = \"${DEFAULT_IFACE}\"/" "$INSTALL_CFG"
+    fi
     echo "已创建默认配置文件: $INSTALL_CFG"
 fi
 
 SERVICE_FILE="/etc/systemd/system/eshield.service"
 if [ -f "packaging/eshield.service" ]; then
-    cp "packaging/eshield.service" "$SERVICE_FILE"
-elif [ -f "systemd/eshield.service" ]; then
-    cp "systemd/eshield.service" "$SERVICE_FILE"
+    install -m 0644 "packaging/eshield.service" "$SERVICE_FILE"
 else
-    curl -sSL "https://raw.githubusercontent.com/${REPO}/v${VERSION}/packaging/eshield.service" -o "$SERVICE_FILE"
+    curl -fsSL "https://raw.githubusercontent.com/${REPO}/v${VERSION}/packaging/eshield.service" -o "$SERVICE_FILE"
 fi
 chmod 644 "$SERVICE_FILE"
 

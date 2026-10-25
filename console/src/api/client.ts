@@ -4,7 +4,6 @@ import type {
   PacketSample, PortAclEntry, ProtectionProject, SeriesPoint, Stats, WhitelistEntry,
 } from './types'
 
-const TOKEN_KEY = 'eshield-token'
 const params = new URLSearchParams(location.search)
 const initialMode = params.get('mock') === '1'
   ? 'mock'
@@ -15,15 +14,13 @@ const initialMode = params.get('mock') === '1'
 export const state = {
   mode: initialMode as 'auto' | 'mock' | 'live',
   live: false,
-  token: localStorage.getItem(TOKEN_KEY) || '',
+  // 令牌只保留在内存中：浏览器侧认证依赖后端下发的 HttpOnly Cookie。
+  // 旧实现把同一令牌写进 localStorage，会让 HttpOnly 形同虚设（XSS 可直接读取）。
+  token: '',
 }
 
 export function getToken() { return state.token }
-export function setToken(t: string) {
-  state.token = t
-  if (t) localStorage.setItem(TOKEN_KEY, t)
-  else localStorage.removeItem(TOKEN_KEY)
-}
+export function setToken(t: string) { state.token = t }
 
 // ---------------------------------------------------------------- mock state
 let mockSeries = mock.makeSeries()
@@ -186,7 +183,11 @@ function normalizeWhitelist(raw: any): WhitelistEntry[] {
 async function raw<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (state.token) headers.Authorization = `Bearer ${state.token}`
-  const res = await fetch(path, { ...init, headers: { ...headers, ...(init?.headers || {}) } })
+  const res = await fetch(path, {
+    credentials: 'same-origin',
+    ...init,
+    headers: { ...headers, ...(init?.headers || {}) },
+  })
   if (!res.ok) throw new Error(res.status === 401 ? 'unauthorized' : `HTTP ${res.status}`)
   const text = await res.text()
   return (text ? JSON.parse(text) : null) as T

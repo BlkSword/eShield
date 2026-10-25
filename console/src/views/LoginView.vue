@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { setToken } from '../api/client'
 import { toast } from '../stores/app'
 
-const router = useRouter()
 const token = ref('')
 const show = ref(false)
 const busy = ref(false)
@@ -17,19 +15,31 @@ async function submit() {
   try {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: token.value }),
     })
-    if (!res.ok) throw new Error('令牌无效')
+    if (res.status === 401) {
+      error.value = '令牌无效，请检查节点配置中的 api_token'
+      return
+    }
+    if (res.status === 429) {
+      error.value = '尝试过于频繁，请稍后再试'
+      return
+    }
+    if (!res.ok) {
+      error.value = `登录失败（HTTP ${res.status}）`
+      return
+    }
+    // 认证凭据由后端以 HttpOnly Cookie 下发，这里只在内存里保留一份供 Bearer 兜底。
     setToken(token.value)
     toast('登录成功', '欢迎回到 eShield 控制台', 'ok')
     // Move to the protected root so the browser lands on a clean URL.
     window.location.assign('/#/overview')
   } catch {
-    // file:// or static preview: fall back to demo mode
-    setToken(token.value)
-    toast('已进入演示模式', '未连接到 eShield 节点，展示本地样例数据', 'info')
-    router.push('/overview')
+    // 网络不可达：明确报错，绝不静默切到演示数据 —— 把样例数据当成真实防护状态
+    // 会让运维误判节点仍在防护。需要演示数据时请显式使用 ?mock=1 或直接打开离线 HTML。
+    error.value = '无法连接 eShield 节点（网络错误），未登录'
   } finally {
     busy.value = false
   }
@@ -60,7 +70,7 @@ async function submit() {
         {{ busy ? '验证中…' : '进入控制台' }}
       </button>
       <div class="muted" style="font-size: 11.5px; margin-top: 16px; text-align: center">
-        令牌存储在浏览器本地，不会上传到第三方
+        凭据以 HttpOnly Cookie 保存，不写入浏览器本地存储
       </div>
     </div>
   </div>

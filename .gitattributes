@@ -1,0 +1,25 @@
+# 统一换行：仓库内文本文件一律 LF。
+# 这是 Windows 开发 + Linux 构建/测试流程的硬要求：
+# CRLF 的 *.sh 在 Linux 上会报 "syntax error near unexpected token `do\r'`，
+# CRLF 的 .rs/.toml 也可能被工具链或解析器拒绝。
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.py    text eol=lf
+*.html  text eol=lf
+*.ts    text eol=lf
+*.vue   text eol=lf
+*.css   text eol=lf
+
+# 二进制资源保持原样
+*.png   binary
+*.jpg   binary
+*.gif   binary
+*.deb   binary
+*.rpm   binary

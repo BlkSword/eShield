@@ -478,6 +478,9 @@ cargo test --workspace --exclude eshield-ebpf
 sudo ESHIELD_TEST_XDP_MODE=skb bash tests/netns_test.sh
 sudo ESHIELD_XDP_MODE=skb bash tests/hub_node_test.sh
 sudo ESHIELD_XDP_MODE=skb bash tests/full_attack_test.sh
+
+# SYN Proxy 兜底：带 TCP 选项的 SYN Flood 必须被丢弃（不直通内核）
+sudo SKIP_BUILD=1 bash tests/syn_proxy_options_test.sh
 ```
 
 覆盖场景：
@@ -489,6 +492,7 @@ sudo ESHIELD_XDP_MODE=skb bash tests/full_attack_test.sh
 - 自适应阈值、GeoIP/ASN、威胁情报
 - 防护项目 DROP、GeoIP allowlist、IPv4 分片
 - 连接跟踪半连接拦截
+- SYN Proxy 对带 TCP 选项（timestamps/SACK）SYN 的兜底丢弃
 - Hub 策略同步、解封、规则下发与每节点 Token
 
 ### 12.3 构建与静态检查
@@ -522,7 +526,7 @@ cargo +nightly-2026-07-31 clippy --package eshield-ebpf \
 
 - **主机级防护**：面向单机或边缘节点的 L3-L4 防护。T 级带宽耗尽型攻击需要上游云清洗或运营商清洗，eShield 无法突破物理链路上限。
 - **L7 能力有限**：当前 L7 模块仅检查 TCP 首包指纹，不支持 TCP 分段重组，不提供 HTTP Flood、CC 或慢速攻击的完整应用层防御。
-- **SYN Cookie 范围**：仅支持 IPv4 TCP，采用挑战模式，仅对超过阈值的源生效。
+- **SYN Cookie 范围**：仅支持 IPv4 TCP，采用挑战模式，仅对超过阈值的源生效。挑战包只支持 20/24 字节 TCP 头，**带 timestamps/SACK 等选项的源进入挑战态后会被丢弃**（最长 30s；否则这类 SYN Flood 会绕过防护直通内核）。面向真实客户端的高流量服务不建议开启该模块。
 - **防护项目范围**：数据面仅匹配 IPv4 精确 IP，CIDR 由控制面展开，下限 `/24`，项目上限 8192 条。
 - **规则容量限制**：`port_acl` 上限 32 条，`l7_scan.patterns` 上限 8 条，用于满足内核 7.0 verifier 的指令处理限制。
 - **虚拟网卡限制**：veth 等虚拟网卡的原生 XDP_TX 存在内核异常风险，测试环境应使用 `ESHIELD_XDP_MODE=skb`。

@@ -26,7 +26,11 @@ const TCP_OPT_MSS: u8 = 2;
 const BUCKET_DURATION_S: u64 = 60;
 const VALID_BUCKETS: u8 = 2;
 /// 挑战模式标记的过期时间：超过后自动恢复直通，避免合法客户端被永久挑战。
-const CHALLENGE_TIMEOUT_NS: u64 = 120_000_000_000;
+///
+/// 取 30s 而非 120s：带 TCP 选项的源进入挑战态后无法构造挑战包，只能被丢弃
+/// （见 `handle_syn`），窗口过长会让该 IP 之后的合法连接也一起被拦；30s 既能
+/// 覆盖突发洪水，又能把对正常业务的误伤控制在半分钟内。
+const CHALLENGE_TIMEOUT_NS: u64 = 30_000_000_000;
 
 /// MSS 档位表，高 8 位 cookie 用索引编码。
 const MSS_TABLE: [(u8, u16); 3] = [(0, 536), (1, 1300), (2, 1460)];
@@ -57,12 +61,15 @@ pub fn handle_syn(pc: &PacketCtxRef, ip: *const IpHdr, tcp: *const TcpHdr) -> u3
 
     // 以下为挑战路径：解析 MSS、构造 Cookie、回 SYN-ACK
     // 仅支持标准 20 字节 IP 头；TCP 头仅支持无 options(20) 或单个 MSS option(24)。
+    // 若是"已触发阈值但包头无法挑战"（例如带 timestamps/SACK 的 40 字节 TCP 头、
+    // 或带 IP option 的头），必须直接丢弃：放行等于在开启 SYN Proxy 时让这类
+    // SYN Flood 直通内核（该包已被计入 RATE_MAP，全局限速也不会再处理它）。
     if pc.ip_hdr_len != 20 {
-        return NO_ACTION;
+        return xdp_action::XDP_DROP;
     }
     let tcp_hdr_len = (unsafe { (*tcp).doff() } as usize) * 4;
     if tcp_hdr_len != 20 && tcp_hdr_len != 24 {
-        return NO_ACTION;
+        return xdp_action::XDP_DROP;
     }
 
     syn_challenge(pc, ip, tcp, tcp_hdr_len)

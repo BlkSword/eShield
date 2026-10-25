@@ -578,12 +578,21 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
         })
     };
 
-    // 启动 Trust Score 同步任务：每秒从 eBPF TRUST_MAP 读取信誉数据
+    // 启动 Trust Score 同步任务：低频读取信誉数据（try_lock，抢不到就跳过）
     let trust_sync_handle = {
         let stats = state.stats.clone();
         let ebpf = ebpf.clone();
         tokio::spawn(async move {
             sync_trust_scores(ebpf, stats).await;
+        })
+    };
+
+    // 启动 eBPF map 条目数采样任务：/metrics 只读缓存值，不在抓取路径遍历大表
+    let _map_entries_handle = {
+        let stats = state.stats.clone();
+        let ebpf = ebpf.clone();
+        tokio::spawn(async move {
+            sync_map_entries(ebpf, stats).await;
         })
     };
 
@@ -961,14 +970,17 @@ async fn rotate_cookie_secrets_inner(ebpf: &mut Ebpf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 每 5 秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
-/// 降频 5s（原 1s）：TRUST_MAP 最多 10 万条目，全量迭代代价高，
-/// 信誉分布统计不需要秒级精度，同时显著降低全局 Ebpf 锁占用。
+/// 每 30 秒从 eBPF TRUST_MAP 读取所有 IP 的 TrustEntry，同步到用户态 Stats。
+/// 降频并改用 try_lock：TRUST_MAP 最多 10 万条目，全量迭代代价高；信誉分布只是
+/// 展示型指标，抢不到 Ebpf 锁时直接跳过，绝不能和事件消费/策略写入排队。
 async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
     loop {
         interval.tick().await;
-        let mut guard = ebpf.lock().await;
+        let Ok(mut guard) = ebpf.try_lock() else {
+            tracing::debug!("sync_trust_scores skipped: ebpf lock busy");
+            continue;
+        };
         let mut trusted = 0u64;
         let mut neutral = 0u64;
         let mut suspicious = 0u64;
@@ -997,6 +1009,46 @@ async fn sync_trust_scores(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats.trust_neutral.store(neutral, Ordering::Relaxed);
         stats.trust_suspicious.store(suspicious, Ordering::Relaxed);
         stats.trust_malicious.store(malicious, Ordering::Relaxed);
+    }
+}
+
+/// 每 30 秒采样一次 BLACKLIST / RATE_MAP 的当前条目数，缓存到 Stats 原子量。
+///
+/// `/metrics` 每被 Prometheus 抓取一次都要输出 map 使用量；若在请求处理时直接
+/// 遍历两张可能各含 10 万条目的 LRU Hash，会长时间持有全局 Ebpf 锁并阻塞事件消费。
+/// 因此把遍历挪到后台低频任务，抓取路径只读原子量。
+async fn sync_map_entries(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate::state::Stats>) {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        let Ok(mut guard) = ebpf.try_lock() else {
+            tracing::debug!("sync_map_entries skipped: ebpf lock busy");
+            continue;
+        };
+
+        let mut blacklist_entries: Option<u64> = None;
+        if let Some(map) = guard.map_mut("BLACKLIST") {
+            if let Ok(m) = LruHashMap::<_, IpKey, eshield_common::BlockEntry>::try_from(map) {
+                blacklist_entries = Some(m.iter().take(10_000).count() as u64);
+            }
+        }
+        let mut rate_entries: Option<u64> = None;
+        if let Some(map) = guard.map_mut("RATE_MAP") {
+            if let Ok(m) = LruHashMap::<_, IpKey, eshield_common::RateCounter>::try_from(map) {
+                rate_entries = Some(m.iter().take(10_000).count() as u64);
+            }
+        }
+        drop(guard);
+
+        if let Some(v) = blacklist_entries {
+            stats.map_entries_blacklist.store(v, Ordering::Relaxed);
+        }
+        if let Some(v) = rate_entries {
+            stats.map_entries_rate.store(v, Ordering::Relaxed);
+        }
+        stats
+            .map_entries_updated_ns
+            .store(crate::time::monotonic_ns(), Ordering::Relaxed);
     }
 }
 

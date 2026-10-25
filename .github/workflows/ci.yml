@@ -24,8 +24,19 @@ jobs:
           components: rust-src
       - name: Pin tested eBPF nightly (LLVM/verifier compatible)
         run: rustup toolchain install nightly-2026-07-31 --profile minimal --component rust-src
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install build dependencies (LLVM/clang/musl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+      - name: Install pinned bpf-linker 0.10.4
+        run: |
+          # 必须使用项目固定的 0.10.4：实测 0.12.0 + nightly-2026-07-31 生成的程序过不了 verifier
+          curl -fsSL -o /tmp/bl.tar.zst \
+            https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar
+          sudo tar -xf /tmp/bl.tar -C /usr/local/bin
+          bpf-linker --version
       - name: Build eBPF (embedded by userspace crate)
         run: cargo +nightly-2026-07-31 build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
       - name: Check fmt
@@ -43,8 +54,19 @@ jobs:
           components: rust-src, clippy
       - name: Pin tested eBPF nightly (LLVM/verifier compatible)
         run: rustup toolchain install nightly-2026-07-31 --profile minimal --component rust-src
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install build dependencies (LLVM/clang/musl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+      - name: Install pinned bpf-linker 0.10.4
+        run: |
+          # 必须使用项目固定的 0.10.4：实测 0.12.0 + nightly-2026-07-31 生成的程序过不了 verifier
+          curl -fsSL -o /tmp/bl.tar.zst \
+            https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar
+          sudo tar -xf /tmp/bl.tar -C /usr/local/bin
+          bpf-linker --version
       - name: Run eBPF clippy
         run: cargo +nightly-2026-07-31 clippy --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core -- -D warnings
 
@@ -62,8 +84,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install build dependencies (LLVM/clang/musl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+      - name: Install pinned bpf-linker 0.10.4
+        run: |
+          # 必须使用项目固定的 0.10.4：实测 0.12.0 + nightly-2026-07-31 生成的程序过不了 verifier
+          curl -fsSL -o /tmp/bl.tar.zst \
+            https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar
+          sudo tar -xf /tmp/bl.tar -C /usr/local/bin
+          bpf-linker --version
       - name: Build eBPF
         run: cargo xtask build-ebpf
       - name: Build userspace
@@ -81,12 +114,40 @@ jobs:
           components: rust-src
       - name: Pin tested eBPF nightly (LLVM/verifier compatible)
         run: rustup toolchain install nightly-2026-07-31 --profile minimal --component rust-src
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install build dependencies (LLVM/clang/musl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+      - name: Install pinned bpf-linker 0.10.4
+        run: |
+          # 必须使用项目固定的 0.10.4：实测 0.12.0 + nightly-2026-07-31 生成的程序过不了 verifier
+          curl -fsSL -o /tmp/bl.tar.zst \
+            https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar
+          sudo tar -xf /tmp/bl.tar -C /usr/local/bin
+          bpf-linker --version
       - name: Build eBPF (embedded by userspace crate)
         run: cargo +nightly-2026-07-31 build --package eshield-ebpf --target bpfel-unknown-none -Z build-std=core --release
       - name: Run unit tests
         run: cargo +stable test --workspace --exclude eshield-ebpf
+
+  console-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - name: Install console deps
+        run: cd console && npm ci
+      - name: Type-check and build single-file SPA
+        run: cd console && npm run build
+      - name: Verify embedded app.html matches console/dist (must be byte-identical)
+        run: diff -q console/dist/index.html eshield/web/app.html
 
   integration-tests:
     name: integration-tests (${{ matrix.os }})
@@ -111,8 +172,19 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl
-      - name: Install build dependencies
-        run: sudo apt-get update && sudo apt-get install -y llvm clang
+      - name: Install build dependencies (LLVM/clang/musl)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+          sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
+      - name: Install pinned bpf-linker 0.10.4
+        run: |
+          # 必须使用项目固定的 0.10.4：实测 0.12.0 + nightly-2026-07-31 生成的程序过不了 verifier
+          curl -fsSL -o /tmp/bl.tar.zst \
+            https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+          zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar
+          sudo tar -xf /tmp/bl.tar -C /usr/local/bin
+          bpf-linker --version
       - name: Install test dependencies
         run: sudo apt-get install -y hping3 netcat-traditional
       - name: Print kernel version
@@ -122,4 +194,24 @@ jobs:
       - name: Build userspace
         run: cargo build --package eshield --target x86_64-unknown-linux-musl --release
       - name: Run integration tests
-        run: sudo bash tests/netns_test.sh
+        env:
+          SKIP_BUILD: "1"
+          ESHIELD_TEST_XDP_MODE: skb
+          ESHIELD_EBPF_TOOLCHAIN: nightly-2026-07-31
+          CARGO: /home/runner/.cargo/bin/cargo
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+        run: |
+          # sudo 默认重置环境（含 PATH），必须显式保留 cargo 路径，否则脚本找不到工具链
+          sudo --preserve-env=SKIP_BUILD,ESHIELD_TEST_XDP_MODE,ESHIELD_EBPF_TOOLCHAIN,CARGO,CARGO_HOME,RUSTUP_HOME \
+            bash tests/netns_test.sh
+      - name: Run SYN proxy option-header regression
+        env:
+          SKIP_BUILD: "1"
+          ESHIELD_EBPF_TOOLCHAIN: nightly-2026-07-31
+          CARGO: /home/runner/.cargo/bin/cargo
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+        run: |
+          sudo --preserve-env=SKIP_BUILD,ESHIELD_EBPF_TOOLCHAIN,CARGO,CARGO_HOME,RUSTUP_HOME \
+            bash tests/syn_proxy_options_test.sh

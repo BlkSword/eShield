@@ -6,7 +6,7 @@
 
 ## 1. 项目概述
 
-**eShield**（版本 `0.4.6`）是一个基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、网络层扫描等攻击。
+**eShield**（版本 `0.4.7`，未发布改动见 CHANGELOG 的 Unreleased 段）是一个基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、网络层扫描等攻击。
 
 - **数据面**：用 Rust/Aya 编写的 eBPF 程序挂载在 Linux XDP 钩子上，在包进入内核网络协议栈之前完成过滤/丢弃/挑战。
 - **控制面**：Rust + Tokio + axum，提供 REST API、中文 Web Dashboard、CLI、TUI、审计日志、持久化与告警。
@@ -87,14 +87,19 @@
 - `tui.rs`：终端 Dashboard。
 - `health.rs`、`timeseries.rs`、`ip.rs`、`time.rs`、`login_limiter.rs`：辅助模块。
 
-Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，无前端构建链，经 `include_str!`/`include_bytes!` 嵌入二进制）：
+Web 控制台前端是**独立的 Vue 3 + TypeScript 工程**，位于 `console/`（Vite 6 + `vite-plugin-singlefile` 构建为**单文件 HTML**），构建产物 `console/dist/index.html` 复制到 `eshield/web/app.html`，由 `web.rs` 通过 `include_str!("../web/app.html")` 嵌入二进制：
 
-- `index.html`：应用骨架，`__CONFIG_JSON__` 注入运行时配置；含背景网格/光晕装饰层、XDP 状态栏、顶部 PPS/DPS 实时态势条。
-- `css/`：`tokens.css`（design tokens，暗/亮双主题；`--text-*`/`--bg-*`/`--accent-*` 等旧名称为 JS 引用保留的兼容别名）、`components.css`（外壳/卡片/表格/表单/抽屉/Toast/KPI/模块/命令面板）、`pages.css`（页面级布局与旧模板兼容）。
-- `js/`：`main.js`（入口：主题/侧边栏/SSE/快捷键/危险等级/头部 PPS/DPS 轮询/路由启动）、`api.js`（fetch 封装 + 认证）、`store.js`（状态总线）、`router.js`（hash 路由 + 页面生命周期）、`format.js`（格式化，唯一一份）、`icons.js`（SVG 图标）、`ui.js`（Toast/骨架屏/抽屉等）、`charts.js`（ECharts 主题感知助手）、`ipdrawer.js`（IP 情报抽屉，全站共享）。
-- `js/pages/`：九个页面模块（overview / attacks / packets / audit / policy / rules / security / cluster / settings），每个导出 `id`/`title`/`sub`/`mount(el)→unmount`；总览页含威胁态势雷达（按攻击源散列方位 + 命中数分布，动画连续需保持攻击源签名不变才重建 SVG）。
-- 新增/删除静态文件时，必须同步 `web.rs` 中的 `STATIC_ASSETS` 表。
-- 旧版单文件控制台 `eshield/src/dashboard.html` 已删除（v0.4.6）；若需对比历史实现可查看 `git log --all -- eshield/src/dashboard.html`。
+- `console/src/views/`：12 个页面（overview / attacks / packets / audit / modules / access / l7 / projects / geoip / rules / settings / login），单文件 hash 路由，无服务端 fallback。
+- `console/src/api/`：`client.ts` 统一 HTTP 封装（live / mock 自适应、字段归一化）、`mock.ts` 演示数据、`types.ts` DTO。
+- `console/src/components/`：自研组件（TopBar / SideNav / KpiCard / EChart / SlideDrawer / ModalDialog / CommandPalette / ToastHost …）。
+- `console/src/stores/`、`console/src/router/`、`console/src/styles/app.css`（design tokens + 全部组件样式）。
+- 认证：登录后由后端下发 `eshield-token` HttpOnly Cookie；**前端不得把令牌写入 localStorage**（v0.4.8 起已移除该行为）。
+- 改前端后必须重新构建并同步嵌入文件，否则 `app.html` 与源码漂移：
+  ```bash
+  cd console && npm run build && cp dist/index.html ../eshield/web/app.html
+  ```
+  CI 的 `console-build` job 会构建并校验两者一致。
+- 旧版控制台资源 `eshield/web/{index.html,css/,js/}` 与 `eshield/src/{dashboard.html,echarts.min.js,login.html}` 均已删除（v0.4.7）；历史实现见 `git log --all -- eshield/web`。
 
 ### 3.2 `eshield-ebpf`（内核态数据面）
 
@@ -144,16 +149,21 @@ Web 控制台前端位于 `eshield/web/`（原生 ES modules + 模块化 CSS，�
 
 ```bash
 rustup toolchain install nightly-2026-07-31 --profile minimal --component rust-src
-rustup target add bpfel-unknown-none --toolchain nightly-2026-07-31
 rustup target add x86_64-unknown-linux-musl
+# bpfel-unknown-none 是 tier-3 目标，由 -Z build-std=core 现场构建，无需 rustup target add
 
-# Debian/Ubuntu
-sudo apt-get install -y llvm clang libelf-dev
+# Debian/Ubuntu（musl 静态构建需要 musl-gcc）
+sudo apt-get install -y llvm clang libelf-dev musl-tools zstd
+sudo ln -sf /usr/bin/musl-gcc /usr/local/bin/x86_64-linux-musl-gcc
 
-# bpf-linker
-cargo install cargo-binstall
-cargo binstall bpf-linker
+# bpf-linker 必须用固定版本 0.10.4（官方预编译资产后缀是 .tar.zst）
+# 实测 bpf-linker 0.12.0 + nightly-2026-07-31 会生成被 verifier 拒绝的代码（R11 is invalid）
+curl -fsSL -o /tmp/bl.tar.zst https://github.com/aya-rs/bpf-linker/releases/download/v0.10.4/bpf-linker-x86_64-unknown-linux-musl.tar.zst
+zstd -d -f /tmp/bl.tar.zst -o /tmp/bl.tar && sudo tar -xf /tmp/bl.tar -C /usr/local/bin
 ```
+
+> verifier 只在 attach 时校验：**编译通过 != 能挂载**。改数据面后必须跑
+> `tests/netns_test.sh`，或用 `ESHIELD_XDP_MODE=skb` 在 dummy 网卡上实际挂载一次。
 
 ### 4.2 常用构建命令
 
@@ -348,7 +358,7 @@ docker run -d --name eshield \
   --cap-add PERFMON --cap-add IPC_LOCK \
   -v /etc/eshield/config.toml:/etc/eshield/config.toml:ro \
   -p 8720:8720 \
-  ghcr.io/eshield/eshield:v0.4.2
+  ghcr.io/blksword/eshield:v0.4.7
 ```
 
 ### 8.3 分布式 Hub
@@ -392,6 +402,7 @@ sync_rules_enabled = true
 
 - **Windows**：无法直接编译或运行，请在 Linux/WSL2/VM 中构建测试。
 - **SYN Cookie 代理**：仅 IPv4 TCP；采用降级式挑战，只有超过 SYN Flood 阈值的源会被 Cookie 挑战并暂时拉黑，正常连接与合法客户端验证后直通（v0.4.2 曾因 verifier 问题临时禁用，v0.4.6 恢复）。
+  挑战包只支持 20 字节 IPv4 头 + 20/24 字节 TCP 头（单 MSS option）；**带 timestamps/SACK 等选项的 SYN 无法构造挑战包，此类源一旦触发阈值会被直接 DROP，最多持续 `CHALLENGE_TIMEOUT_NS`（30s）**（v0.4.8 修复：此前会静默 PASS，等于让带选项的 SYN Flood 绕过防护；代价是该 IP 的合法连接在此期间也会失败）。若要覆盖这类流量，可关闭 `syn_proxy` 改用 SYN Flood 检测；面向真实客户端的高流量服务不建议开启该模块。
 - **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击；非首片 IPv4 分片会跳过端口/L4 模块，仅保留黑名单/限速/GeoIP 等源地址级判断。
 - **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
 - **XDP 挂载**：优先 `DRV_MODE`（native），失败自动回退到 `SKB_MODE`（generic）。
