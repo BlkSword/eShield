@@ -373,9 +373,10 @@ mod tests {
         let secret = [0u8; COOKIE_SECRET_LEN];
         let c0 = build_cookie(0xc0a8_0001, 0xc0a8_0002, 12345, 80, 1, 0, &secret);
         let c2 = build_cookie(0xc0a8_0001, 0xc0a8_0002, 12345, 80, 1, 2, &secret);
-        assert_eq!(c0 >> 24, 0);
-        assert_eq!(c2 >> 24, 2);
-        assert_ne!(c0 & 0x00ff_ffff, c2 & 0x00ff_ffff);
+        // v0.4.8：高 2 位编码 MSS 档位，低 30 位是校验值
+        assert_eq!(c0 >> 30, 0);
+        assert_eq!(c2 >> 30, 2);
+        assert_ne!(c0 & 0x3fff_ffff, c2 & 0x3fff_ffff);
     }
 
     #[test]
@@ -561,8 +562,7 @@ mod tests {
         for mss_idx in 0u8..=2 {
             let c = build_cookie(0x0a000001, 0x0a000002, 40000, 80, 3, mss_idx, &secret);
             assert_eq!(c >> 30, mss_idx as u32, "高 2 位必须是 MSS 档位");
-            assert_eq!(c & 0x3fff_ffff, c, "低 30 位之外的位不应出现");
-            assert!(c & 0x3fff_ffff > 0, "校验位不应恒为 0");
+            assert!(c & 0x3fff_ffff > 0, "30 位校验值不应恒为 0");
         }
         // 不同源端口必须得到不同 cookie（30 位空间内碰撞概率可忽略）
         let a = build_cookie(0x0a000001, 0x0a000002, 40000, 80, 3, 1, &secret);

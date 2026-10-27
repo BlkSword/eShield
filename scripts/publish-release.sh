@@ -15,10 +15,12 @@ set -euo pipefail
 REPO="BlkSword/eShield"
 VERSION=$(grep -m1 '^version' eshield/Cargo.toml | sed 's/.*"\([^"]*\)".*/\1/')
 TAG="v${VERSION}"
+# 与 v0.4.6/v0.4.7 的 release 资产格式保持一致（由 scripts/build-release.sh 产出）
 DEFAULT_ASSETS=(
-    "target/x86_64-unknown-linux-musl/release/eshield"
-    "target/bpfel-unknown-none/release/eshield"
-    "target/release/eshield-hub"
+    "dist/eshield-x86_64-unknown-linux-musl"
+    "dist/eshield.bpf.o"
+    "dist/eshield-hub-x86_64-unknown-linux-gnu"
+    "dist/SHA256SUMS"
 )
 ASSET_DIR="${ASSET_DIR:-}"
 

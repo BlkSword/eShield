@@ -26,6 +26,12 @@ cp "$ROOT/target/bpfel-unknown-none/release/eshield" "$ROOT/dist/eshield.bpf.o"
 # publish-release.sh 期望该资产：Hub 与节点使用不同的 libc 目标（Hub 用 gnu，便于本机直接运行）
 cp "$ROOT/target/release/eshield-hub" "$ROOT/dist/eshield-hub-x86_64-unknown-linux-gnu"
 
+# 与历史 release 保持一致：同时产出 SHA256SUMS（安装脚本会做校验）
+( cd "$ROOT/dist" && sha256sum eshield-x86_64-unknown-linux-musl eshield.bpf.o \
+    eshield-hub-x86_64-unknown-linux-gnu > SHA256SUMS )
+echo "==> SHA256SUMS"
+cat "$ROOT/dist/SHA256SUMS"
+
 if command -v cargo-deb >/dev/null 2>&1; then
     echo "==> Building DEB package"
     cargo deb --no-build --target x86_64-unknown-linux-musl -p eshield

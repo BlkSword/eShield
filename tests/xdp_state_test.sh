@@ -81,7 +81,7 @@ cp target/x86_64-unknown-linux-musl/release/eshield /tmp/eshield-xd && chmod +x 
 
 echo "=== 1) [xdp].mode = auto ==="
 write_cfg auto
-ip netns exec "$NS_S" /tmp/eshield-xd start --config /tmp/eshield-xd.toml >/tmp/xd_auto.log 2>&1 &
+ip netns exec "$NS_S" env -u ESHIELD_XDP_MODE /tmp/eshield-xd start --config /tmp/eshield-xd.toml >/tmp/xd_auto.log 2>&1 &
 PID=$!
 READY=0
 for _ in $(seq 1 40); do
@@ -104,7 +104,7 @@ echo "=== 2) [xdp].mode = native（驱动不支持时必须显式失败）==="
 mkns
 write_cfg native
 set +e
-timeout 20 ip netns exec "$NS_S" /tmp/eshield-xd start --config /tmp/eshield-xd.toml >/tmp/xd_native.log 2>&1
+timeout 20 ip netns exec "$NS_S" env -u ESHIELD_XDP_MODE /tmp/eshield-xd start --config /tmp/eshield-xd.toml >/tmp/xd_native.log 2>&1
 NATIVE_RC=$?
 set -e
 grep -q "native XDP attach failed" /tmp/xd_native.log && HINT=1 || HINT=0

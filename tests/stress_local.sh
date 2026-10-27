@@ -162,8 +162,13 @@ for _ in $(seq 1 60); do
 done
 echo "  黑名单条目: $CNT"
 check "批量封禁写入黑名单" "$([ "$CNT" -gt 0 ] && echo 1 || echo 0)" "count=$CNT"
-sleep 2
-MET=$(ns_curl "$API/metrics" | grep 'eshield_map_entries{.*BLACKLIST' || true)
+# /metrics 的 map 条目数是后台按 metrics_interval_s（默认 30s）采样，需要轮询等待
+MET=""
+for _ in $(seq 1 25); do
+    MET=$(ns_curl "$API/metrics" | grep 'eshield_map_entries{.*BLACKLIST' || true)
+    echo "$MET" | grep -qE ' [1-9][0-9]*$' && break
+    sleep 2
+done
 echo "  $MET"
 check "BLACKLIST 条目数指标已采样" "$(echo "$MET" | grep -qE ' [1-9][0-9]*$' && echo 1 || echo 0)" ""
 R=$(ns_curl -o /dev/null -w '%{http_code}' --max-time 3 "$API/healthz" || true)

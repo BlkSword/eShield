@@ -1224,8 +1224,15 @@ async fn monitor_xdp(
 
 /// 判断 Web 监听地址是否仅绑定环回（环回上明文 HTTP 风险可接受）。
 fn bind_is_loopback(bind: &str) -> bool {
-    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
-    host == "localhost" || host.starts_with("127.") || host == "[::1]" || host == "::1"
+    // 支持 "[::1]:8720"、"127.0.0.1:8720"、"localhost:8720" 以及无端口的裸 IPv6 "::1"
+    let host = if let Some(rest) = bind.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else if bind.matches(':').count() > 1 {
+        bind
+    } else {
+        bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind)
+    };
+    host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
 /// 周期采样 eBPF 各 LRU map 的当前条目数，缓存到 Stats.map_entries。
@@ -1247,7 +1254,9 @@ async fn sync_map_entries(
     let mut interval = tokio::time::interval(Duration::from_secs(interval_s.max(5)));
     loop {
         interval.tick().await;
-        let Ok(mut guard) = ebpf.try_lock() else {
+        // 用带超时的 lock().await 而不是 try_lock()：事件消费/同步任务会高频持锁，
+        // try_lock 在采样瞬间可能连续失败，导致 /metrics 长期缺少 map 条目数。
+        let Ok(mut guard) = tokio::time::timeout(Duration::from_secs(2), ebpf.lock()).await else {
             tracing::debug!("sync_map_entries skipped: ebpf lock busy");
             continue;
         };

@@ -100,8 +100,15 @@ fn load_node_tokens(path: &std::path::Path) -> Result<HashMap<String, String>> {
 
 /// bind 地址是否仅环回（环回上单 token 风险可接受）。
 fn bind_is_loopback(bind: &str) -> bool {
-    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind);
-    host == "localhost" || host.starts_with("127.") || host == "[::1]" || host == "::1"
+    // 支持 "[::1]:8720"、"127.0.0.1:8720"、"localhost:8720" 以及无端口的裸 IPv6 "::1"
+    let host = if let Some(rest) = bind.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else if bind.matches(':').count() > 1 {
+        bind
+    } else {
+        bind.rsplit_once(':').map(|(h, _)| h).unwrap_or(bind)
+    };
+    host == "localhost" || host == "::1" || host.starts_with("127.")
 }
 
 #[tokio::main]
