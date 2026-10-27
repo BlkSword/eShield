@@ -6,6 +6,22 @@
 
 eShield is a host-level L3-L4 network protection system built on eBPF/XDP. It drops SYN flood, UDP flood, ICMP flood, scanning, and connection-exhaustion traffic before packets enter the Linux network stack. The project is implemented in Rust and includes an eBPF data plane, a userspace control plane, a distributed policy hub, a web console, a CLI, and a TUI.
 
+## Console preview
+
+The built-in web console is a single-file SPA embedded into the binary. It is designed for
+high-density, low-noise operations: structure with hairlines instead of shadows, color only for
+state, tabular numbers right-aligned — the whole protection posture fits on one screen.
+
+| Overview | Access control |
+|---|---|
+| ![Overview](docs/screenshots/console-overview.png) | ![Access control](docs/screenshots/console-access.png) |
+
+| Protection modules | Dark theme |
+|---|---|
+| ![Modules](docs/screenshots/console-modules.png) | ![Dark theme](docs/screenshots/console-dark.png) |
+
+Charts are hand-written SVG components (no ECharts); the console bundle is ~239KB (80KB gzipped).
+
 ## Table of Contents
 
 - [1. Overview](#1-overview)

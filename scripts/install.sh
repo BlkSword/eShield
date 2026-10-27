@@ -14,7 +14,7 @@ err()   { echo -e "${RED}[FAIL]${NC} $1"; }
 # GitHub 仓库（与 scripts/publish-release.sh 保持一致；可用 ESHIELD_REPO 覆盖）
 REPO="${ESHIELD_REPO:-BlkSword/eShield}"
 # 优先从环境变量读取版本；未设置时依次尝试 workspace / eshield crate 的 Cargo.toml；最后回退到默认版本。
-DEFAULT_VERSION="0.4.7"
+DEFAULT_VERSION="0.4.8"
 if [ -z "${VERSION:-}" ]; then
     if [ -f "Cargo.toml" ] && grep -qE '^\[workspace\]' Cargo.toml 2>/dev/null; then
         # workspace 根 Cargo.toml 不含 version，版本在 eshield/Cargo.toml

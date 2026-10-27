@@ -3,8 +3,35 @@
 [English](README_EN.md) | 中文
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/BlkSword/eShield)](https://github.com/BlkSword/eShield/releases)
+[![Rust](https://img.shields.io/badge/rust-1.8x%20%2B%20nightly--2026--07--31-orange)](https://www.rust-lang.org/)
+[![eBPF/XDP](https://img.shields.io/badge/eBPF-XDP-6f42c1)](https://www.iovisor.org/technology/xdp)
 
 eShield 是基于 eBPF/XDP 的主机级 L3-L4 网络防护系统，用于在 Linux 内核网络协议栈之前拦截 SYN Flood、UDP Flood、ICMP Flood、扫描探测与连接耗尽类流量。项目由 Rust 实现，包含 eBPF 数据面、用户态控制面、分布式策略 Hub、Web 控制台、CLI 与 TUI。
+
+## 控制台预览
+
+内置 Web 控制台为单文件 SPA（内嵌进二进制，无需额外部署静态资源），设计目标是**高密度、低噪声的运维视图**：
+结构用线不用影、颜色只表达状态、数字等宽右对齐，一屏可读完当前防护态势。
+
+| 总览 | 访问控制 |
+|---|---|
+| ![总览](docs/screenshots/console-overview.png) | ![访问控制](docs/screenshots/console-access.png) |
+
+| 防护模块 | 深色主题 |
+|---|---|
+| ![防护模块](docs/screenshots/console-modules.png) | ![深色主题](docs/screenshots/console-dark.png) |
+
+控制台特性：
+
+- **总览**：PPS / DROP / 累计拦截 / 危险等级指标条（含迷你走势）、流量趋势（SVG 折线 + 悬停读数）、
+  XDP 挂载模式与挂载状态、Hub 连接、TOP 攻击源、拦截原因分布、模块开关、最近攻击事件。
+- **访问控制**：黑名单 / 白名单 / 端口 ACL 三个页签，支持原因与来源筛选、批量解除、清理已过期；
+  黑名单同时展示「首因 / 叠加原因」，便于定位真正的触发源。
+- **防护模块**：按分组展示全部模块，开关与参数写入运行时配置，无需重启。
+- **其他**：攻击事件（多选批量封禁）、包日志、审计日志、L7 指纹在线探测、防护项目、
+  GeoIP 与威胁情报、规则与 Hub、系统设置、登录页；浅色 / 深色双主题，`?theme=dark` 可覆盖。
+- 图表为手写 SVG 组件（无 ECharts），控制台单文件产物约 **239KB（gzip 80KB）**。
 
 ## 目录
 
@@ -26,6 +53,11 @@ eShield 是基于 eBPF/XDP 的主机级 L3-L4 网络防护系统，用于在 Lin
 - [16. 许可证](#16-许可证)
 
 ## 1. 项目概述
+
+> **v0.4.8（2026-10-25）**：控制台全量重构（体积 1.26MB → 239KB，移除 ECharts）、
+> XDP 挂载状态巡检与 `/ready` 降级、限速默认阈值对齐业务基线、SYN Proxy 定级为实验特性、
+> 黑名单保留首因与叠加原因、SYN Proxy 支持带 TCP 选项的 SYN、Hub 批量删除与审计。
+> 完整变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在进入内核协议栈之前完成解析、规则匹配与丢弃决策，避免恶意流量消耗协议栈、连接表和应用进程资源。
 
