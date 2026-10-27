@@ -58,17 +58,17 @@ function onKey(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div class="overlay" :class="{ show: commandOpen }" @click="commandOpen = false"></div>
-  <div class="palette" :class="{ show: commandOpen }">
-    <input ref="inputEl" v-model="q" placeholder="搜索页面或执行操作…" @keydown="onKey" />
-    <div class="palette-list">
-      <template v-for="c in commands" :key="c.id">
-        <div class="palette-item" :class="{ active: commands.indexOf(c) === idx }" @click="pick(c)" @mouseenter="idx = commands.indexOf(c)">
-          <span>{{ c.label }}</span>
-          <span class="k">{{ c.hint }}</span>
-        </div>
-      </template>
-      <div v-if="!commands.length" class="empty" style="padding: 24px">没有匹配的命令</div>
-    </div>
+<div class="overlay" :class="{ show: commandOpen }" @click="commandOpen = false"></div>
+<div class="palette" :class="{ show: commandOpen }">
+  <input ref="inputEl" v-model="q" placeholder="搜索页面或执行操作…" @keydown="onKey" />
+  <div class="palette-list">
+    <template v-for="c in commands" :key="c.id">
+      <div class="palette-item" :class="{ active: commands.indexOf(c) === idx }" @click="pick(c)" @mouseenter="idx = commands.indexOf(c)">
+        <span>{{ c.label }}</span>
+        <span class="k">{{ c.hint }}</span>
+      </div>
+    </template>
+    <div v-if="!commands.length" class="empty" style="padding: 24px">没有匹配的命令</div>
   </div>
+</div>
 </template>

@@ -14,6 +14,7 @@ if not os.path.exists(APP):
 APP_BYTES = open(APP, "rb").read()
 
 STATS = {
+    "xdp_attached": True, "xdp_mode": "generic",
     "total_packets": 3284915204, "total_passed": 3271006118, "total_dropped": 13909086,
     "current_pps": 1482310, "current_dps": 86420, "blacklist_blocked": 9812443,
     "rate_limited": 1204880, "syn_flood_blocked": 1876442, "l7_blocked": 344902,

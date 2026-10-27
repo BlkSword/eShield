@@ -1,0 +1,1010 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>eShield Console — 设计预览</title>
+<style>
+/* ==========================================================================
+   eShield Console · 设计语言 v2（高效商业感）
+   原则：结构用线、颜色只表达状态、数字等宽、密度优先、零装饰
+   ========================================================================== */
+:root {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-sub: #fafbfc;
+  --surface-hover: #f3f4f6;
+  --border: #e4e7ec;
+  --border-strong: #cfd4dc;
+
+  --text: #101828;
+  --text-2: #475467;
+  --text-3: #8a94a6;
+
+  --accent: #1f4fd8;
+  --accent-hover: #1a43b8;
+  --accent-soft: #eef2fe;
+
+  --danger: #b42318;
+  --danger-soft: #fdf1f0;
+  --warn: #b54708;
+  --warn-soft: #fdf4e7;
+  --ok: #067647;
+  --ok-soft: #edf7f1;
+
+  --grid-line: #eceff3;
+  --radius: 3px;
+  --radius-sm: 2px;
+
+  --nav-w: 208px;
+  --topbar-h: 44px;
+  --row-h: 34px;
+
+  color-scheme: light;
+}
+
+html[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #12171f;
+  --surface-sub: #0f141b;
+  --surface-hover: #1a212b;
+  --border: #232b36;
+  --border-strong: #333d4b;
+
+  --text: #e7ecf2;
+  --text-2: #a2adbb;
+  --text-3: #6c7887;
+
+  --accent: #6f95ff;
+  --accent-hover: #86a6ff;
+  --accent-soft: #182340;
+
+  --danger: #f97066;
+  --danger-soft: #2a1715;
+  --warn: #f0a13a;
+  --warn-soft: #2a2011;
+  --ok: #3ecf8e;
+  --ok-soft: #10231a;
+
+  --grid-line: #1c232c;
+
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.mono { font-family: var(--font-mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+.num { font-variant-numeric: tabular-nums; }
+.hidden { display: none !important; }
+
+/* ---------- 应用外壳 ---------- */
+.app { display: grid; grid-template-columns: var(--nav-w) 1fr; height: 100%; }
+
+/* ---------- 左侧导航 ---------- */
+.nav {
+  border-right: 1px solid var(--border);
+  background: var(--surface-sub);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.nav-brand {
+  height: var(--topbar-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.brand-mark {
+  width: 18px; height: 18px;
+  border: 1.5px solid var(--text);
+  border-radius: var(--radius-sm);
+  position: relative;
+  flex: none;
+}
+.brand-mark::after {
+  content: ""; position: absolute; inset: 4px;
+  background: var(--text); border-radius: 1px;
+}
+.brand-name { font-weight: 600; letter-spacing: .01em; font-size: 13px; }
+.brand-ver { color: var(--text-3); font-size: 10.5px; margin-left: auto; font-family: var(--font-mono); }
+
+.nav-scroll { overflow-y: auto; padding: 10px 8px 16px; flex: 1 1 auto; }
+.nav-group { margin-bottom: 14px; }
+.nav-group-label {
+  font-size: 10.5px; color: var(--text-3); letter-spacing: .06em;
+  text-transform: uppercase; padding: 0 8px 5px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 8px; margin-bottom: 1px;
+  color: var(--text-2); border-radius: var(--radius-sm);
+  cursor: pointer; border-left: 2px solid transparent;
+  font-size: 12.5px; user-select: none;
+}
+.nav-item:hover { background: var(--surface-hover); color: var(--text); }
+.nav-item.active {
+  background: var(--surface); color: var(--text); font-weight: 500;
+  border-left-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.nav-glyph { width: 14px; text-align: center; color: var(--text-3); font-size: 11px; }
+.nav-item.active .nav-glyph { color: var(--accent); }
+.nav-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10.5px;
+  color: var(--text-3); background: var(--surface-hover);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 0 4px; line-height: 15px;
+}
+.nav-foot {
+  border-top: 1px solid var(--border); padding: 8px 14px;
+  color: var(--text-3); font-size: 11px; display: flex; gap: 6px; align-items: center;
+}
+
+/* ---------- 顶栏 ---------- */
+.main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.topbar {
+  height: var(--topbar-h); flex: none;
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 20px; border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.crumb { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.crumb-group, .crumb-sep { color: var(--text-3); font-size: 11.5px; }
+.crumb-title { font-weight: 500; font-size: 12.5px; }
+.topbar-spacer { flex: 1; }
+.search {
+  width: 260px; height: 26px;
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface-sub); padding: 0 8px; color: var(--text-3);
+  cursor: text;
+}
+.search:hover { border-color: var(--border-strong); }
+.search kbd {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10px;
+  border: 1px solid var(--border); border-radius: 2px; padding: 0 3px;
+  background: var(--surface); color: var(--text-3);
+}
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; height: 26px; }
+.seg button {
+  border: 0; background: transparent; padding: 0 9px;
+  color: var(--text-2); font-size: 11.5px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--surface-hover); color: var(--text); font-weight: 500; }
+.seg button:hover:not(.on) { background: var(--surface-sub); }
+.topbar-divider { width: 1px; height: 16px; background: var(--border); }
+
+/* 状态指示：圆点 + 文本，不做彩色胶囊 */
+.state { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-2); white-space: nowrap; }
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.danger { background: var(--danger); }
+.dot.live { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.state .k { color: var(--text-3); }
+.state.warn { color: var(--warn); }
+.state.danger { color: var(--danger); }
+
+.icon-btn {
+  height: 26px; padding: 0 8px; border: 1px solid var(--border);
+  background: var(--surface); border-radius: var(--radius-sm);
+  color: var(--text-2); cursor: pointer; font-size: 11.5px;
+}
+.icon-btn:hover { background: var(--surface-hover); color: var(--text); }
+
+/* ---------- 内容区 ---------- */
+.content { flex: 1 1 auto; overflow-y: auto; padding: 18px 20px 28px; }
+.page-head { display: flex; align-items: flex-end; gap: 12px; margin-bottom: 12px; }
+.page-title { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.page-meta { color: var(--text-3); font-size: 11.5px; padding-bottom: 2px; }
+.page-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* ---------- KPI 条 ---------- */
+.kpis {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); margin-bottom: 14px;
+}
+.kpi { padding: 12px 14px 11px; border-right: 1px solid var(--border); min-width: 0; }
+.kpi:last-child { border-right: 0; }
+.kpi-label { font-size: 10.5px; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; display: flex; align-items: center; gap: 6px; }
+.kpi-value { font-size: 22px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; margin-top: 4px; line-height: 1.2; }
+.kpi-value small { font-size: 12px; font-weight: 500; color: var(--text-2); margin-left: 2px; }
+.kpi-foot { font-size: 11px; color: var(--text-3); margin-top: 3px; display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
+.kpi-foot .state { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi-foot .up { color: var(--danger); }
+.kpi-foot .down { color: var(--ok); }
+.spark { display: block; margin-top: 2px; }
+
+/* ---------- 面板 ---------- */
+.grid { display: grid; gap: 14px; margin-bottom: 14px; }
+.g-traffic { grid-template-columns: minmax(0, 1fr) 300px; }
+.g-split { grid-template-columns: minmax(0, 1fr) 300px; }
+.panel { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); min-width: 0; display: flex; flex-direction: column; }
+.panel-head {
+  height: 38px; flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 0 12px; border-bottom: 1px solid var(--border);
+}
+.panel-title { font-size: 12.5px; font-weight: 600; }
+.panel-sub { font-size: 11px; color: var(--text-3); }
+.panel-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.panel-body { padding: 12px; }
+.panel-body.flush { padding: 0; }
+.legend { display: flex; gap: 12px; align-items: center; font-size: 11px; color: var(--text-2); }
+.legend i { width: 8px; height: 2px; display: inline-block; margin-right: 5px; vertical-align: middle; }
+
+/* 图表 */
+.chart-wrap { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 0 4px; }
+.chart-ylabels { display: flex; flex-direction: column; justify-content: space-between; align-items: flex-end; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; padding: 2px 0; }
+.chart-xlabels { grid-column: 2; display: flex; justify-content: space-between; font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; margin-top: 4px; }
+svg.chart { width: 100%; height: 200px; display: block; }
+
+/* 定义列表（运行状态） */
+.dl { margin: 0; }
+.dl-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; height: 30px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.dl-row:last-child { border-bottom: 0; }
+.dl-key { color: var(--text-2); }
+.dl-val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); }
+
+/* 横向条形（拦截原因） */
+.hbars { display: flex; flex-direction: column; gap: 9px; }
+.hbar { display: grid; grid-template-columns: 68px minmax(0, 1fr) 62px; align-items: center; gap: 8px; font-size: 11.5px; }
+.hbar-label { color: var(--text-2); white-space: nowrap; }
+.hbar-track { display: block; height: 6px; background: var(--grid-line); border-radius: 1px; overflow: hidden; }
+.hbar-fill { display: block; height: 100%; background: var(--text-3); border-radius: 1px; }
+.hbar-fill.danger { background: var(--danger); }
+.hbar-fill.warn { background: var(--warn); }
+.hbar-fill.accent { background: var(--accent); }
+.hbar-val { text-align: right; font-family: var(--font-mono); font-size: 11px; color: var(--text-2); }
+
+/* ---------- 表格 ---------- */
+.table-wrap { overflow-x: auto; }
+table.dt { width: 100%; border-collapse: collapse; font-size: 12px; }
+.dt thead th {
+  text-align: left; font-weight: 500; font-size: 10.5px; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-3);
+  background: var(--surface-sub); border-bottom: 1px solid var(--border);
+  padding: 0 10px; height: 30px; white-space: nowrap; position: sticky; top: 0; z-index: 1;
+}
+.dt tbody td { padding: 0 10px; height: var(--row-h); border-bottom: 1px solid var(--border); white-space: nowrap; }
+.dt tbody tr:last-child td { border-bottom: 0; }
+.dt tbody tr:hover td { background: var(--surface-hover); }
+.dt .num, .dt .r { text-align: right; }
+.dt .col-check { width: 34px; padding-right: 0; }
+.dt .col-act { width: 92px; text-align: right; }
+.dt th.num { text-align: right; }
+.cell-main { color: var(--text); }
+.cell-sub { color: var(--text-3); font-size: 11px; }
+.muted { color: var(--text-3); }
+.strong { font-weight: 600; }
+.nowrap { white-space: nowrap; }
+.linkish { color: var(--accent); cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
+.row-actions { display: inline-flex; gap: 2px; }
+.row-actions .btn { color: var(--text-3); border-color: transparent; background: transparent; }
+.row-actions .btn:hover { color: var(--text); background: var(--surface-hover); }
+
+.empty { color: var(--text-3); text-align: center; padding: 28px 0; font-size: 12px; }
+
+/* ---------- 按钮 / 输入 ---------- */
+.btn {
+  height: 28px; padding: 0 10px; border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text); cursor: pointer; font-size: 12px; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn:hover { background: var(--surface-hover); }
+.btn.primary { background: var(--text); border-color: var(--text); color: var(--surface); }
+html[data-theme="dark"] .btn.primary { background: var(--accent); border-color: var(--accent); color: #0b0f14; }
+.btn.primary:hover { opacity: .9; }
+.btn.danger { color: var(--danger); border-color: #f0c4c0; }
+.btn.danger:hover { background: var(--danger-soft); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--text-2); }
+.btn.ghost:hover { background: var(--surface-hover); color: var(--text); }
+.btn.sm { height: 24px; padding: 0 8px; font-size: 11.5px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.field { height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 0 8px; font-size: 12px; color: var(--text); width: 100%; }
+.field::placeholder { color: var(--text-3); }
+.field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.select { height: 28px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 0 26px 0 8px; font-size: 12px; color: var(--text); appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 12px, calc(100% - 8px) 12px; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+.toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.toolbar .grow { flex: 1 1 auto; min-width: 160px; max-width: 320px; }
+.toolbar-spacer { flex: 1 1 auto; }
+
+/* 复选与开关 */
+input[type="checkbox"] { width: 13px; height: 13px; accent-color: var(--accent); vertical-align: -2px; }
+.switch { position: relative; width: 28px; height: 16px; flex: none; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.switch span { position: absolute; inset: 0; background: var(--border-strong); border-radius: 8px; transition: background .12s; pointer-events: none; }
+.switch span::after { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); top: 2px; left: 2px; transition: transform .12s; }
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(12px); }
+
+/* 分页 / 表格页脚 */
+.tfoot { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-2); font-size: 11.5px; }
+.tfoot .pager { margin-left: auto; display: flex; gap: 4px; }
+.pager button { height: 24px; min-width: 24px; padding: 0 6px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); cursor: pointer; font-size: 11.5px; color: var(--text-2); }
+.pager button.on { background: var(--surface-hover); color: var(--text); font-weight: 500; }
+.pager button:hover:not(:disabled) { border-color: var(--border-strong); }
+
+/* 批量操作条 */
+.bulkbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; background: var(--accent-soft);
+  border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--text-2);
+}
+.bulkbar strong { color: var(--text); font-weight: 600; }
+
+/* ---------- 抽屉 ---------- */
+.scrim { position: fixed; inset: 0; background: rgba(16, 24, 40, .28); opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 20; }
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; width: 420px; max-width: 92vw;
+  background: var(--surface); border-left: 1px solid var(--border);
+  transform: translateX(100%); transition: transform .16s ease; z-index: 21;
+  display: flex; flex-direction: column;
+}
+.drawer.open { transform: translateX(0); }
+.drawer-head { height: 46px; display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid var(--border); gap: 10px; }
+.drawer-title { font-weight: 600; font-size: 13px; }
+.drawer-close { margin-left: auto; }
+.drawer-body { overflow-y: auto; padding: 14px; }
+.drawer-section { margin-bottom: 18px; }
+.drawer-section h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); font-weight: 500; }
+
+/* ---------- 规范页 ---------- */
+.spec-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.spec-block { border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius); padding: 14px; }
+.spec-block h3 { margin: 0 0 10px; font-size: 12.5px; font-weight: 600; }
+.swatches { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.swatch { border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.swatch i { display: block; height: 34px; }
+.swatch-meta { padding: 5px 6px; font-size: 10.5px; color: var(--text-3); display: flex; justify-content: space-between; gap: 6px; font-family: var(--font-mono); }
+.type-row { display: flex; align-items: baseline; gap: 12px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.type-row:last-child { border-bottom: 0; }
+.type-row span:first-child { width: 86px; color: var(--text-3); font-size: 10.5px; }
+.spec-list { margin: 0; padding-left: 16px; color: var(--text-2); }
+.spec-list li { margin-bottom: 5px; }
+.spec-list b { color: var(--text); font-weight: 600; }
+.tag-neutral { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-3); }
+.mt8 { margin-top: 8px; }
+.muted { color: var(--text-3); }
+.row { display: flex; align-items: center; gap: 8px; }
+.spread { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============================ 左侧导航 ============================ -->
+  <aside class="nav">
+    <div class="nav-brand">
+      <div class="brand-mark"></div>
+      <div class="brand-name">eShield</div>
+      <div class="brand-ver">0.4.8</div>
+    </div>
+    <div class="nav-scroll">
+      <div class="nav-group">
+        <div class="nav-group-label">监控</div>
+        <div class="nav-item active" data-view="overview"><span class="nav-glyph">◧</span>总览</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">⚑</span>攻击事件<span class="nav-count">1.2k</span></div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">≡</span>包日志</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">▤</span>审计日志</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">防护</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">◈</span>防护模块<span class="nav-count">5/8</span></div>
+        <div class="nav-item" data-view="access"><span class="nav-glyph">⇄</span>访问控制<span class="nav-count">1203</span></div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">⌁</span>L7 指纹</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">▣</span>防护项目</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">策略</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">◍</span>GeoIP 与情报</div>
+        <div class="nav-item" data-view="overview"><span class="nav-glyph">⛓</span>规则与 Hub</div>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-label">系统</div>
+        <div class="nav-item" data-view="spec"><span class="nav-glyph">◇</span>设计规范</div>
+      </div>
+    </div>
+    <div class="nav-foot"><span class="dot ok"></span>数据面运行中 · SKB 模式</div>
+  </aside>
+
+  <div class="main">
+    <!-- ============================ 顶栏 ============================ -->
+    <header class="topbar">
+      <div class="crumb">
+        <span class="crumb-group" id="crumb-group">监控</span>
+        <span class="crumb-sep">/</span>
+        <span class="crumb-title" id="crumb-title">总览</span>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="search" role="search"><span>⌕</span><span>搜索 IP、规则、事件…</span><kbd>Ctrl K</kbd></div>
+      <div class="seg" id="range-seg">
+        <button data-range="15m">15 分钟</button>
+        <button data-range="1h" class="on">1 小时</button>
+        <button data-range="24h">24 小时</button>
+      </div>
+      <span class="topbar-divider"></span>
+      <span class="state" title="XDP 挂载模式"><span class="dot warn"></span><span class="k">XDP</span> generic</span>
+      <span class="state"><span class="dot live"></span>实时</span>
+      <button class="icon-btn" id="refresh-btn">刷新</button>
+      <button class="icon-btn" id="theme-btn">深色</button>
+    </header>
+
+    <!-- ============================ 总览 ============================ -->
+    <section class="content" id="view-overview">
+      <div class="page-head">
+        <div class="page-title">总览</div>
+        <div class="page-meta">更新于 <span id="updated-at" class="mono">12:04:31</span> · 每 2s 自动刷新</div>
+        <div class="page-actions">
+          <button class="btn ghost sm">导出快照</button>
+          <button class="btn sm">查看攻击事件</button>
+        </div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi">
+          <div class="kpi-label">当前 PPS</div>
+          <div class="kpi-value">1,248,300</div>
+          <div class="kpi-foot"><svg class="spark" id="spark-pps" width="86" height="16"></svg><span>峰值 2.41M</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">当前 DROP</div>
+          <div class="kpi-value">41,900</div>
+          <div class="kpi-foot"><svg class="spark" id="spark-dps" width="86" height="16"></svg><span class="up">丢弃率 3.36%</span></div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">累计处理</div>
+          <div class="kpi-value">18.93<small>B</small></div>
+          <div class="kpi-foot">放行 18.51B</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">累计拦截</div>
+          <div class="kpi-value">412.8<small>M</small></div>
+          <div class="kpi-foot">黑名单 401.2M</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi-label">黑名单</div>
+          <div class="kpi-value">1,203</div>
+          <div class="kpi-foot"><span class="state warn"><span class="dot warn"></span>危险等级 L1 · 关注</span></div>
+        </div>
+      </div>
+
+      <div class="grid g-traffic">
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title">流量趋势</div>
+            <div class="panel-sub">近 1 小时 · 10s 粒度</div>
+            <div class="panel-actions">
+              <div class="legend"><span><i style="background:var(--accent)"></i>PPS</span><span><i style="background:var(--danger)"></i>DROP</span></div>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="chart-wrap">
+              <div class="chart-ylabels"><span>2.5M</span><span>1.7M</span><span>0.8M</span><span>0</span></div>
+              <svg class="chart" id="traffic-chart" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg>
+              <div class="chart-xlabels"><span>11:04</span><span>11:19</span><span>11:34</span><span>11:49</span><span>12:04</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">运行状态</div></div>
+          <div class="panel-body" style="padding-top: 4px;">
+            <div class="dl">
+              <div class="dl-row"><span class="dl-key">XDP 挂载</span><span class="state"><span class="dot warn"></span>generic（SKB）</span></div>
+              <div class="dl-row"><span class="dl-key">巡检状态</span><span class="state"><span class="dot ok"></span>已挂载 · 15s 校验</span></div>
+              <div class="dl-row"><span class="dl-key">版本</span><span class="dl-val">0.4.8-dev</span></div>
+              <div class="dl-row"><span class="dl-key">运行时长</span><span class="dl-val">3d 04:12</span></div>
+              <div class="dl-row"><span class="dl-key">规则持久化</span><span class="dl-val">redb · 正常</span></div>
+              <div class="dl-row"><span class="dl-key">Hub 连接</span><span class="state"><span class="dot ok"></span>已连接</span></div>
+              <div class="dl-row"><span class="dl-key">事件消费</span><span class="dl-val">ringbuf · 0 丢弃</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid g-split">
+        <div class="panel">
+          <div class="panel-head">
+            <div class="panel-title">TOP 攻击源</div>
+            <div class="panel-sub">按累计命中次数</div>
+            <div class="panel-actions"><button class="btn ghost sm">全部事件</button></div>
+          </div>
+          <div class="panel-body flush">
+            <div class="table-wrap">
+              <table class="dt">
+                <thead>
+                  <tr>
+                    <th style="width:30px">#</th><th>源地址</th><th class="num">命中次数</th>
+                    <th style="width:150px">占比</th><th>首因 / 叠加</th><th class="col-act">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="top-attackers"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="grid-template-columns:1fr; gap:14px; margin:0;">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">拦截原因分布</div><div class="panel-sub">累计</div></div>
+            <div class="panel-body">
+              <div class="hbars">
+                <div class="hbar"><span class="hbar-label">黑名单</span><span class="hbar-track"><span class="hbar-fill danger" style="width:100%"></span></span><span class="hbar-val">401.2M</span></div>
+                <div class="hbar"><span class="hbar-label">速率限制</span><span class="hbar-track"><span class="hbar-fill warn" style="width:9%"></span></span><span class="hbar-val">8.6M</span></div>
+                <div class="hbar"><span class="hbar-label">SYN Flood</span><span class="hbar-track"><span class="hbar-fill accent" style="width:5%"></span></span><span class="hbar-val">2.4M</span></div>
+                <div class="hbar"><span class="hbar-label">L7 指纹</span><span class="hbar-track"><span class="hbar-fill" style="width:2%"></span></span><span class="hbar-val">512k</span></div>
+                <div class="hbar"><span class="hbar-label">GeoIP</span><span class="hbar-track"><span class="hbar-fill" style="width:1%"></span></span><span class="hbar-val">96k</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">防护模块</div><div class="panel-sub">5 / 8 启用</div></div>
+            <div class="panel-body" style="padding-top:2px;padding-bottom:2px;">
+              <div class="dl-row"><span class="dl-key">速率限制</span><span class="row"><span class="state mono muted">8.6M</span><label class="switch"><input type="checkbox" checked><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">UDP Flood</span><span class="row"><span class="state mono muted">1.1M</span><label class="switch"><input type="checkbox" checked><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">ICMP Flood</span><span class="row"><span class="state mono muted">204k</span><label class="switch"><input type="checkbox" checked><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">L7 指纹</span><span class="row"><span class="state mono muted">512k</span><label class="switch"><input type="checkbox" checked><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">自适应</span><span class="row"><span class="state mono muted">3.2k</span><label class="switch"><input type="checkbox" checked><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">SYN Flood <span class="muted">实验</span></span><span class="row"><span class="state mono muted">—</span><label class="switch"><input type="checkbox"><span></span></label></span></div>
+              <div class="dl-row"><span class="dl-key">GeoIP</span><span class="row"><span class="state mono muted">—</span><label class="switch"><input type="checkbox"><span></span></label></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <div class="panel-title">最近攻击事件</div>
+          <div class="panel-sub">RingBuf 采样 · 最多 200 条</div>
+          <div class="panel-actions"><span class="state"><span class="dot live"></span>实时</span></div>
+        </div>
+        <div class="panel-body flush">
+          <div class="table-wrap">
+            <table class="dt">
+              <thead><tr><th>时间</th><th>源地址</th><th>目的</th><th>协议</th><th>命中规则</th><th>动作</th><th class="col-act">操作</th></tr></thead>
+              <tbody id="recent-events"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 访问控制 ============================ -->
+    <section class="content hidden" id="view-access">
+      <div class="page-head">
+        <div class="page-title">访问控制</div>
+        <div class="page-meta">黑名单实时生效于数据面 · 共 <span class="mono">1,203</span> 条</div>
+        <div class="page-actions">
+          <button class="btn sm">导入</button>
+          <button class="btn primary sm">手工封禁</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="toolbar">
+          <div class="grow"><input class="field" placeholder="搜索 IP / 原因 / 来源" /></div>
+          <select class="select"><option>全部原因</option><option>速率限制</option><option>自适应</option><option>手动封禁</option><option>威胁情报</option></select>
+          <select class="select"><option>生效中</option><option>已过期</option><option>永久</option></select>
+          <select class="select"><option>全部来源</option><option>自动</option><option>手动</option><option>情报</option></select>
+          <div class="toolbar-spacer"></div>
+          <span class="state"><span class="dot ok"></span>数据面已同步</span>
+          <button class="btn ghost sm">重置</button>
+        </div>
+
+        <div class="bulkbar hidden" id="bulkbar">
+          <strong>已选 <span id="sel-count">0</span> 项</strong>
+          <span class="muted">|</span>
+          <button class="btn sm danger">解除封禁</button>
+          <button class="btn sm ghost">导出</button>
+          <button class="btn sm ghost" id="clear-sel">取消选择</button>
+        </div>
+
+        <div class="table-wrap">
+          <table class="dt" id="access-table">
+            <thead>
+              <tr>
+                <th class="col-check"><input type="checkbox" id="check-all" /></th>
+                <th>IP 地址</th><th>封禁原因</th><th>来源</th><th class="num">命中次数</th>
+                <th>到期时间</th><th>创建时间</th><th class="col-act">操作</th>
+              </tr>
+            </thead>
+            <tbody id="access-body"></tbody>
+          </table>
+        </div>
+
+        <div class="tfoot">
+          <span>显示 1–12 / 共 1,203 · 每页 20 条</span>
+          <div class="pager">
+            <button disabled>上一页</button>
+            <button class="on">1</button><button>2</button><button>3</button><button>…</button><button>61</button>
+            <button>下一页</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid" style="grid-template-columns:1fr 1fr; margin-top:14px;">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">白名单</div><div class="panel-sub">优先级最高 · 不参与限速</div><div class="panel-actions"><button class="btn ghost sm">新增</button></div></div>
+          <div class="panel-body flush">
+            <table class="dt">
+              <thead><tr><th>CIDR</th><th>备注</th><th class="col-act">操作</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">10.0.0.0/8</td><td class="muted">内网</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+                <tr><td class="mono">8.149.1.223/32</td><td class="muted">管理出口</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+                <tr><td class="mono">172.23.83.0/24</td><td class="muted">VPC 内网</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">端口 ACL</div><div class="panel-sub">32 条上限</div><div class="panel-actions"><button class="btn ghost sm">新增</button></div></div>
+          <div class="panel-body flush">
+            <table class="dt">
+              <thead><tr><th>端口</th><th>协议</th><th>动作</th><th class="col-act">操作</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">22</td><td>TCP</td><td>允许</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+                <tr><td class="mono">8720</td><td>TCP</td><td>允许</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+                <tr><td class="mono">6379</td><td>TCP</td><td class="muted">拒绝</td><td class="col-act"><div class="row-actions"><button class="btn ghost sm">编辑</button><button class="btn ghost sm">删除</button></div></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================ 设计规范 ============================ -->
+    <section class="content hidden" id="view-spec">
+      <div class="page-head">
+        <div class="page-title">设计规范</div>
+        <div class="page-meta">高效商业控制台 · v2</div>
+      </div>
+
+      <div class="spec-grid">
+        <div class="spec-block">
+          <h3>设计原则</h3>
+          <ol class="spec-list">
+            <li><b>结构用线，不用影。</b>面板、表格、KPI 一律 1px 描边 + 直角小圆角，杜绝卡片阴影与渐变。</li>
+            <li><b>颜色只表达状态。</b>蓝＝可交互（链接/选中/开关），红＝危险，橙＝警告，绿＝正常；装饰性色块全部去掉。</li>
+            <li><b>数字优先。</b>指标使用等宽数字、右对齐、固定千分位；IP/端口/时间统一等宽字体。</li>
+            <li><b>密度优先。</b>行高 34px、面板头 38px、导航 30px；一屏看到更多真实信息。</li>
+            <li><b>克制层级。</b>页面只有 4 级字号（17 / 12.5 / 11 / 10.5），靠字重和颜色而非字号堆叠层级。</li>
+          </ol>
+        </div>
+
+        <div class="spec-block">
+          <h3>字号与字重</h3>
+          <div class="type-row"><span>页面标题 17</span><span style="font-size:17px;font-weight:600;letter-spacing:-.01em">访问控制</span></div>
+          <div class="type-row"><span>正文 12.5</span><span style="font-size:12.5px">黑名单实时生效于数据面，共 1,203 条</span></div>
+          <div class="type-row"><span>说明 11</span><span style="font-size:11px" class="muted">每 2s 自动刷新 · RingBuf 采样</span></div>
+          <div class="type-row"><span>表头 10.5</span><span style="font-size:10.5px;letter-spacing:.04em;text-transform:uppercase" class="muted">SOURCE ADDRESS</span></div>
+          <div class="type-row"><span>数字</span><span class="mono" style="font-size:13px">1,248,300 · 203.0.113.47 · 41.9k</span></div>
+        </div>
+
+        <div class="spec-block">
+          <h3>颜色</h3>
+          <div class="swatches">
+            <div class="swatch"><i style="background:var(--bg)"></i><div class="swatch-meta"><span>bg</span><span>#f6f7f9</span></div></div>
+            <div class="swatch"><i style="background:var(--surface);border-bottom:1px solid var(--border)"></i><div class="swatch-meta"><span>surface</span><span>#ffffff</span></div></div>
+            <div class="swatch"><i style="background:var(--border)"></i><div class="swatch-meta"><span>border</span><span>#e4e7ec</span></div></div>
+            <div class="swatch"><i style="background:var(--text)"></i><div class="swatch-meta"><span>text</span><span>#101828</span></div></div>
+            <div class="swatch"><i style="background:var(--accent)"></i><div class="swatch-meta"><span>accent</span><span>#1f4fd8</span></div></div>
+            <div class="swatch"><i style="background:var(--danger)"></i><div class="swatch-meta"><span>danger</span><span>#b42318</span></div></div>
+            <div class="swatch"><i style="background:var(--warn)"></i><div class="swatch-meta"><span>warn</span><span>#b54708</span></div></div>
+            <div class="swatch"><i style="background:var(--ok)"></i><div class="swatch-meta"><span>ok</span><span>#067647</span></div></div>
+            <div class="swatch"><i style="background:var(--text-3)"></i><div class="swatch-meta"><span>muted</span><span>#8a94a6</span></div></div>
+          </div>
+        </div>
+
+        <div class="spec-block">
+          <h3>状态表达</h3>
+          <div class="dl" style="margin-bottom:10px">
+            <div class="dl-row"><span class="dl-key">已挂载 / 正常</span><span class="state"><span class="dot ok"></span>已挂载 · 15s 校验</span></div>
+            <div class="dl-row"><span class="dl-key">降级 / 警告</span><span class="state"><span class="dot warn"></span>XDP 运行在 generic</span></div>
+            <div class="dl-row"><span class="dl-key">失效 / 危险</span><span class="state danger"><span class="dot danger"></span>XDP 未挂载，防护已失效</span></div>
+            <div class="dl-row"><span class="dl-key">中性信息</span><span class="state"><span class="dot"></span>规则已持久化</span></div>
+          </div>
+          <p class="muted" style="margin:0">状态 = 圆点 + 文本，不使用彩色胶囊。颜色仅作为第二信号，灰度环境仍可读。</p>
+        </div>
+
+        <div class="spec-block">
+          <h3>控件</h3>
+          <div class="row" style="flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn primary sm">手工封禁</button>
+            <button class="btn sm">导出</button>
+            <button class="btn ghost sm">取消</button>
+            <button class="btn danger sm">解除封禁</button>
+            <button class="btn sm" disabled>不可用</button>
+          </div>
+          <div class="row" style="margin-bottom:10px"><input class="field" style="max-width:180px" placeholder="搜索 IP" /><select class="select"><option>全部原因</option></select><label class="switch"><input type="checkbox" checked><span></span></label></div>
+          <div class="row"><span class="tag-neutral">nav 208px · topbar 44px · row 34px · panel-head 38px · radius 2/3px</span></div>
+        </div>
+
+        <div class="spec-block">
+          <h3>与旧版的关键差异</h3>
+          <ul class="spec-list">
+            <li>去掉 6 张彩色 KPI 卡片与渐变/圆角阴影 → 一条 5 段描边指标条。</li>
+            <li>去掉饼图 → 横向条形（可直接比较量级，避免角度误读）。</li>
+            <li>去掉彩色 Tag 胶囊 → 圆点 + 文本状态。</li>
+            <li>表格行高 34px、表头吸顶、数字右对齐等宽、行内操作 hover 出现。</li>
+            <li>深色主题同结构，仅换 token；两套主题共用同一套组件。</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <span class="drawer-title" id="drawer-title">IP 详情</span>
+    <span class="mono muted" id="drawer-ip">203.0.113.47</span>
+    <button class="btn ghost sm drawer-close" id="drawer-close">关闭</button>
+  </div>
+  <div class="drawer-body">
+    <div class="drawer-section">
+      <h4>当前状态</h4>
+      <div class="dl">
+        <div class="dl-row"><span class="dl-key">封禁状态</span><span class="state danger"><span class="dot danger"></span>封禁中</span></div>
+        <div class="dl-row"><span class="dl-key">首因</span><span class="dl-val">速率限制</span></div>
+        <div class="dl-row"><span class="dl-key">叠加原因</span><span class="dl-val">自适应</span></div>
+        <div class="dl-row"><span class="dl-key">到期</span><span class="dl-val">23 分钟后</span></div>
+        <div class="dl-row"><span class="dl-key">命中次数</span><span class="dl-val">2,341,204</span></div>
+      </div>
+    </div>
+    <div class="drawer-section">
+      <h4>最近事件</h4>
+      <table class="dt">
+        <thead><tr><th>时间</th><th>目的</th><th>规则</th></tr></thead>
+        <tbody>
+          <tr><td class="mono muted">12:04:22</td><td class="mono">:443</td><td>速率限制</td></tr>
+          <tr><td class="mono muted">12:04:11</td><td class="mono">:443</td><td>速率限制</td></tr>
+          <tr><td class="mono muted">12:03:58</td><td class="mono">:80</td><td>黑名单命中</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="row" style="gap:8px">
+      <button class="btn danger sm">解除封禁</button>
+      <button class="btn sm">加入白名单</button>
+    </div>
+  </div>
+</aside>
+
+<script>
+/* ---------------- 数据（与真实 API 字段对齐） ---------------- */
+const topAttackers = [
+  { ip: '203.0.113.47', hits: 2341204, ratio: 100, first: '速率限制', overlay: '自适应' },
+  { ip: '198.51.100.23', hits: 1880913, ratio: 80, first: '自适应', overlay: '' },
+  { ip: '192.0.2.155', hits: 1204881, ratio: 51, first: '速率限制', overlay: '' },
+  { ip: '45.83.64.12', hits: 998442, ratio: 43, first: 'SYN Flood', overlay: '' },
+  { ip: '185.220.101.7', hits: 872113, ratio: 37, first: '威胁情报', overlay: '' },
+  { ip: '103.21.244.9', hits: 611220, ratio: 26, first: '速率限制', overlay: '自适应' },
+  { ip: '91.219.237.44', hits: 402119, ratio: 17, first: '端口 ACL', overlay: '' },
+  { ip: '64.62.197.88', hits: 288441, ratio: 12, first: '手动封禁', overlay: '' },
+];
+
+const recentEvents = [
+  { t: '12:04:22', src: '203.0.113.47', dst: '172.23.83.38:443', proto: 'TCP', rule: '速率限制', act: 'DROP' },
+  { t: '12:04:19', src: '45.83.64.12', dst: '172.23.83.38:80', proto: 'TCP', rule: 'SYN Flood', act: 'DROP' },
+  { t: '12:04:17', src: '172.23.83.40', dst: '172.23.83.38:8720', proto: 'TCP', rule: '白名单', act: 'PASS' },
+  { t: '12:04:11', src: '198.51.100.23', dst: '172.23.83.38:443', proto: 'TCP', rule: '自适应', act: 'DROP' },
+  { t: '12:04:08', src: '185.220.101.7', dst: '172.23.83.38:22', proto: 'TCP', rule: '威胁情报', act: 'DROP' },
+  { t: '12:04:03', src: '103.21.244.9', dst: '172.23.83.38:53', proto: 'UDP', rule: 'UDP Flood', act: 'DROP' },
+  { t: '12:03:58', src: '91.219.237.44', dst: '172.23.83.38:6379', proto: 'TCP', rule: '端口 ACL', act: 'DROP' },
+  { t: '12:03:51', src: '172.23.83.39', dst: '172.23.83.38:443', proto: 'TCP', rule: '连接跟踪', act: 'PASS' },
+];
+
+const accessRows = [
+  { ip: '203.0.113.47', reason: '速率限制', overlay: '自适应', origin: '自动', hits: '2,341,204', expire: '23 分钟后', created: '10-25 11:41' },
+  { ip: '198.51.100.23', reason: '自适应', overlay: '', origin: '自动', hits: '1,880,913', expire: '永久', created: '10-24 22:03' },
+  { ip: '192.0.2.155', reason: '速率限制', overlay: '', origin: '自动', hits: '1,204,881', expire: '5 分钟后', created: '10-25 12:00' },
+  { ip: '45.83.64.12', reason: 'SYN Flood', overlay: '', origin: '自动', hits: '998,442', expire: '12 分钟后', created: '10-25 11:52' },
+  { ip: '185.220.101.7', reason: '威胁情报', overlay: '', origin: '情报', hits: '872,113', expire: '永久', created: '10-20 09:12' },
+  { ip: '103.21.244.9', reason: '速率限制', overlay: '自适应', origin: '自动', hits: '611,220', expire: '48 分钟后', created: '10-25 11:16' },
+  { ip: '91.219.237.44', reason: '端口 ACL', overlay: '', origin: '自动', hits: '402,119', expire: '3 分钟后', created: '10-25 12:01' },
+  { ip: '64.62.197.88', reason: '手动封禁', overlay: '速率限制', origin: '手动', hits: '288,441', expire: '永久', created: '10-23 18:40' },
+  { ip: '5.188.10.32', reason: '速率限制', overlay: '', origin: '自动', hits: '204,118', expire: '1 分钟后', created: '10-25 12:03' },
+  { ip: '193.32.162.155', reason: 'L7 指纹', overlay: '', origin: '自动', hits: '98,220', expire: '8 分钟后', created: '10-25 11:56' },
+  { ip: '212.83.167.9', reason: '威胁情报', overlay: '', origin: '情报', hits: '44,012', expire: '永久', created: '10-19 15:22' },
+  { ip: '141.98.10.18', reason: '手动封禁', overlay: '', origin: '手动', hits: '12,004', expire: '2 小时后', created: '10-25 10:04' },
+];
+
+/* ---------------- 渲染：TOP 攻击源 ---------------- */
+const topBody = document.getElementById('top-attackers');
+topBody.innerHTML = topAttackers.map((a, i) => `
+  <tr>
+    <td class="muted mono">${i + 1}</td>
+    <td><span class="mono cell-main linkish" data-ip="${a.ip}">${a.ip}</span></td>
+    <td class="num mono">${a.hits.toLocaleString()}</td>
+    <td><span class="hbar-track" style="display:block"><span class="hbar-fill danger" style="display:block;width:${a.ratio}%"></span></span></td>
+    <td>${a.first}${a.overlay ? ` <span class="muted">/ 叠加 ${a.overlay}</span>` : ''}</td>
+    <td class="col-act"><div class="row-actions"><button class="btn ghost sm">详情</button></div></td>
+  </tr>`).join('');
+
+/* ---------------- 渲染：最近事件 ---------------- */
+document.getElementById('recent-events').innerHTML = recentEvents.map((e) => `
+  <tr>
+    <td class="mono muted">${e.t}</td>
+    <td><span class="mono cell-main">${e.src}</span></td>
+    <td class="mono">${e.dst}</td>
+    <td>${e.proto}</td>
+    <td>${e.rule}</td>
+    <td>${e.act === 'DROP' ? '<span class="state danger"><span class="dot danger"></span>DROP</span>' : '<span class="state"><span class="dot"></span>PASS</span>'}</td>
+    <td class="col-act"><div class="row-actions"><button class="btn ghost sm">详情</button></div></td>
+  </tr>`).join('');
+
+/* ---------------- 渲染：访问控制 ---------------- */
+const accessBody = document.getElementById('access-body');
+accessBody.innerHTML = accessRows.map((r) => `
+  <tr>
+    <td class="col-check"><input type="checkbox" class="row-check" /></td>
+    <td><span class="mono cell-main linkish" data-ip="${r.ip}">${r.ip}</span></td>
+    <td>${r.reason}${r.overlay ? ` <span class="muted">/ 叠加 ${r.overlay}</span>` : ''}</td>
+    <td class="muted">${r.origin}</td>
+    <td class="num mono">${r.hits}</td>
+    <td>${r.expire === '永久' ? '永久' : `<span class="muted mono">${r.expire}</span>`}</td>
+    <td class="mono muted">${r.created}</td>
+    <td class="col-act"><div class="row-actions"><button class="btn ghost sm">解除</button><button class="btn ghost sm">详情</button></div></td>
+  </tr>`).join('');
+
+/* ---------------- 图表：SVG 折线 + 面积 ---------------- */
+function renderTraffic(svg) {
+  const W = 1000, H = 200, pad = 2;
+  const seed = (s) => { let x = s; return () => (x = (x * 1103515245 + 12345) % 2147483648) / 2147483648; };
+  const rnd = seed(42);
+  const n = 96;
+  const pps = [], dps = [];
+  let base = 0.52;
+  for (let i = 0; i < n; i++) {
+    base += (rnd() - 0.5) * 0.06;
+    base = Math.max(0.28, Math.min(0.82, base));
+    const attack = i > 62 && i < 82 ? (i - 62) * 0.055 : 0;
+    pps.push(Math.min(0.98, base + attack + rnd() * 0.03));
+    dps.push(Math.min(0.6, 0.02 + (i > 64 && i < 84 ? (i - 64) * 0.028 : 0) + rnd() * 0.012));
+  }
+  const x = (i) => pad + (i / (n - 1)) * (W - pad * 2);
+  const y = (v) => H - pad - v * (H - pad * 2);
+  const line = (arr) => arr.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const area = (arr) => `${line(arr)}L${x(n - 1).toFixed(1)},${H - pad}L${x(0).toFixed(1)},${H - pad}Z`;
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((p) => `<line x1="0" y1="${(pad + p * (H - pad * 2)).toFixed(1)}" x2="${W}" y2="${(pad + p * (H - pad * 2)).toFixed(1)}" stroke="var(--grid-line)" stroke-width="1" vector-effect="non-scaling-stroke"/>`).join('');
+  svg.innerHTML = `
+    ${grid}
+    <path d="${area(pps)}" fill="var(--accent)" opacity="0.06"/>
+    <path d="${line(pps)}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+    <path d="${line(dps)}" fill="none" stroke="var(--danger)" stroke-width="1.25" vector-effect="non-scaling-stroke"/>
+  `;
+}
+renderTraffic(document.getElementById('traffic-chart'));
+
+/* KPI 迷你走势 */
+function renderSpark(svg, values, color) {
+  const W = 86, H = 16;
+  const max = Math.max(...values), min = Math.min(...values);
+  const span = max - min || 1;
+  const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${H - 1 - ((v - min) / span) * (H - 2)}`).join(' ');
+  svg.innerHTML = `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.25" />`;
+}
+renderSpark(document.getElementById('spark-pps'), [42, 48, 45, 52, 50, 58, 55, 61, 58, 66, 63, 70], 'var(--accent)');
+renderSpark(document.getElementById('spark-dps'), [8, 7, 9, 8, 10, 9, 11, 12, 10, 13, 12, 14], 'var(--danger)');
+
+/* ---------------- 视图切换 ---------------- */
+const views = {
+  overview: { el: document.getElementById('view-overview'), group: '监控', title: '总览' },
+  access: { el: document.getElementById('view-access'), group: '防护', title: '访问控制' },
+  spec: { el: document.getElementById('view-spec'), group: '系统', title: '设计规范' },
+};
+function showView(name) {
+  Object.entries(views).forEach(([k, v]) => v.el.classList.toggle('hidden', k !== name));
+  document.getElementById('crumb-group').textContent = views[name].group;
+  document.getElementById('crumb-title').textContent = views[name].title;
+  document.querySelectorAll('.nav-item').forEach((n) => n.classList.toggle('active', n.dataset.view === name));
+  document.querySelector('.content:not(.hidden)').scrollTop = 0;
+}
+document.querySelectorAll('.nav-item').forEach((n) => n.addEventListener('click', () => showView(n.dataset.view)));
+
+/* ---------------- 顶栏交互 ---------------- */
+document.getElementById('range-seg').addEventListener('click', (e) => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.querySelectorAll('#range-seg button').forEach((x) => x.classList.toggle('on', x === b));
+  const sub = document.querySelector('#view-overview .panel-sub');
+  if (sub) sub.textContent = `近 ${b.textContent} · ${b.dataset.range === '24h' ? '30 分钟' : '10s'} 粒度`;
+});
+document.getElementById('refresh-btn').addEventListener('click', () => {
+  const el = document.getElementById('updated-at');
+  const d = new Date();
+  el.textContent = [d.getHours(), d.getMinutes(), d.getSeconds()].map((v) => String(v).padStart(2, '0')).join(':');
+});
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.getElementById('theme-btn').textContent = theme === 'dark' ? '浅色' : '深色';
+  renderTraffic(document.getElementById('traffic-chart'));
+  renderSpark(document.getElementById('spark-pps'), [42, 48, 45, 52, 50, 58, 55, 61, 58, 66, 63, 70], 'var(--accent)');
+  renderSpark(document.getElementById('spark-dps'), [8, 7, 9, 8, 10, 9, 11, 12, 10, 13, 12, 14], 'var(--danger)');
+}
+document.getElementById('theme-btn').addEventListener('click', () => {
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
+
+/* 评审辅助：file:///...prototype.html#access / ?theme=dark */
+const params = new URLSearchParams(location.search);
+if (params.get('theme') === 'dark') applyTheme('dark');
+function applyHash() {
+  const raw = location.hash.replace('#', '');
+  const parts = raw.split('/').filter(Boolean);
+  const dark = parts.includes('dark');
+  applyTheme(dark ? 'dark' : 'light');
+  const v = parts.find((x) => views[x]);
+  showView(v || 'overview');
+}
+applyHash();
+window.addEventListener('hashchange', applyHash);
+
+/* ---------------- 抽屉 ---------------- */
+const scrim = document.getElementById('scrim');
+const drawer = document.getElementById('drawer');
+function openDrawer(ip) {
+  document.getElementById('drawer-ip').textContent = ip;
+  drawer.classList.add('open'); scrim.classList.add('open');
+  drawer.setAttribute('aria-hidden', 'false');
+}
+function closeDrawer() {
+  drawer.classList.remove('open'); scrim.classList.remove('open');
+  drawer.setAttribute('aria-hidden', 'true');
+}
+document.addEventListener('click', (e) => {
+  const ipEl = e.target.closest('[data-ip]');
+  if (ipEl) openDrawer(ipEl.dataset.ip);
+});
+document.getElementById('drawer-close').addEventListener('click', closeDrawer);
+scrim.addEventListener('click', closeDrawer);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+
+/* ---------------- 表格多选 ---------------- */
+const bulkbar = document.getElementById('bulkbar');
+const selCount = document.getElementById('sel-count');
+function syncBulk() {
+  const n = document.querySelectorAll('.row-check:checked').length;
+  selCount.textContent = n;
+  bulkbar.classList.toggle('hidden', n === 0);
+}
+document.getElementById('check-all').addEventListener('change', (e) => {
+  document.querySelectorAll('.row-check').forEach((c) => (c.checked = e.target.checked));
+  syncBulk();
+});
+document.addEventListener('change', (e) => { if (e.target.classList.contains('row-check')) syncBulk(); });
+document.getElementById('clear-sel').addEventListener('click', () => {
+  document.querySelectorAll('.row-check').forEach((c) => (c.checked = false));
+  document.getElementById('check-all').checked = false;
+  syncBulk();
+});
+</script>
+</body>
+</html>

@@ -21,7 +21,7 @@ async function check(name, hash, musts) {
 }
 await page.goto(base + '/#/overview', { waitUntil: 'load' })
 await page.waitForTimeout(1600)
-await check('overview', '/overview', ['3.28B', '1.48M', '实时'])
+await check('overview', '/overview', ['3.28B', '1,482,310', '实时'])
 await check('attacks', '/attacks', ['203.0.113.9', '黑名单'])
 await check('packets', '/packets', ['47 45 54'])
 await check('audit', '/audit', ['封禁 IP', 'admin'])

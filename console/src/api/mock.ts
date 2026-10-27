@@ -29,6 +29,8 @@ const attackerIps = [
 
 export function makeStats(boost = 0): Stats {
   return {
+    xdp_attached: true,
+    xdp_mode: 'generic',
     total_packets: 3_284_915_204 + boost,
     total_passed: 3_271_006_118 + boost,
     total_dropped: 13_909_086,

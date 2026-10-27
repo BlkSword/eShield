@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import PanelCard from '../components/PanelCard.vue'
-import TagPill from '../components/TagPill.vue'
 import ToggleSwitch from '../components/ToggleSwitch.vue'
+import BarList from '../components/BarList.vue'
 import { api } from '../api/client'
 import { toast } from '../stores/app'
 import { threatFeeds } from '../api/mock'
@@ -16,15 +16,23 @@ const asns = ref('')
 const csvPath = ref('/etc/eshield/geoip.csv')
 const loading = ref(false)
 
+const distribution = computed(() => [
+  { label: 'CN', value: 62, tone: 'accent' as const },
+  { label: 'US', value: 18, tone: 'muted' as const },
+  { label: 'RU', value: 9, tone: 'danger' as const },
+  { label: 'SG', value: 6, tone: 'muted' as const },
+  { label: 'OTHER', value: 5, tone: 'muted' as const },
+])
+
 onMounted(async () => {
   const cfg = await api.config()
   enabled.value = !!cfg.geoip_enabled
   defaultAction.value = cfg.geoip_default_action === 1 ? 'drop' : 'pass'
-  const g = (cfg as any).geoip || {}
-  countries.value = (g.block_countries || []).join(', ')
-  allowCountries.value = (g.allow_countries || []).join(', ')
-  asns.value = (g.block_asns || []).join(', ')
-  if (g.country_blocks_csv) csvPath.value = g.country_blocks_csv
+  const g = (cfg as unknown as { geoip?: Record<string, unknown> }).geoip || {}
+  countries.value = (g.block_countries as string[] || []).join(', ')
+  allowCountries.value = (g.allow_countries as string[] || []).join(', ')
+  asns.value = (g.block_asns as string[] || []).join(', ')
+  if (g.country_blocks_csv) csvPath.value = String(g.country_blocks_csv)
 })
 async function save() {
   loading.value = true
@@ -34,7 +42,9 @@ async function save() {
       geoip_default_action: defaultAction.value === 'drop' ? 1 : 0,
     })
     toast('GeoIP 策略已保存', enabled.value ? '运行时生效' : '已停用', 'ok')
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+  }
 }
 async function reload() {
   loading.value = true
@@ -43,9 +53,10 @@ async function reload() {
     toast('GeoIP CSV 已重载', csvPath.value, 'ok')
   } catch (e) {
     toast('重载失败', String(e), 'danger')
-  } finally { loading.value = false }
+  } finally {
+    loading.value = false
+  }
 }
-
 async function syncIntel() {
   try {
     await api.syncThreatIntel()
@@ -58,38 +69,48 @@ async function syncIntel() {
 
 <template>
   <div class="page">
+    <div class="page-head">
+      <div class="page-title">GeoIP 与情报</div>
+      <div class="page-meta">按国家/地区或 ASN 决定放行或阻断；威胁情报定时写入动态黑名单</div>
+      <div class="page-actions">
+        <span class="state" :class="enabled ? 'ok' : ''"><span class="dot" :class="enabled ? 'ok' : ''"></span>{{ enabled ? '已启用' : '已停用' }}</span>
+        <button class="btn btn-sm" :disabled="loading" @click="reload">重载 CSV</button>
+        <button class="btn btn-primary btn-sm" @click="save">保存</button>
+      </div>
+    </div>
+
     <div class="grid grid-main-side">
       <PanelCard title="GeoIP / ASN 策略" sub="按国家/地区或 ASN 决定放行或阻断">
-        <template #actions>
-          <ToggleSwitch v-model="enabled" />
-          <button class="btn btn-sm" :disabled="loading" @click="reload">重载 CSV</button>
-          <button class="btn btn-sm btn-primary" @click="save">保存</button>
-        </template>
         <div class="setting-row">
-          <div class="sr-main"><div class="sr-title">默认动作</div><div class="sr-desc">未命中 allow 列表时的行为；allow 为空且默认 drop 会拦截所有非白名单流量</div></div>
+          <div class="sr-main">
+            <div class="sr-title">启用 GeoIP 匹配</div>
+            <div class="sr-desc">关闭时数据面跳过 GeoIP 表（零开销）</div>
+          </div>
+          <ToggleSwitch v-model="enabled" />
+        </div>
+        <div class="setting-row">
+          <div class="sr-main">
+            <div class="sr-title">默认动作</div>
+            <div class="sr-desc">未命中 allow 列表时的行为；allow 为空且默认 drop 会拦截所有非白名单流量</div>
+          </div>
           <div class="segmented">
             <button :class="{ active: defaultAction === 'pass' }" @click="defaultAction = 'pass'">PASS</button>
             <button :class="{ active: defaultAction === 'drop' }" @click="defaultAction = 'drop'">DROP</button>
           </div>
         </div>
-        <div class="grid grid-2" style="margin-top: 4px">
+        <div class="grid grid-2" style="margin-top: 12px">
           <div class="field"><label class="field-label">阻断国家/地区（ISO 代码，逗号分隔）</label><input v-model="countries" class="input mono" placeholder="RU, KP" /></div>
           <div class="field"><label class="field-label">放行国家/地区（默认 drop 时生效）</label><input v-model="allowCountries" class="input mono" placeholder="CN, SG" /></div>
           <div class="field"><label class="field-label">阻断 ASN</label><input v-model="asns" class="input mono" placeholder="4134, 4837" /></div>
           <div class="field"><label class="field-label">国家 CSV 路径</label><input v-model="csvPath" class="input mono" /></div>
         </div>
-        <div class="panel-body muted" style="font-size: 12px; padding: 12px 0 0">
-          CSV 格式：<span class="mono">network,country_iso</span>，支持 IPv4/IPv6 CIDR；最多写入 4096 条 LPM 表项，超出后按文件顺序截断。
+        <div class="panel-note" style="border-top: 0; padding: 10px 0 0">
+          CSV 格式 <span class="mono">network,country_iso</span>，支持 IPv4/IPv6 CIDR；最多写入 4096 条 LPM 表项，超出后按文件顺序截断。
         </div>
       </PanelCard>
 
       <PanelCard title="地理分布" sub="按来源国家聚合（演示数据）">
-        <div class="col" style="gap: 10px">
-          <div v-for="c in [{ n: 'CN', v: 62 }, { n: 'US', v: 18 }, { n: 'RU', v: 9 }, { n: 'SG', v: 6 }, { n: 'OTHER', v: 5 }]" :key="c.n">
-            <div class="spread" style="font-size: 12.5px"><span class="mono">{{ c.n }}</span><span class="muted">{{ c.v }}%</span></div>
-            <div class="progress" style="margin-top: 5px"><i :style="{ width: c.v + '%' }"></i></div>
-          </div>
-        </div>
+        <BarList :items="distribution" :format="(v: number) => v + '%'" />
       </PanelCard>
     </div>
 
@@ -101,16 +122,17 @@ async function syncIntel() {
           <tbody>
             <tr v-for="f in threatFeeds" :key="f.name">
               <td class="cell-main">{{ f.name }}</td>
-              <td class="mono muted" style="max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap">{{ f.url }}</td>
-              <td>{{ f.interval }}</td>
+              <td class="mono muted" style="max-width: 360px; overflow: hidden; text-overflow: ellipsis">{{ f.url }}</td>
+              <td class="muted">{{ f.interval }}</td>
               <td class="col-num mono">{{ f.confidence }}</td>
               <td class="col-num mono">{{ fmtInt(f.entries) }}</td>
               <td class="muted">{{ f.last }}</td>
-              <td><TagPill text="正常" kind="tag-ok" dot /></td>
+              <td><span class="state ok"><span class="dot ok"></span>正常</span></td>
             </tr>
           </tbody>
         </table>
       </div>
+      <div class="panel-note">威胁情报由节点定时拉取；Hub 部署时可由 Hub 统一拉取后分发，避免重复出口流量。</div>
     </PanelCard>
   </div>
 </template>

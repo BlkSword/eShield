@@ -91,8 +91,15 @@ Web 控制台前端是**独立的 Vue 3 + TypeScript 工程**，位于 `console/
 
 - `console/src/views/`：12 个页面（overview / attacks / packets / audit / modules / access / l7 / projects / geoip / rules / settings / login），单文件 hash 路由，无服务端 fallback。
 - `console/src/api/`：`client.ts` 统一 HTTP 封装（live / mock 自适应、字段归一化）、`mock.ts` 演示数据、`types.ts` DTO。
-- `console/src/components/`：自研组件（TopBar / SideNav / KpiCard / EChart / SlideDrawer / ModalDialog / CommandPalette / ToastHost …）。
-- `console/src/stores/`、`console/src/router/`、`console/src/styles/app.css`（design tokens + 全部组件样式）。
+- `console/src/components/`：自研组件（TopBar / SideNav / KpiCard / PanelCard / LineChart / BarList / Sparkline /
+  SlideDrawer / ModalDialog / CommandPalette / ToastHost / ToggleSwitch / TagPill）。
+  **图表不使用第三方库**：`LineChart`（SVG 折线/面积 + 悬停十字线）、`BarList`（横向条形）、
+  `Sparkline` 均为手写 SVG，单文件产物 239KB（gzip 80KB），此前含 ECharts 时为 1.26MB。
+- `console/src/styles/app.css`：设计系统 v2「高效商业控制台」——结构用线不用影、颜色只表达状态、
+  数字等宽右对齐、行高 34px 的密度优先布局；浅/深两套 token（`html[data-theme=dark]`），
+  `store.theme` 支持 system/light/dark，`?theme=dark|light` 可临时覆盖。
+- `console/design-preview/`：设计原型 `prototype.html` 与页面截图（非构建产物）。
+- `console/src/stores/`、`console/src/router/`：状态管理与路由导航分组。
 - 认证：登录后由后端下发 `eshield-token` HttpOnly Cookie；**前端不得把令牌写入 localStorage**（v0.4.8 起已移除该行为）。
 - 改前端后必须重新构建并同步嵌入文件，否则 `app.html` 与源码漂移：
   ```bash

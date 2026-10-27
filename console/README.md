@@ -9,27 +9,45 @@ eShield 控制台前端工程。Vue 3 + TypeScript + Vite，构建产物是**单
 |---|---|---|
 | 框架 | Vue 3.5（`<script setup>` + TypeScript） | 组件化，组合式 API |
 | 路由 | vue-router 4（hash 模式） | 单文件产物无需服务端 fallback |
-| 图表 | ECharts 5 | 流量趋势、拦截原因分布 |
+| 图表 | **自研 SVG 组件**（`LineChart` / `BarList` / `Sparkline`） | 无第三方图表库，体积与首屏均更优 |
 | 构建 | Vite 6 + vite-plugin-singlefile | 输出单一 `dist/index.html` |
-| 样式 | 原生 CSS + design tokens | 跟随 `prefers-color-scheme`，支持手动切换 |
-| 测试 | vue-tsc 类型检查 + Playwright 预览截图（可选） | `scripts/shot.mjs` |
+| 样式 | 原生 CSS + design tokens | 浅/深两套 token，跟随系统或手动切换 |
+| 测试 | `vue-tsc` 类型检查 + `scripts/wiring.mjs` 端到端接线检查 | 见下 |
 
-不引入重型 UI 组件库，表格、抽屉、弹窗、命令面板、开关等均为自研组件，
-以便统一高密度运维控制台的视觉语言。
+不引入 UI 组件库：表格、抽屉、弹窗、命令面板、开关、分段控件均为自研手写，
+以保证统一的高密度运维视觉语言。
+
+## 设计系统 v2（高效商业控制台）
+
+原型与页面截图见 `design-preview/`（`prototype.html` + `v2-*.png`）。
+
+五条硬规则（实现于 `src/styles/app.css` 顶部 tokens 与各组件）：
+
+1. **结构用线，不用影**：面板 / 表格 / KPI 一律 1px 描边 + 2–3px 圆角，无卡片阴影与渐变。
+2. **颜色只表达状态**：`accent`=可交互，`danger`=危险，`warn`=警告，`ok`=正常；不做装饰性色块。
+3. **数字优先**：等宽数字、右对齐、千分位；IP / 端口 / 时间统一 `--font-mono`。
+4. **密度优先**：行高 34px、面板头 38px、导航 30px、顶栏 44px。
+5. **层级克制**：页面标题 17 / 正文 12.5 / 说明 11 / 表头 10.5，仅 4 级。
+
+历史版本（彩色 KPI 卡片 + ECharts 饼图 + Tag 胶囊）已删除；单文件产物从
+**1.26MB 降到 239KB**（gzip 80KB），首屏解析与传输成本显著下降。
 
 ## 目录结构
 
 ```
 console/
 ├─ src/
-│  ├─ components/       # 通用组件：EChart、KPI、面板、抽屉、弹窗、命令面板…
-│  ├─ views/            # 页面：总览、攻击、包日志、审计、模块、访问控制、L7…
+│  ├─ components/       # LineChart / BarList / Sparkline / KpiCard / PanelCard
+│  │                    # SideNav / TopBar / SlideDrawer / ModalDialog / CommandPalette …
+│  ├─ views/            # 12 个页面：总览、攻击、包日志、审计、模块、访问控制、L7…
 │  ├─ api/              # client.ts（live/mock 自适应）+ mock.ts + types.ts
 │  ├─ stores/           # app（统计/主题/刷新）、ui（抽屉/弹窗）
 │  ├─ router/           # 路由与左侧导航分组
 │  ├─ utils/            # 数字/时间格式化
-│  └─ styles/app.css    # design tokens + 全部组件样式
-├─ scripts/shot.mjs     # 用本机 Chrome/Edge 渲染 design/console-v2/*.png
+│  └─ styles/app.css    # design tokens + 壳层与全部组件样式
+├─ scripts/mockapi.py   # 本地 mock API + SPA 宿主（接线测试用）
+├─ scripts/wiring.mjs   # Playwright 驱动，逐页断言「渲染的是真实 API 数据」
+├─ design-preview/      # 设计原型与页面截图（非构建产物）
 ├─ vite.config.ts
 └─ package.json
 ```
@@ -39,11 +57,11 @@ console/
 ```bash
 cd console
 npm install
-npm run dev        # 本地开发，默认 mock 数据
+npm run dev        # 本地开发（file 协议或接口不可达时自动使用 mock 数据）
 npm run build      # vue-tsc 类型检查 + 产物 dist/index.html
 ```
 
-构建后同步到 Rust 侧：
+构建后同步到 Rust 侧（页面会内嵌进 `eshield` 二进制）：
 
 ```bash
 cp console/dist/index.html eshield/web/app.html
@@ -55,73 +73,31 @@ cp console/dist/index.html eshield/web/app.html
 
 - 通过 eShield 服务访问（http/https）：调用真实 `/api/*`，登录态用 `eshield-token`
   Cookie 或 `Authorization: Bearer`；
-- 直接打开 `dist/index.html` / `design/console-v2/preview.html`（file://）或
-  接口不可达：回退到 `mock.ts` 的样例数据，页面顶部显示「演示数据」；
-- 可用 `?mock=1` / `?live=1` 强制模式。
+- 直接打开 `dist/index.html`（file://）或接口不可达：回退到 `mock.ts` 的样例数据，
+  顶栏显示「演示数据」；
+- 可用 `?mock=1` / `?live=1` 强制模式；`?theme=dark|light` 可覆盖主题（演示/截图用）。
 
-## 页面
-
-总览、攻击事件、包日志、审计日志、防护模块、访问控制（黑名单/白名单/端口 ACL）、
-L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置、登录。
-
-## 设计语言
-
-- 浅色优先，跟随系统深浅色；手动切换记录在 `localStorage`；
-- 左侧 232px 文本导航，顶部 60px 全局栏（搜索、实时状态、危险等级、主题）；
-- 8px 间距栅格，10px 卡片圆角，弱阴影，克制状态色；
-- 数字与 IP/端口使用等宽字体，表格行高 32–36px，适配高密度运维场景；
-- 无障碍：开关使用 `aria-pressed`，命令面板支持方向键/回车/Esc。
-
-## 与旧版控制台的关系
-
-新版 `app.html` 由 `web.rs` 在 `/` 与 `/login` 提供。旧版 `eshield/web/index.html`、
-`css/`、`js/` 以及 `eshield/src/echarts.min.js`、`eshield/src/login.html` 已删除。
-
-## 示例界面
-
-仓库内 `console/preview/` 保存了用本机 Chrome 渲染的页面截图：
-
-| 页面 | 预览 |
-|---|---|
-| 总览 | `console/preview/overview.png` |
-| 攻击事件 | `console/preview/attacks.png` |
-| 防护模块 | `console/preview/modules.png` |
-| 访问控制 | `console/preview/access.png` |
-| 防护项目 | `console/preview/projects.png` |
-| L7 指纹 | `console/preview/l7.png` |
-
-也可以直接双击打开 `eshield/web/app.html`：未连接节点时自动进入演示数据模式，
-可完整浏览总览、攻击、模块、访问控制、项目、GeoIP、Hub、设置与登录页。
-
-重新生成截图（需要本机 Chrome/Edge）：
+## 验证
 
 ```bash
-cd console
-npm i -D playwright-core
-node scripts/shot.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe"
+# 1) 类型检查 + 构建
+npm run build
+
+# 2) 接线检查：mock API 与单文件产物一起跑，逐页断言关键字段来自 API
+python scripts/mockapi.py 8898 &
+node scripts/wiring.mjs            # 11 个页面 + 访问控制三个 Tab + IP 详情抽屉
 ```
 
-## 前后端接线自检
+`wiring.mjs` 覆盖：overview / attacks / packets / audit / modules / access / l7 /
+projects / geoip / rules / settings，以及白名单、端口 ACL 两个 Tab、IP 详情抽屉，
+并断言页面无 `pageerror`。
 
-`scripts/mockapi.py` 按 `eshield/src/web.rs` 的真实返回结构（包括 `{series}`、`{modules}`、
-`{events}`、`{entries}` 等 envelope）提供本地 mock API；`scripts/wiring.mjs` 用无头 Chrome
-驱动构建产物逐页断言「是否拿到 live 数据、字段是否正确、页面是否报错」。
+## 截图
 
 ```bash
-# 终端 1：启动 mock API，同时托管 app.html
-python console/scripts/mockapi.py 8898
-
-# 终端 2：运行接线断言（11 个页面 + IP 详情抽屉）
-cd console
-node scripts/wiring.mjs "C:/Program Files/Google/Chrome/Application/chrome.exe" http://127.0.0.1:8898
+# 需要本机 Chrome/Edge；file:// 打开时自动使用 mock 数据
+"C:\Program Files\Google\Chrome\Application\chrome.exe" \
+  --headless=new --disable-gpu --window-size=1600,1050 --virtual-time-budget=4000 \
+  --screenshot=design-preview/v2-overview.png \
+  "file:///<abs>/console/dist/index.html#/overview"
 ```
-
-覆盖页面：总览、攻击事件、包日志、审计日志、防护模块、访问控制（黑名单/白名单/端口 ACL）、
-L7 指纹、防护项目、GeoIP 与情报、规则与 Hub、系统设置、IP 详情抽屉。
-后端字段或 envelope 变化时，这个脚本会直接失败，作为契约回归。
-
-## 构建产物与二进制
-
-`eshield/src/web.rs` 通过 `include_str!("../web/app.html")` 嵌入 SPA。
-旧版 `eshield/web/{index.html,css,js}`、`eshield/src/echarts.min.js` 与
-`eshield/src/login.html` 已删除；仓库中只保留 `eshield/web/app.html` 这一份构建产物。

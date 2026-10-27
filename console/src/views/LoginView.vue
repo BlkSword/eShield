@@ -9,7 +9,10 @@ const busy = ref(false)
 const error = ref('')
 
 async function submit() {
-  if (!token.value) { error.value = '请输入访问令牌'; return }
+  if (!token.value) {
+    error.value = '请输入访问令牌'
+    return
+  }
   busy.value = true
   error.value = ''
   try {
@@ -31,10 +34,9 @@ async function submit() {
       error.value = `登录失败（HTTP ${res.status}）`
       return
     }
-    // 认证凭据由后端以 HttpOnly Cookie 下发，这里只在内存里保留一份供 Bearer 兜底。
+    // 认证凭据由后端以 HttpOnly Cookie 下发，内存中保留一份供 Bearer 兜底。
     setToken(token.value)
     toast('登录成功', '欢迎回到 eShield 控制台', 'ok')
-    // Move to the protected root so the browser lands on a clean URL.
     window.location.assign('/#/overview')
   } catch {
     // 网络不可达：明确报错，绝不静默切到演示数据 —— 把样例数据当成真实防护状态
@@ -50,27 +52,44 @@ async function submit() {
   <div class="login-page">
     <div class="login-card">
       <div class="login-brand">
-        <div class="brand-mark" style="width: 38px; height: 38px; font-size: 18px"></div>
+        <div class="brand-mark" style="width: 30px; height: 30px" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round">
+            <path d="M12 3 4.5 6v5.5c0 4.2 3.1 7.6 7.5 9.5 4.4-1.9 7.5-5.3 7.5-9.5V6L12 3Z" />
+            <path d="M8.8 12.1l2.1 2.1 4.3-4.4" stroke-linecap="round" />
+          </svg>
+        </div>
         <div>
-          <div class="brand-name" style="font-size: 16px">eShield</div>
+          <div class="brand-name">eShield</div>
           <div class="brand-sub">主机防护控制台</div>
         </div>
       </div>
-      <div style="font-size: 18px; font-weight: 650; margin-bottom: 4px">登录控制台</div>
-      <div class="muted" style="font-size: 12.5px; margin-bottom: 20px">使用节点配置文件中的访问令牌完成认证</div>
+      <div style="font-size: 16px; font-weight: 600; margin-bottom: 3px">登录控制台</div>
+      <div class="muted" style="font-size: 11.5px; margin-bottom: 18px">
+        使用节点配置文件中的 <span class="mono">api_token</span> 完成认证
+      </div>
+
       <div class="field">
         <label class="field-label">访问令牌</label>
-        <div style="position: relative">
-          <input v-model="token" class="input mono" :type="show ? 'text' : 'password'" placeholder="eshield-test" @keyup.enter="submit" />
-          <button class="btn btn-sm btn-ghost" style="position: absolute; right: 4px; top: 3px" @click="show = !show">{{ show ? '隐藏' : '显示' }}</button>
+        <div class="row" style="gap: 6px">
+          <input
+            v-model="token"
+            class="input mono"
+            :type="show ? 'text' : 'password'"
+            placeholder="eshield-••••••••"
+            @keyup.enter="submit"
+          />
+          <button class="btn btn-sm" style="flex: none" @click="show = !show">{{ show ? '隐藏' : '显示' }}</button>
         </div>
-        <div v-if="error" style="color: var(--danger); font-size: 12px">{{ error }}</div>
+        <div v-if="error" style="color: var(--danger); font-size: 11.5px; margin-top: 6px">{{ error }}</div>
       </div>
-      <button class="btn btn-primary" style="width: 100%; margin-top: 18px; height: 36px" :disabled="busy" @click="submit">
+
+      <button class="btn btn-primary" style="width: 100%; margin-top: 16px; height: 32px" :disabled="busy" @click="submit">
         {{ busy ? '验证中…' : '进入控制台' }}
       </button>
-      <div class="muted" style="font-size: 11.5px; margin-top: 16px; text-align: center">
-        凭据以 HttpOnly Cookie 保存，不写入浏览器本地存储
+
+      <div class="muted" style="font-size: 11px; margin-top: 14px; line-height: 1.6">
+        凭据以 HttpOnly Cookie 保存，不写入浏览器本地存储；<br />
+        本机 CLI 通过 127.0.0.1 访问时免令牌。
       </div>
     </div>
   </div>

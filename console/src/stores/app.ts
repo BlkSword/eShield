@@ -44,12 +44,20 @@ export async function refresh(force = false) {
   }
 }
 
+const themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+
+/** 把 system 解析成真实主题后写入 data-theme，CSS 只需 light/dark 两套。 */
 export function initTheme() {
-  const apply = () => {
-    const t = store.theme
-    document.documentElement.dataset.theme = t
-  }
-  apply()
+  const override = new URLSearchParams(location.search).get('theme')
+  const wanted = override === 'dark' || override === 'light' ? override : store.theme
+  const resolved = wanted === 'system' ? (themeMedia?.matches ? 'dark' : 'light') : wanted
+  document.documentElement.dataset.theme = resolved
+  window.dispatchEvent(new Event('eshield:theme'))
+}
+
+if (themeMedia) {
+  const onChange = () => { if (store.theme === 'system') initTheme() }
+  themeMedia.addEventListener?.('change', onChange)
 }
 export function cycleTheme() {
   store.theme = store.theme === 'system' ? 'light' : store.theme === 'light' ? 'dark' : 'system'

@@ -1,42 +1,46 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import Sparkline from './Sparkline.vue'
-import { fmtCompact } from '../utils/format'
+import { fmtCompact, fmtInt } from '../utils/format'
 
 const props = defineProps<{
   label: string
-  value: number
+  value: number | string
+  /** 数值格式：compact（默认，1.2M）/ int（千分位）/ raw */
+  format?: 'compact' | 'int' | 'raw'
   unit?: string
-  kind?: 'accent' | 'ok' | 'warn' | 'danger' | 'violet'
-  delta?: string
-  deltaKind?: 'up' | 'down' | 'flat'
   foot?: string
+  tone?: 'default' | 'ok' | 'warn' | 'danger' | 'accent'
   spark?: number[]
-  raw?: string
+  sparkColor?: string
 }>()
+
 const display = computed(() => {
-  if (props.raw) return props.raw
+  if (typeof props.value === 'string') return props.value
+  const f = props.format || 'compact'
+  if (f === 'raw') return String(props.value)
+  if (f === 'int') return fmtInt(props.value)
   const { value, unit } = fmtCompact(props.value)
   return value + (props.unit || unit)
 })
 const color = computed(() => {
   const map: Record<string, string> = {
-    accent: 'var(--accent)', ok: 'var(--ok)', warn: 'var(--warn)', danger: 'var(--danger)', violet: 'var(--violet)',
+    default: 'var(--text-3)', ok: 'var(--ok)', warn: 'var(--warn)',
+    danger: 'var(--danger)', accent: 'var(--accent)',
   }
-  return map[props.kind || 'accent']
+  return map[props.tone || 'default']
 })
 </script>
 <template>
-  <div class="kpi" :class="props.kind || 'accent'">
-    <div class="k-label">{{ props.label }}</div>
+  <div class="kpi">
+    <div class="k-label">
+      <span>{{ props.label }}</span>
+      <span v-if="props.tone && props.tone !== 'default'" class="dot" :class="props.tone"></span>
+    </div>
     <div class="k-value">{{ display }}</div>
     <div class="k-foot">
-      <span v-if="props.delta" :style="{ color: props.deltaKind === 'up' ? 'var(--ok)' : props.deltaKind === 'down' ? 'var(--danger)' : 'var(--text-3)' }">
-        {{ props.deltaKind === 'up' ? '▲' : props.deltaKind === 'down' ? '▼' : '·' }} {{ props.delta }}
-      </span>
-      <span v-else>{{ props.foot }}</span>
-      <span v-if="props.foot && props.delta">{{ props.foot }}</span>
+      <Sparkline v-if="props.spark && props.spark.length > 1" :data="props.spark" :color="props.sparkColor || color" class="spark" />
+      <span v-if="props.foot">{{ props.foot }}</span>
     </div>
-    <div v-if="props.spark" class="spark"><Sparkline :data="props.spark" :color="color" /></div>
   </div>
 </template>
