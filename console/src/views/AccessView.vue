@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { toast } from '../stores/app'
 import { openDrawer, openModal } from '../stores/ui'
 import type { BlockEntry, PortAclEntry, WhitelistEntry } from '../api/types'
-import { fmtDuration, fmtInt } from '../utils/format'
+import { fmtDuration, fmtInt, reasonLabel } from '../utils/format'
 
 const tab = ref<'black' | 'white' | 'acl'>('black')
 const blocks = ref<BlockEntry[]>([])
@@ -131,7 +131,7 @@ async function unblockAllExpired() {
           <div class="search-inline"><span>⌕</span><input v-model="q" placeholder="搜索 IP / 原因 / 来源" /></div>
           <select v-model="reason" class="select" style="width: 132px">
             <option value="all">全部原因</option>
-            <option v-for="r in reasons" :key="r" :value="r">{{ r }}</option>
+            <option v-for="r in reasons" :key="r" :value="r">{{ reasonLabel(r) }}</option>
           </select>
           <select v-model="origin" class="select" style="width: 122px">
             <option value="all">全部来源</option>
@@ -165,8 +165,8 @@ async function unblockAllExpired() {
                   <span class="mono cell-link" @click="openDrawer('IP 详情', 'ip', { ip: b.ip, count: b.hits })">{{ b.ip }}</span>
                 </td>
                 <td>
-                  {{ b.reason }}
-                  <span v-if="b.last_reason" class="muted">/ 叠加 {{ b.last_reason }}</span>
+                  {{ reasonLabel(b.reason) }}
+                  <span v-if="b.last_reason" class="muted">/ 叠加 {{ reasonLabel(b.last_reason) }}</span>
                 </td>
                 <td class="muted">{{ b.origin }}</td>
                 <td class="col-num mono">{{ fmtInt(b.hits) }}</td>

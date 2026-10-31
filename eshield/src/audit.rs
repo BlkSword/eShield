@@ -1,6 +1,7 @@
 use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
@@ -91,6 +92,118 @@ pub struct FileAuditBackend {
     write_lock: Mutex<()>,
     /// 复用的追加句柄；轮转或外部替换文件后自动重开。
     file: Mutex<Option<tokio::fs::File>>,
+    /// 哈希链序号与上一条哈希（v0.5.0 防篡改）：每条记录 hash =
+    /// sha256(seq|prev_hash|规范化内容)，形成可校验的追加链。
+    chain_seq: std::sync::atomic::AtomicU64,
+    chain_prev: std::sync::Mutex<String>,
+}
+
+/// 审计链校验结果。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuditVerifyReport {
+    pub ok: bool,
+    pub checked: u64,
+    /// 第一条断链的序号（None 表示全链通过）
+    pub first_bad_seq: Option<u64>,
+    pub path: String,
+}
+
+fn sha256_hex(input: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(input.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+/// 审计条目规范化串：字段顺序固定，保证写入与校验一致。
+fn canonical_entry(entry: &AuditEntry) -> anyhow::Result<String> {
+    let action = serde_json::to_string(&entry.action)?;
+    let detail = serde_json::to_string(&entry.detail)?;
+    Ok(format!(
+        "{}|{}|{}|{}|{}",
+        entry.timestamp,
+        entry.actor,
+        action,
+        detail,
+        entry.source_ip.clone().unwrap_or_default()
+    ))
+}
+
+/// 从已有审计文件尾部恢复哈希链（进程重启后继续追加而不破坏校验）。
+fn resume_chain(path: &Path) -> (u64, String) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (0, String::new()),
+    };
+    for line in content.lines().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            let seq = v.get("seq").and_then(|s| s.as_u64()).unwrap_or(0);
+            let hash = v
+                .get("hash")
+                .and_then(|h| h.as_str())
+                .unwrap_or_default()
+                .to_string();
+            return (seq, hash);
+        }
+    }
+    (0, String::new())
+}
+
+/// 校验审计文件的哈希链完整性：任何记录被改写/删除/插入都会在断点处被发现。
+pub fn verify_chain(path: &Path) -> anyhow::Result<AuditVerifyReport> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read audit log: {}", path.display()))?;
+    let mut prev = String::new();
+    let mut checked = 0u64;
+    for line in content.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        checked += 1;
+        let v: serde_json::Value = serde_json::from_str(line)
+            .with_context(|| format!("line {} is not valid JSON", checked))?;
+        let seq = v.get("seq").and_then(|s| s.as_u64()).unwrap_or(0);
+        let recorded_prev = v
+            .get("prev_hash")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let recorded_hash = v
+            .get("hash")
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string();
+        // 兼容 v0.5.0 之前的旧记录：没有哈希字段则跳过（无法追溯校验）
+        if recorded_hash.is_empty() {
+            prev = String::new();
+            continue;
+        }
+        let entry: AuditEntry = serde_json::from_value(v.clone())
+            .with_context(|| format!("line {} has invalid audit entry", checked))?;
+        let canonical = canonical_entry(&entry)?;
+        let expected = sha256_hex(&format!("{}|{}|{}", seq, recorded_prev, canonical));
+        if recorded_prev != prev || expected != recorded_hash {
+            return Ok(AuditVerifyReport {
+                ok: false,
+                checked,
+                first_bad_seq: Some(seq),
+                path: path.display().to_string(),
+            });
+        }
+        prev = recorded_hash;
+    }
+    Ok(AuditVerifyReport {
+        ok: true,
+        checked,
+        first_bad_seq: None,
+        path: path.display().to_string(),
+    })
 }
 
 impl FileAuditBackend {
@@ -103,12 +216,15 @@ impl FileAuditBackend {
                 })?;
             }
         }
+        let (seq, prev) = resume_chain(&path);
         Ok(Self {
             path,
             max_size: max_size_mb.saturating_mul(1024 * 1024),
             max_backups: 3,
             write_lock: Mutex::new(()),
             file: Mutex::new(None),
+            chain_seq: std::sync::atomic::AtomicU64::new(seq),
+            chain_prev: std::sync::Mutex::new(prev),
         })
     }
 
@@ -153,10 +269,49 @@ impl FileAuditBackend {
 #[async_trait::async_trait]
 impl AuditBackend for FileAuditBackend {
     async fn append(&self, entry: AuditEntry) -> anyhow::Result<()> {
-        let line = serde_json::to_string(&entry)?;
-
         let _guard = self.write_lock.lock().await;
+
+        // 先写链式哈希，再序列化落盘：hash = sha256(seq|prev|canonical)
+        let seq = self
+            .chain_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        let prev = {
+            let guard = self
+                .chain_prev
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.clone()
+        };
+        let canonical = canonical_entry(&entry)?;
+        let hash = sha256_hex(&format!("{}|{}|{}", seq, prev, canonical));
+        let mut value = serde_json::to_value(&entry)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("seq".to_string(), serde_json::json!(seq));
+            obj.insert("prev_hash".to_string(), serde_json::json!(prev));
+            obj.insert("hash".to_string(), serde_json::json!(hash));
+        }
+        let line = serde_json::to_string(&value)?;
+        {
+            let mut guard = self
+                .chain_prev
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *guard = hash;
+        }
         let rotated = self.maybe_rotate().await?;
+
+        if rotated {
+            // 轮转后新文件从独立链根开始（seq 从 1 重新计数、prev_hash 为空）：
+            // 每个文件都能用 `/api/audit/verify` 单独校验，不会因跨文件断链误报。
+            self.chain_seq
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            let mut guard = self
+                .chain_prev
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.clear();
+        }
 
         let mut file_guard = self.file.lock().await;
         let need_open = rotated

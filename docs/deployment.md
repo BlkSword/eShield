@@ -25,6 +25,8 @@
   - `CAP_NET_RAW`
   - `CAP_PERFMON`
   - `CAP_IPC_LOCK`
+- 内存：建议 ≥ 1GB，最低 512MB；`[limits].refuse_memory_mb`（默认 256MB）以下拒绝启动。
+  内存占用构成见 [capacity-planning.md](capacity-planning.md)。
 
 ## 一键安装
 
@@ -41,12 +43,24 @@ sudo bash scripts/install.sh --build
 安装脚本会：构建/下载二进制 → 校验 ELF 与 SHA256SUMS → 安装到 `/usr/local/bin/eshield` →
 创建 `/etc/eshield/config.toml`（网卡按实际活动网卡写入）→ 安装并启动 systemd 服务。
 
+v0.5.0 起脚本同时支持升级与生命周期管理：
+
+```bash
+sudo bash scripts/install.sh --version 0.5.0            # 指定版本升级（升级前自动备份）
+sudo bash scripts/install.sh --version 0.5.0 --sha256 <hex>   # 额外校验下载产物
+sudo bash scripts/install.sh --rollback [备份目录]      # 回滚（默认最近一次备份）
+sudo bash scripts/install.sh --uninstall [--purge]      # 卸载（--purge 删除配置与数据）
+```
+
+备份位于 `/var/lib/eshield/backup/<时间戳>/`（二进制 + 配置 + systemd 单元 + VERSION，保留最近 5 份）。
+完整流程见 [operations.md](operations.md) 的「升级 / 回滚 / 卸载」。
+
 ## 手动部署
 
 ### 1. 下载静态二进制
 
 ```bash
-VERSION=0.4.7
+VERSION=0.5.0
 curl -fsSLO "https://github.com/BlkSword/eShield/releases/download/v${VERSION}/eshield-x86_64-unknown-linux-musl"
 sudo install -m 755 eshield-x86_64-unknown-linux-musl /usr/local/bin/eshield
 ```
@@ -56,7 +70,7 @@ sudo install -m 755 eshield-x86_64-unknown-linux-musl /usr/local/bin/eshield
 ```bash
 sudo mkdir -p /etc/eshield
 sudo curl -fsSL -o /etc/eshield/config.toml \
-  https://raw.githubusercontent.com/BlkSword/eShield/v0.4.7/packaging/config.example.toml
+  https://raw.githubusercontent.com/BlkSword/eShield/v0.5.0/packaging/config.example.toml
 sudoedit /etc/eshield/config.toml
 ```
 
@@ -64,7 +78,7 @@ sudoedit /etc/eshield/config.toml
 
 ```bash
 sudo curl -fsSL -o /lib/systemd/system/eshield.service \
-  https://raw.githubusercontent.com/BlkSword/eShield/v0.4.7/packaging/eshield.service
+  https://raw.githubusercontent.com/BlkSword/eShield/v0.5.0/packaging/eshield.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now eshield
 ```
@@ -84,7 +98,7 @@ docker run -d --name eshield \
   --cap-add PERFMON --cap-add IPC_LOCK \
   -v /etc/eshield/config.toml:/etc/eshield/config.toml:ro \
   -p 8720:8720 \
-  ghcr.io/blksword/eshield:v0.4.7
+  ghcr.io/blksword/eshield:v0.5.0
 ```
 
 > 容器内需要能访问宿主网卡才能挂载 XDP，通常使用 `--network host` 并显式指定 `ESHIELD_XDP_MODE=skb`。
@@ -111,7 +125,7 @@ kubectl apply -f packaging/k8s/
 ### 下载并启动 Hub
 
 ```bash
-VERSION=0.4.7
+VERSION=0.5.0
 curl -fsSLO "https://github.com/BlkSword/eShield/releases/download/v${VERSION}/eshield-hub-x86_64-unknown-linux-gnu"
 sudo install -m 755 eshield-hub-x86_64-unknown-linux-gnu /usr/local/bin/eshield-hub
 
@@ -170,10 +184,22 @@ WantedBy=multi-user.target
 
 ## 升级
 
+推荐使用安装脚本（自动备份、校验与回滚）：
+
+```bash
+sudo bash scripts/install.sh --version 0.5.0
+# 出问题时回滚到最近一次备份
+sudo bash scripts/install.sh --rollback
+```
+
+手工升级步骤（无网络/离线环境）：
+
 ```bash
 sudo systemctl stop eshield
-# 替换二进制
+# 替换 /usr/local/bin/eshield 为新版本二进制
 sudo systemctl start eshield
+curl -s http://127.0.0.1:8720/api/config | jq -r .version   # 确认版本
 ```
 
 配置文件与动态规则库默认位于 `/var/lib/eshield/rules.redb`（Hub 为 `/var/lib/eshield-hub/policies.redb`），升级后自动恢复。
+升级会重启进程并重新挂载 XDP（秒级防护空窗），建议低峰执行；完整流程见 [operations.md](operations.md)。

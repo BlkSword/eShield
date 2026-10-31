@@ -1,7 +1,12 @@
 # eShield 用户手册
 
-> 适用版本：v0.4.7
+> 适用版本：v0.5.0
 > 阅读对象：已完成安装、需要日常运维与使用的安全/运维工程师。
+>
+> v0.5.0 新增：分片策略（`[xdp].fragment_policy`）、软封禁（`[rate_limit].block_mode`）、
+> 按目的端口聚合限速默认开启、只读 Token（RBAC-lite）、审计哈希链校验、map 水位与启动内存预检。
+> 能力边界与容量规划分别见 [capability-boundaries.md](capability-boundaries.md) 与
+> [capacity-planning.md](capacity-planning.md)。
 
 ---
 
@@ -69,9 +74,12 @@ http://<服务器IP>:8720/
 
 ### 2.3 认证
 
-- 若 `config.toml` 中未设置 `api_token`，外部访问默认匿名。
+- 若 `config.toml` 中未设置 `api_token`，进程会**自动生成随机 Token**（日志只打印前缀），
+  外部访问仍必须携带 Token，**不存在匿名外部访问模式**。
 - 若设置了 `api_token`，登录页需要输入 Token；所有 `/api/*`、`/metrics` 端点也需要在请求头携带 `Authorization: Bearer <token>`。
-- 本机 CLI（来源 `127.0.0.1/::1`）自动跳过 Token 校验。
+- v0.5.0 起可设置 `readonly_token`：持有该 Token 的请求只允许 `GET`/`HEAD`/`OPTIONS`，
+  写操作返回 403；适合 Prometheus/只读大屏，不能用于控制台登录。
+- 本机 CLI（来源 `127.0.0.1/::1`）自动跳过 Token 校验；修改 Token 后需重启服务生效。
 
 Token 可通过以下方式重置：
 
@@ -170,7 +178,8 @@ v0.4.2 新增。
 | `udp_flood_enabled` | 是否启用 UDP Flood 检测 | `false` |
 | `icmp_flood_enabled` | 是否启用 ICMP/ICMPv6 Flood 检测 | `false` |
 | `web_bind` | Web/API 监听地址 | `"0.0.0.0:8720"` |
-| `api_token` | 访问 Token（不设置则匿名） | `"changeme"` |
+| `api_token` | 读写访问 Token；未设置时进程自动生成随机 Token（不存在匿名外部模式） | `"changeme"` |
+| `readonly_token` | 只读 Token（v0.5.0）：仅允许 GET/HEAD/OPTIONS，写操作 403 | `"readonly-changeme"` |
 | `store_path` | 动态规则 redb 持久化路径 | `"/var/lib/eshield/rules.redb"` |
 | `timeseries_retention_days` | 时序指标保留天数 | `30` |
 
@@ -203,11 +212,13 @@ blacklist = ["192.0.2.1"]
 ```toml
 [rate_limit]
 enabled = true
-threshold = 200          # 每个 tick 允许的最大包数
+threshold = 2000         # 每个 tick 的突发信用（默认约对应 2500pps/单 IP 持续速率）
 tick_ms = 100            # 计数窗口
 decay_num = 7
 decay_den = 8            # 指数衰减因子 7/8
-block_duration_s = 300   # 触发后封禁时长
+block_duration_s = 120   # 触发后封禁时长（adaptive 会加长）
+dport_grouping = false   # true=按 源IP+目的端口 分组计数
+block_mode = "hard"      # hard=写黑名单（默认）；soft=只丢包不拉黑（NAT 出口推荐，v0.5.0）
 ```
 
 ### 4.6 SYN Cookie 代理
@@ -289,6 +300,48 @@ sync_pull_interval_s = 10
 sync_push_interval_s = 5
 push_min_hit_count = 10
 sync_rules_enabled = false
+```
+
+### 4.13 v0.5.0 新增配置
+
+**分片策略**（非首片 IPv4 分片；v0.4.x 会跳过全部 L4 模块，可被伪造源绕过）：
+
+```toml
+[xdp]
+mode = "auto"
+fragment_policy = "rate_limit"   # rate_limit（默认，按协议聚合限速）| drop | pass
+```
+
+> `rate_limit` 依赖 `[port_rate_limit].enabled = true`；若关闭端口聚合限速，分片等同 `pass`。
+
+**按目的端口聚合限速**（v0.5.0 起默认开启，防伪造源 IP 绕过 per-IP 计数）：
+
+```toml
+[port_rate_limit]
+enabled = true
+threshold = 2000     # 每个 tick 单端口额度（固定窗口，默认 ≈ 单端口 20000pps）
+tick_ms = 100
+```
+
+**软封禁模式**（NAT 出口 / 共享代理 IP 场景）：
+
+```toml
+[rate_limit]
+block_mode = "soft"  # 只丢弃超限包、不写黑名单，流量回落自动恢复
+```
+
+**只读 Token**（监控抓取 / 只读大屏）：
+
+```toml
+readonly_token = "readonly-changeme"   # 仅 GET/HEAD/OPTIONS；写操作 403
+```
+
+**启动内存预检**：
+
+```toml
+[limits]
+min_memory_mb = 512      # 低于该值告警
+refuse_memory_mb = 256   # 低于该值拒绝启动（ESHIELD_ALLOW_LOW_MEMORY=1 可强制，不推荐）
 ```
 
 ---
@@ -458,6 +511,10 @@ http://<host>:8720/metrics
 - `eshield_syn_flood_blocked_total`
 - `eshield_udp_flood_blocked_total`
 - `eshield_icmp_flood_blocked_total`
+- v0.5.0 新增：`eshield_map_usage_ratio{name}`、`eshield_fragment_blocked_total{policy}`、
+  `eshield_port_rate_blocked_total`
+
+map 水位的 JSON 视图：`GET /api/map-usage`；Prometheus 告警规则示例见 [operations.md](operations.md)。
 
 ---
 
@@ -476,7 +533,8 @@ http://<host>:8720/metrics
 更多架构、开发、部署细节请参考：
 
 - [architecture.md](architecture.md) — 系统架构与数据包旅程
+- [capability-boundaries.md](capability-boundaries.md) — 能力边界与不承诺项（必读）
+- [capacity-planning.md](capacity-planning.md) — 容量规划与实测数据
 - [deployment.md](deployment.md) — 二进制、systemd、容器、K8s 部署
-- [operations.md](operations.md) — 运维命令与故障排查
+- [operations.md](operations.md) — 升级回滚、认证、审计链、map 告警与故障排查
 - [api.md](api.md) — REST API 完整参考
-- [distributed-architecture.md](distributed-architecture.md) — 分布式 Hub 架构

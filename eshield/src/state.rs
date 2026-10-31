@@ -21,6 +21,10 @@ pub struct Stats {
     pub icmp_flood_blocked: AtomicU64,
     pub geoip_blocked: AtomicU64,
     pub conn_track_blocked: AtomicU64,
+    /// 协议+目的端口聚合限速拦截（v0.5.0，防伪造源绕过）
+    pub port_rate_blocked: AtomicU64,
+    /// 非首片分片策略拦截（v0.5.0）
+    pub fragment_blocked: AtomicU64,
     pub tcp_rst_sent: AtomicU64,
     pub tcp_rst_fail: AtomicU64,
     pub tcp_rst_attempt: AtomicU64,
@@ -72,6 +76,8 @@ impl Default for Stats {
             icmp_flood_blocked: AtomicU64::new(0),
             geoip_blocked: AtomicU64::new(0),
             conn_track_blocked: AtomicU64::new(0),
+            port_rate_blocked: AtomicU64::new(0),
+            fragment_blocked: AtomicU64::new(0),
             tcp_rst_sent: AtomicU64::new(0),
             tcp_rst_fail: AtomicU64::new(0),
             tcp_rst_attempt: AtomicU64::new(0),

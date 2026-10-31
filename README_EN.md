@@ -43,6 +43,12 @@ Charts are hand-written SVG components (no ECharts); the console bundle is ~239K
 
 ## 1. Overview
 
+> **v0.5.0 (2026-10-31)**: productization GA gate. Fixes spoofed-source and IPv4 fragment bypasses
+> (per-destination-port rate limiting is now on by default, plus a new `[xdp].fragment_policy`),
+> adds `[rate_limit].block_mode = hard|soft`, startup memory preflight, read-only tokens (RBAC-lite),
+> tamper-evident audit hash chain, and eBPF map usage observability.
+> See [CHANGELOG.md](CHANGELOG.md) and [docs/capability-boundaries.md](docs/capability-boundaries.md).
+
 eShield attaches filtering logic to the XDP hook at the NIC driver layer. Packets are parsed, matched, and dropped before they reach the kernel network stack, preventing malicious traffic from consuming stack, connection-table, and application resources.
 
 The system is designed as a **host-level first line of defense** for single hosts, edge nodes, origin servers, game servers, and internal services. It does not replace cloud scrubbing, CDN protection, or carrier-grade DDoS mitigation, and it cannot exceed the physical link bandwidth.
@@ -66,9 +72,10 @@ Components:
 | eBPF/XDP early filtering | Drop decisions are made at the NIC driver layer without entering the kernel network stack. |
 | CIDR allowlist | LPM trie based, supports IPv4/IPv6; allowlisted traffic passes as early as possible. |
 | Dynamic blocklist | LRU hash based, supports permanent and time-limited blocks with automatic expiry. |
-| Per-IP rate limiting | Exponentially decaying sliding window for burst connection and request detection. |
-| Per-destination-port rate limiting | Protocol and destination-port based limiting to reduce source-IP rotation bypass. |
-| UDP/ICMP flood protection | Per-IP and per-port rate suppression for connectionless traffic. |
+| Per-IP rate limiting | Exponentially decaying sliding window for burst detection; `block_mode = hard/soft` controls whether over-limit sources are blocked. |
+| Per-destination-port rate limiting | Protocol + destination-port aggregation, **enabled by default since v0.5.0**, for defeating source-IP rotation. |
+| Fragment policy | IPv4 non-first fragments: `pass` / `rate_limit` (default) / `drop`, closing the "skip all L4 modules" bypass. |
+| UDP/ICMP flood protection | Per-IP and per-port rate suppression for connectionless traffic (soft mode avoids blocking). |
 | Port/protocol ACL | Supports `tcp`, `udp`, `icmp`, `icmpv6`, `any`, port ranges, and wildcards. |
 | SYN cookie proxy | Returns SYN-ACK cookies for IPv4 TCP SYN floods and admits clients after ACK validation. |
 | TCP RST response | Replies with RST for dropped TCP connections to reduce client retransmission buildup. |
@@ -86,13 +93,14 @@ Components:
 
 | Capability | Description |
 |---|---|
-| Web console | Native ES modules and modular CSS, system light/dark theme, text-only navigation, command palette. |
+| Web console | Vue 3 + TypeScript single-file SPA (`console/`), follows system light/dark theme, command palette, high-density tables. |
 | CLI and TUI | `eshield start/status/block/unblock/reload/check/tui/reset-token`. |
 | Configuration reload | Reload through `SIGHUP` or `systemctl reload` without restarting XDP. |
-| Authentication | Optional Bearer token; loopback requests bypass token validation. |
+| Authentication and RBAC-lite | Optional Bearer token; v0.5.0 adds a read-only token (GET/HEAD only); loopback requests bypass token validation. |
 | Persistence | Dynamic rules and time-series metrics are stored in redb and restored after restart. |
-| Audit | Memory or JSON Lines audit backend with SSE streaming and CSV export. |
-| Metrics | Prometheus `/metrics` and JSON `/api/stats`. |
+| Audit | Memory or JSON Lines audit backend with a `seq`/`prev_hash`/`hash` chain, SSE streaming, CSV export, and `GET /api/audit/verify` tamper detection. |
+| Metrics | Prometheus `/metrics`, JSON `/api/stats`, and map usage via `/api/map-usage`. |
+| Install lifecycle | `scripts/install.sh` supports `--version`, `--sha256`, `--rollback`, and `--uninstall`; upgrades back up the current install first. |
 | Alerting | Webhook alerts with threshold and cooldown configuration. |
 | Distributed policy | Hub aggregates policies across nodes; supports master token and per-node tokens. |
 | Kernel compatibility | Pinned `nightly-2026-07-31` and `bpf-linker 0.10.4`; `ESHIELD_XDP_MODE=skb` for virtual NICs. |
@@ -132,6 +140,8 @@ Packet journey, BPF map layout, and state machines are documented in [docs/archi
 
 - root privileges or the following capabilities: `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_NET_RAW`, `CAP_PERFMON`, `CAP_IPC_LOCK`.
 - An XDP-capable NIC. SKB generic mode is recommended for virtual NICs.
+- Memory: 1GB recommended, 512MB minimum (`[limits]` refuses to start below 256MB by default;
+  see [docs/capacity-planning.md](docs/capacity-planning.md)).
 
 ### 4.2 Build
 
@@ -148,6 +158,8 @@ The build toolchain can be overridden with environment variables:
 | `ESHIELD_EBPF_TOOLCHAIN` | Override the nightly toolchain used for eBPF builds. |
 | `ESHIELD_XDP_MODE` | Set to `skb` or `generic` to force SKB generic attach mode. |
 | `ESHIELD_INTERFACE` | Override the interface from the configuration file. |
+| `ESHIELD_ALLOW_LOW_MEMORY` | Set to `1` to skip the `[limits].refuse_memory_mb` startup check (not recommended). |
+| `ESHIELD_ASSUME_TLS_PROXY` | Set to `1` when TLS is terminated by a reverse proxy, silencing the plaintext-HTTP warning. |
 
 Windows hosts cannot build or run the project directly. Build and test on WSL2, a Linux virtual machine, or a Linux cloud host.
 
@@ -164,8 +176,26 @@ The installer performs the following steps:
 1. Build the eBPF program with the pinned nightly toolchain.
 2. Build the userspace binary with the musl target.
 3. Install `eshield` to `/usr/local/bin`.
-4. Create `/etc/eshield/config.toml`.
+4. Create `/etc/eshield/config.toml` (an existing config is never overwritten on upgrade).
 5. Install and enable the systemd service.
+
+Upgrade, rollback, and uninstall (v0.5.0):
+
+```bash
+# Upgrade to a specific version; the current install is backed up first
+sudo bash scripts/install.sh --version 0.5.0
+sudo bash scripts/install.sh --version 0.5.0 --sha256 <official-sha256>
+
+# Roll back to the latest backup (or a specific backup directory)
+sudo bash scripts/install.sh --rollback
+sudo bash scripts/install.sh --rollback /var/lib/eshield/backup/20261030-090000
+
+# Uninstall (config and data are kept by default; --purge removes them)
+sudo bash scripts/install.sh --uninstall
+sudo bash scripts/install.sh --uninstall --purge
+```
+
+See [docs/operations.md](docs/operations.md) for the full procedure.
 
 ### 5.2 Manual Build
 
@@ -195,20 +225,35 @@ The eBPF object is embedded into the userspace binary through `include_bytes_ali
 interface = "eth0"
 web_bind = "0.0.0.0:8720"
 api_token = "replace-with-a-random-token"
+# readonly_token = "replace-with-another-random-token"   # read-only token (optional, v0.5.0)
 
 whitelist = ["10.0.0.0/8"]
 blacklist = []
 
+[xdp]
+mode = "auto"
+fragment_policy = "rate_limit"   # v0.5.0 default: aggregate-rate-limit non-first fragments
+
 [rate_limit]
 enabled = true
-threshold = 200
+threshold = 2000                 # burst credit; ~2500pps sustained per IP
 tick_ms = 100
 decay_num = 7
 decay_den = 8
-block_duration_s = 300
+block_duration_s = 120
+block_mode = "hard"              # hard=blocklist (default); soft=drop only (NAT exits)
+
+[port_rate_limit]
+enabled = true                   # on by default since v0.5.0 (anti source-IP rotation)
+threshold = 2000
+tick_ms = 100
+
+[limits]
+min_memory_mb = 512
+refuse_memory_mb = 256
 
 [syn_proxy]
-enabled = true
+enabled = false                  # experimental feature, disabled by default
 
 [conn_track]
 enabled = false
@@ -256,13 +301,16 @@ The default configuration path is `/etc/eshield/config.toml`.
 |---|---|
 | `interface` | NIC used for XDP attach. |
 | `web_bind` | Web/API listen address, default `0.0.0.0:8720`. |
-| `api_token` | Bearer token; a random token is generated when unset. |
+| `api_token` | Read-write bearer token; a random token is generated when unset. |
+| `readonly_token` | **v0.5.0**: read-only token, GET/HEAD/OPTIONS only; write methods return 403. |
 | `whitelist` / `blacklist` | Static CIDR allowlist and permanent blocklist loaded at startup. |
-| `[rate_limit]` | Per-IP exponentially decaying rate limit and block duration. |
-| `[port_rate_limit]` | Fixed-window rate limit by protocol and destination port. |
-| `[syn_proxy]` | IPv4 SYN cookie proxy switch. |
-| `[udp_flood]` / `[icmp_flood]` | Connectionless flood protection switches. |
-| `[l7_scan]` | TCP first-payload fingerprint matching. |
+| `[xdp]` | XDP attach strategy (`mode`, `disable_offloads`, `auto_reattach`) and `fragment_policy` (v0.5.0). |
+| `[limits]` | **v0.5.0**: startup memory preflight (`min_memory_mb` warning, `refuse_memory_mb` refusal). |
+| `[rate_limit]` | Per-IP exponentially decaying rate limit, block duration, and `block_mode` (hard/soft, v0.5.0). |
+| `[port_rate_limit]` | Fixed-window limit by protocol and destination port, **enabled by default since v0.5.0**. |
+| `[syn_proxy]` | IPv4 SYN cookie proxy switch (experimental, disabled by default). |
+| `udp_flood_enabled` / `icmp_flood_enabled` | Top-level connectionless flood protection switches. |
+| `[l7_scan]` | TCP first-payload fingerprint matching (not a WAF). |
 | `[adaptive]` | Automatic blocking window and threshold for repeat offenders. |
 | `[geoip]` | Country/ASN allow or block based on CSV CIDR lists. |
 | `[threat_intel]` | External threat intelligence feed synchronization. |
@@ -274,8 +322,8 @@ The default configuration path is `/etc/eshield/config.toml`.
 | `[packet_log]` | DROP packet sampling log. |
 | `[hub]` | Distributed Hub synchronization. |
 | `timeseries_retention_days` | Time-series retention period. |
-| `[audit]` | Audit backend and file rotation. |
-| `[alert]` | Webhook address, type, threshold, and cooldown. |
+| `[audit]` | Audit backend and file rotation; **v0.5.0** file backend is hash-chained and verifiable via `/api/audit/verify`. |
+| `alert_webhook_url` / `alert_webhook_type` / `alert_threshold_dps` / `alert_cooldown_s` | Webhook alert address, type, threshold, and cooldown (top-level fields). |
 
 Constraints:
 
@@ -317,11 +365,15 @@ eshield block 192.0.2.1 --endpoint http://eshield-host:8720
 eshield reset-token
 ```
 
-### 8.2 Authentication
+### 8.2 Authentication and Roles
 
 - When `api_token` is configured, the dashboard, `/api/*`, and `/metrics` require `Authorization: Bearer <token>`.
 - Local CLI requests from loopback addresses bypass token validation.
+- With `readonly_token` (v0.5.0), requests may only use `GET`/`HEAD`/`OPTIONS`; write methods return 403.
+  `GET /api/auth/check` returns `{"role":"admin"|"readonly"}`. The read-only token is intended for
+  monitoring scrapers and read-only dashboards and cannot be used to log into the console.
 - The web console provides a `/login` page that stores the token in a cookie for browser sessions.
+- Changing `api_token` / `readonly_token` requires a service restart.
 
 ### 8.3 Reload
 
@@ -400,7 +452,9 @@ Console shortcuts:
 http://<host>:8720/metrics
 ```
 
-Primary metrics include `eshield_dropped_total`, `eshield_passed_total`, `eshield_blacklist_blocked_total`, `eshield_rate_limited_total`, `eshield_syn_flood_blocked_total`, `eshield_udp_flood_blocked_total`, `eshield_icmp_flood_blocked_total`, `eshield_geoip_blocked_total`, `eshield_conn_track_blocked_total`, and `eshield_dropped_by_protocol_total`.
+Primary metrics include `eshield_dropped_total`, `eshield_passed_total`, `eshield_blacklist_blocked_total`, `eshield_rate_limited_total`, `eshield_syn_flood_blocked_total`, `eshield_udp_flood_blocked_total`, `eshield_icmp_flood_blocked_total`, `eshield_geoip_blocked_total`, `eshield_conn_track_blocked_total`, `eshield_dropped_by_protocol_total`, `eshield_dropped_by_port_total`, and `eshield_source_dropped_total`.
+
+**New in v0.5.0**: `eshield_map_usage_ratio{name}`, `eshield_map_entries{name}`, `eshield_map_max_entries{name}`, `eshield_fragment_blocked_total{policy}`, and `eshield_port_rate_blocked_total`. The JSON view of map usage is `GET /api/map-usage`; alerting rule examples are in [docs/operations.md](docs/operations.md).
 
 ### 10.3 JSON API
 
@@ -415,6 +469,14 @@ The full API reference is available in [docs/api.md](docs/api.md).
 - `GET /api/audit`: query audit events with `limit`, `ip`, `action`, `from`, and `to`.
 - `GET /api/audit/stream`: SSE stream.
 - Audit backends include memory and JSON Lines files with size-based rotation.
+- **v0.5.0**: the file backend appends `seq`/`prev_hash`/`hash` (`sha256(seq|prev_hash|canonical content)`)
+  to every record and resumes the chain from the file tail after a restart. `GET /api/audit/verify`
+  checks chain integrity:
+
+```bash
+curl -s -H "Authorization: Bearer <token>" http://<host>:8720/api/audit/verify
+# {"ok":true,"checked":1024,"first_bad_seq":null,"path":"/var/log/eshield/audit.log"}
+```
 
 ### 10.5 TUI
 
@@ -461,7 +523,21 @@ Conclusions:
 | TOP_ATTACKERS ranking | 1/16 sampled write, adding 16 per sampled update. |
 | Blacklist-hit RingBuf events | Suppressed; counts are covered by global statistics and hit_count. |
 
-Detailed methodology and data are available in [docs/benchmark.md](docs/benchmark.md).
+Detailed methodology and data are available in [docs/benchmark.md](docs/benchmark.md). Measured v0.5.0 per-packet cost, two-machine attack data, memory footprint, and the capacity formula are in [docs/capacity-planning.md](docs/capacity-planning.md).
+
+### 11.4 Capacity Quick Reference (v0.5.0 measurements)
+
+| Scenario | Measurement |
+|---|---|
+| Per-packet CPU cost (4 vCPU / generic XDP / netns+veth) | UDP PASS ≈ 92 ns/packet; UDP rate-limit+blocklist DROP and SYN flood DROP ≈ 75 ns/packet |
+| 4 vCPU generic, 220k–280k pps | eShield process CPU 2%, ksoftirqd 1.4%–1.8% |
+| 2 vCPU real two-machine, 135k pps / 5.4M packets / 99.9% blocklist drops | eShield CPU 5% (peak 7%), system busy 13%, RSS 48MB, control-plane API 0.5ms |
+| Normal traffic during attack | p50 unchanged at 3.4ms; p95 8.5ms → 412ms; success rate 96.9% → 75.6% |
+
+Capacity estimate: `cores ≈ peak pps × per-packet cost (75–92ns) / 0.7` (data-plane lower bound;
+add control-plane and application overhead). A 2 vCPU host should only carry ≤150k pps of
+**recognized** attack traffic; unrecognized traffic requires ≥4 vCPU plus native XDP.
+
 
 ## 12. Testing
 
@@ -512,14 +588,22 @@ cargo +nightly-2026-07-31 clippy --package eshield-ebpf \
 
 ## 14. Security Boundaries and Limitations
 
+> The full "symptom / cause / mitigation / planned support" list is in
+> [docs/capability-boundaries.md](docs/capability-boundaries.md).
+
 - **Host-level protection**: designed for L3-L4 protection on a single host or edge node. Tbps-scale bandwidth exhaustion requires upstream scrubbing or carrier mitigation; eShield cannot exceed the physical link capacity.
 - **Limited L7 capability**: the L7 module inspects only TCP first-payload fingerprints. It does not perform TCP segment reassembly and does not provide complete application-layer protection against HTTP floods, CC attacks, or slow attacks.
-- **SYN cookie scope**: IPv4 TCP only, challenge mode, and only sources that exceed the configured threshold.
+- **Per-IP blocking can hit NAT users**: `block_mode = "hard"` (default) adds over-limit IPs to the blocklist, which can affect a whole NAT/proxy egress. v0.5.0 adds `block_mode = "soft"`: over-limit packets are dropped without blocking, recovering automatically when traffic falls.
+- **Spoofed sources and fragments**: per-IP counters are ineffective against spoofed source IPs (v0.4.8 measured: 20k pps with random sources bypassed per-IP blocking entirely). Since v0.5.0 `[port_rate_limit]` is on by default and `[xdp].fragment_policy` (default `rate_limit`) handles non-first IPv4 fragments. `rate_limit` requires `[port_rate_limit].enabled = true`.
+- **IPv6 limitation**: the parser does not walk IPv6 extension headers, so the fragment policy only applies to IPv4; SYN cookie is IPv4-only.
+- **SYN cookie scope**: IPv4 TCP only, challenge mode, and only sources that exceed the configured threshold. Challenge packets only support 20/24-byte TCP headers; sources that send timestamps/SACK options are dropped while challenged (up to 30s). **This module is experimental and disabled by default**; it is not recommended for high-traffic services with real clients.
 - **Protection project scope**: the data plane matches exact IPv4 addresses only. CIDRs are expanded by the control plane with a minimum prefix of `/24`. The project limit is 8192 entries.
 - **Rule capacity limits**: `port_acl` supports up to 32 entries and `l7_scan.patterns` supports up to 8 entries due to the kernel 7.0 verifier instruction processing limit.
+- **Minimum memory**: `[limits].refuse_memory_mb` (default 256MB) refuses to start and `min_memory_mb` (default 512MB) warns. On a 400MB instance with nginx, sshd became unresponsive; do not permanently bypass with `ESHIELD_ALLOW_LOW_MEMORY=1`.
 - **Virtual NIC limitation**: native XDP_TX on veth and similar virtual NICs can trigger kernel issues. Test environments should use `ESHIELD_XDP_MODE=skb`.
 - **Platform limitation**: Windows is not supported. Kernels without BTF are not supported.
 - **Missing physical NIC benchmarks**: current public benchmarks are based on veth. Physical NIC, multi-queue, small-packet pps, and latency figures must be measured in the target environment.
+- **Hub is not highly available**: `eshield-hub` is a single-instance stateful service; back it up and expect manual failover.
 
 ## 15. Documentation
 
@@ -527,8 +611,10 @@ cargo +nightly-2026-07-31 clippy --package eshield-ebpf \
 |---|---|
 | [docs/user-guide.md](docs/user-guide.md) | Operations and security user guide. |
 | [docs/architecture.md](docs/architecture.md) | System architecture, packet journey, and BPF maps. |
+| [docs/capability-boundaries.md](docs/capability-boundaries.md) | **Capability boundaries and non-promises** (symptom/cause/mitigation/plan). |
+| [docs/capacity-planning.md](docs/capacity-planning.md) | **Capacity planning**: measured CPU/memory, sizing, formulas, map memory, tuning. |
 | [docs/deployment.md](docs/deployment.md) | Binary, systemd, container, Kubernetes, and Hub deployment. |
-| [docs/operations.md](docs/operations.md) | Daily operations, logs, alerting, backup, and troubleshooting. |
+| [docs/operations.md](docs/operations.md) | Daily operations, upgrade/rollback, auth, audit chain, map alerts, troubleshooting. |
 | [docs/dev-linux.md](docs/dev-linux.md) | Dependency installation, build, and local testing. |
 | [docs/api.md](docs/api.md) | REST API endpoints, requests, and responses. |
 | [docs/benchmark.md](docs/benchmark.md) | Benchmark methodology and data. |

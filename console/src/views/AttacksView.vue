@@ -5,7 +5,7 @@ import { api } from '../api/client'
 import { toast } from '../stores/app'
 import { openDrawer } from '../stores/ui'
 import type { AttackEvent } from '../api/types'
-import { fmtInt, fmtTime } from '../utils/format'
+import { fmtInt, fmtTime, reasonLabel } from '../utils/format'
 
 const rows = ref<AttackEvent[]>([])
 const total = ref(0)
@@ -108,7 +108,7 @@ async function bulkBlock() {
               </td>
               <td class="mono">{{ r.dst_ip }}:{{ r.dst_port }}</td>
               <td class="muted">{{ r.protocol }}</td>
-              <td>{{ r.reason }}</td>
+              <td>{{ reasonLabel(r.reason) }}</td>
               <td>
                 <span class="state" :class="r.action === 'DROP' ? 'danger' : 'ok'">
                   <span class="dot" :class="r.action === 'DROP' ? 'danger' : 'ok'"></span>{{ r.action }}

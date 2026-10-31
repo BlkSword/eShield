@@ -42,3 +42,14 @@ export function fmtDuration(ns: number): string {
   return `${s}s`
 }
 export const protocolTag = (p: string) => (p === 'TCP' ? 'tag-info' : p === 'UDP' ? 'tag-violet' : 'tag-warn')
+
+/** 拦截规则/原因代号 → 中文标签（v0.5.0 新增 PORT_RATE / FRAGMENT）。 */
+const REASON_LABELS: Record<string, string> = {
+  PORT_RATE: '端口聚合限速',
+  FRAGMENT: '分片策略',
+}
+/** 已是中文的 reason 原样返回；规则代号转中文，空值显示 —。 */
+export function reasonLabel(raw: string | null | undefined): string {
+  if (!raw) return '—'
+  return REASON_LABELS[raw.trim().toUpperCase()] ?? raw
+}

@@ -1,10 +1,20 @@
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { api, getToken, setToken } from '../api/client'
-import type { SeriesPoint, Stats } from '../api/types'
+import type { Role, SeriesPoint, Stats } from '../api/types'
 
 export const polls = ref(0)
 export const live = ref(false)
 export const danger = ref(0)
+
+const ROLE_KEY = 'eshield-role'
+/** 角色只用于控制台展示（隐藏/提示写操作），服务端仍对只读令牌返回 403。 */
+function storedRole(): Role {
+  try {
+    return localStorage.getItem(ROLE_KEY) === 'readonly' ? 'readonly' : 'admin'
+  } catch {
+    return 'admin'
+  }
+}
 
 export const store = reactive({
   stats: null as Stats | null,
@@ -13,7 +23,19 @@ export const store = reactive({
   lastUpdated: 0,
   autoRefresh: true,
   theme: localStorage.getItem('eshield-theme') || 'system',
+  /** 访问令牌角色（v0.5.0 RBAC-lite）：admin 可写，readonly 只读。 */
+  role: storedRole(),
 })
+
+export const isReadonly = computed(() => store.role === 'readonly')
+export function setRole(role: Role) {
+  store.role = role
+  try {
+    localStorage.setItem(ROLE_KEY, role)
+  } catch {
+    /* 隐私模式下忽略持久化失败 */
+  }
+}
 
 export const toasts = reactive<{ id: number; kind: string; title: string; desc?: string }[]>([])
 let toastSeq = 0
@@ -74,6 +96,7 @@ export function openSearch(seed = '') {
 
 export async function logout() {
   setToken('')
+  setRole('admin')
   // 清掉后端下发的 HttpOnly 会话 Cookie，否则刷新页面仍会被自动认证。
   try {
     await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })

@@ -156,6 +156,16 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
         return action;
     }
 
+    action = check_fragment_drop(
+        &mut pc,
+        runtime.fragment_policy,
+        runtime.port_rate_limit_enabled,
+    );
+    if action != NO_ACTION {
+        log_packet_sample(&pc, action);
+        return action;
+    }
+
     action = check_project_policy(&mut pc);
     if action != NO_ACTION {
         log_packet_sample(&pc, action);
@@ -180,7 +190,11 @@ fn try_eshield(ctx: &XdpContext) -> u32 {
     }
 
     if pc.protocol == parser::IPPROTO_TCP {
-        action = check_tcp_drop(&mut pc, runtime.syn_proxy_enabled);
+        action = check_tcp_drop(
+            &mut pc,
+            runtime.syn_proxy_enabled,
+            runtime.port_rate_limit_enabled,
+        );
         if action != NO_ACTION {
             log_packet_sample(&pc, action);
             return action;
@@ -281,6 +295,51 @@ fn drop_packet(pc: &PacketCtx) -> u32 {
     } else {
         xdp_action::XDP_DROP
     }
+}
+
+/// 非首片 IPv4 分片策略（v0.5.0）。
+///
+/// 背景：非首片分片没有 L4 头，`check_port_acl/project/tcp/udp/icmp/l7` 全部跳过，
+/// v0.4.x 下伪造源的分片 SYN/UDP Flood 会被整段放行（实测可绕过 per-IP 黑名单）。
+/// 由于端口未知，按「协议 + 0 端口」聚合限速：不依赖源地址，也不误伤正常单包。
+#[inline(never)]
+fn check_fragment_drop(pc: &mut PacketCtx, policy: u8, port_rate_enabled: u8) -> u32 {
+    if !pc.fragment || policy == 0 {
+        return NO_ACTION;
+    }
+
+    if policy == 2 {
+        pc.rule_id = rules::FRAGMENT;
+        unsafe {
+            with_stats(|s| {
+                s.total_dropped += 1;
+                s.fragment_blocked += 1;
+                inc_protocol_dropped(s, pc.protocol);
+            });
+        }
+        return drop_packet(pc);
+    }
+
+    if port_rate_enabled != 0 {
+        let key = PortRateKey {
+            protocol: pc.protocol,
+            dport: 0,
+            padding: 0,
+        };
+        if port_rate::check_port_rate(&key, pc.now_ns) {
+            pc.rule_id = rules::FRAGMENT;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.fragment_blocked += 1;
+                    inc_protocol_dropped(s, pc.protocol);
+                });
+            }
+            return drop_packet(pc);
+        }
+    }
+
+    NO_ACTION
 }
 
 #[inline(never)]
@@ -462,7 +521,7 @@ fn check_conn_track_drop(pc: &mut PacketCtx, enabled: u8, threshold: u32, window
 }
 
 #[inline(never)]
-fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
+fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8, port_rate_enabled: u8) -> u32 {
     if pc.project_flags & project_modules::SYN_FLOOD == 0 || pc.fragment {
         return NO_ACTION;
     }
@@ -532,6 +591,27 @@ fn check_tcp_drop(pc: &mut PacketCtx, syn_proxy_enabled: u8) -> u32 {
             return drop_packet(pc);
         }
     }
+
+    // 协议 + 目的端口聚合限速：伪造源 IP 的 SYN Flood 无法触发 per-IP 计数，
+    // 端口维度不随源地址变化，是唯一兜底（v0.5.0）。
+    if port_rate_enabled != 0 && pc.project_flags & project_modules::SYN_FLOOD != 0 {
+        let key = PortRateKey {
+            protocol: pc.protocol,
+            dport: pc.dport.to_be(),
+            padding: 0,
+        };
+        if port_rate::check_port_rate(&key, pc.now_ns) {
+            pc.rule_id = rules::PORT_RATE;
+            unsafe {
+                with_stats(|s| {
+                    s.total_dropped += 1;
+                    s.port_rate_blocked += 1;
+                    inc_protocol_dropped(s, parser::IPPROTO_TCP);
+                });
+            }
+            return drop_packet(pc);
+        }
+    }
     NO_ACTION
 }
 
@@ -566,11 +646,11 @@ fn check_udp_drop(pc: &mut PacketCtx, udp_flood_enabled: u8, port_rate_enabled: 
             padding: 0,
         };
         if port_rate::check_port_rate(&key, pc.now_ns) {
-            pc.rule_id = rules::UDP_FLOOD;
+            pc.rule_id = rules::PORT_RATE;
             unsafe {
                 with_stats(|s| {
                     s.total_dropped += 1;
-                    s.udp_flood_blocked += 1;
+                    s.port_rate_blocked += 1;
                     inc_protocol_dropped(s, pc.protocol);
                 });
             }
@@ -614,11 +694,11 @@ fn check_icmp_drop(pc: &mut PacketCtx, icmp_flood_enabled: u8, port_rate_enabled
             padding: 0,
         };
         if port_rate::check_port_rate(&key, pc.now_ns) {
-            pc.rule_id = rules::ICMP_FLOOD;
+            pc.rule_id = rules::PORT_RATE;
             unsafe {
                 with_stats(|s| {
                     s.total_dropped += 1;
-                    s.icmp_flood_blocked += 1;
+                    s.port_rate_blocked += 1;
                     inc_protocol_dropped(s, pc.protocol);
                 });
             }

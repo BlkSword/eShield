@@ -1,8 +1,9 @@
 import * as mock from './mock'
 import type {
-  AttackEvent, AuditEntry, BlockEntry, ConfigSnapshot, L7Pattern, ModuleState,
-  PacketSample, PortAclEntry, ProtectionProject, SeriesPoint, Stats, WhitelistEntry,
+  AttackEvent, AuditEntry, AuditVerifyReport, BlockEntry, ConfigSnapshot, L7Pattern, MapUsage,
+  ModuleState, PacketSample, PortAclEntry, ProtectionProject, Role, SeriesPoint, Stats, WhitelistEntry,
 } from './types'
+import { reasonLabel } from '../utils/format'
 
 const params = new URLSearchParams(location.search)
 const initialMode = params.get('mock') === '1'
@@ -37,9 +38,20 @@ let mockModules = mock.makeModules(mock.makeStats())
 
 // -------------------------------------------------------------- normalizers
 const PROTO_NAMES: Record<number, string> = { 1: 'ICMP', 6: 'TCP', 17: 'UDP', 58: 'ICMP' }
+// 与 eshield-common::rules 的 rule_id 对齐；v0.5.0 新增 14/15。
 const RULE_NAMES: Record<number, string> = {
   1: '黑名单', 2: '速率限制', 3: 'SYN Flood', 4: 'L7 指纹', 5: '自适应', 6: '手动封禁',
   7: '端口 ACL', 8: 'UDP Flood', 9: 'ICMP Flood', 10: 'GeoIP', 11: '威胁情报', 12: '防护项目',
+  13: '连接跟踪', 14: '分片策略', 15: '端口聚合限速',
+}
+
+/** rule_name 缺失或为「未知」时按 rule_id 兜底，保证新规则在表格里可读。 */
+function normalizeRuleName(raw: any): string {
+  const id = Number(raw?.rule_id)
+  const byId = Number.isFinite(id) ? RULE_NAMES[id] : undefined
+  const name = typeof raw?.rule_name === 'string' ? raw.rule_name.trim() : ''
+  if (name && name !== '未知' && name !== 'UNKNOWN') return name
+  return byId || name || '未知'
 }
 
 function protoName(v: number | string | undefined): string {
@@ -104,7 +116,7 @@ function normalizeSeries(raw: any): SeriesPoint[] {
 function normalizeEvents(raw: any): AttackEvent[] {
   const list = Array.isArray(raw) ? raw : (raw?.events || [])
   return list.map((e: any, i: number) => {
-    const rule = e.rule_name || RULE_NAMES[Number(e.rule_id)] || '未知'
+    const rule = normalizeRuleName(e)
     return {
       id: e.id || `evt-${e.timestamp_ns ?? i}-${i}`,
       timestamp_ns: Number(e.timestamp_ns ?? Date.now() * 1e6),
@@ -115,7 +127,7 @@ function normalizeEvents(raw: any): AttackEvent[] {
       protocol: protoName(e.protocol),
       action: actionName(e.action),
       rule,
-      reason: e.reason || rule,
+      reason: e.reason ? reasonLabel(e.reason) : rule,
       length: Number(e.length ?? e.packet_len ?? 0),
       interface: String(e.interface ?? 'eth0'),
     }
@@ -225,9 +237,64 @@ async function mutate(path: string, body: unknown): Promise<void> {
 export const api = {
   isLive: () => state.live,
 
+  /**
+   * 校验当前凭据并返回角色（v0.5.0：/api/auth/check 由纯文本 OK 改为 JSON `{role}`）。
+   * 返回 null 表示凭据无效（401/403）；演示模式默认 admin。
+   */
+  async authCheck(): Promise<Role | null> {
+    if (state.mode === 'mock') return 'admin'
+    try {
+      const headers: Record<string, string> = {}
+      if (state.token) headers.Authorization = `Bearer ${state.token}`
+      const res = await fetch('/api/auth/check', { credentials: 'same-origin', headers })
+      if (!res.ok) return null
+      // 兼容旧版纯文本 OK：解析失败时按 admin 处理。
+      const body = await res.json().catch(() => null)
+      return body?.role === 'readonly' ? 'readonly' : 'admin'
+    } catch (err) {
+      if (state.mode === 'live') throw err
+      return null
+    }
+  },
+
   async stats(): Promise<Stats> {
     const r = await fetchOrNull<Stats>('/api/stats')
     return r ?? mock.makeStats()
+  },
+  /** eBPF map 水位（v0.5.0）：条目数 / 上限 / 使用率。 */
+  async mapUsage(): Promise<MapUsage> {
+    const r = await fetchOrNull<any>('/api/map-usage')
+    if (!r) return mock.makeMapUsage()
+    const maps: any[] = Array.isArray(r.maps) ? r.maps : []
+    return {
+      maps: maps.map((m: any) => {
+        const max = Number(m.max ?? m.max_entries ?? 0)
+        const entries = Number(m.entries ?? m.used ?? 0)
+        const ratio = Number(m.ratio ?? (max > 0 ? entries / max : 0))
+        return {
+          name: String(m.name ?? ''),
+          type: String(m.type ?? m.map_type ?? ''),
+          entries: Number.isFinite(entries) ? entries : 0,
+          max: Number.isFinite(max) ? max : 0,
+          ratio: Number.isFinite(ratio) ? ratio : 0,
+        }
+      }),
+      warn_threshold: Number(r.warn_threshold ?? 0.8),
+      sampled_ns: Number(r.sampled_ns ?? 0),
+    }
+  },
+  /** 审计哈希链校验（v0.5.0）：返回链是否完整、校验条数与首个断点。 */
+  async auditVerify(): Promise<AuditVerifyReport> {
+    const r = await fetchOrNull<any>('/api/audit/verify')
+    if (!r) return mock.makeAuditVerify()
+    return {
+      ok: !!r.ok,
+      enabled: r.enabled !== false,
+      message: r.message ? String(r.message) : undefined,
+      checked: Number(r.checked ?? 0),
+      first_bad_seq: r.first_bad_seq === null || r.first_bad_seq === undefined ? null : Number(r.first_bad_seq),
+      path: r.path ? String(r.path) : undefined,
+    }
   },
   async series(): Promise<SeriesPoint[]> {
     const r = await fetchOrNull<any>('/api/metrics/series?duration_s=86400')

@@ -102,6 +102,10 @@ pub mod rules {
     pub const THREAT_INTEL: u16 = 11;
     pub const PROJECT_POLICY: u16 = 12;
     pub const CONN_TRACK: u16 = 13;
+    /// 非首片分片被分片策略拦截（v0.5.0）
+    pub const FRAGMENT: u16 = 14;
+    /// 按「协议 + 目的端口」聚合限速命中（v0.5.0，防伪造源绕过）
+    pub const PORT_RATE: u16 = 15;
 }
 
 /// 黑名单条目
@@ -237,6 +241,10 @@ pub struct GlobalStats {
     /// 黑名单 hit_count 变更代数：命中已有黑名单时递增，
     /// 用户态可降频持久化，避免攻击期间每 5s 全量扫描。
     pub blacklist_hit_gen: u64,
+    /// 分片策略（pass/rate_limit/drop）拦截数量（v0.5.0）
+    pub fragment_blocked: u64,
+    /// 协议 + 目的端口聚合限速命中数量（v0.5.0，防伪造源绕过）
+    pub port_rate_blocked: u64,
     /// 连接跟踪模块拦截计数
     pub conn_track_blocked: u64,
     /// Trust PASS 采样计数（per-CPU）
@@ -293,8 +301,12 @@ pub struct RuntimeConfig {
     pub conn_track_enabled: u8,
     /// 全局限速计数维度：0=按源 IP 合计（默认），1=按 源IP+目的端口 分组
     pub rate_limit_dport_grouping: u8,
+    /// 非首片分片策略：0=pass（跳过 L4 模块，v0.4.x 行为），1=按协议聚合限速，2=直接丢弃
+    pub fragment_policy: u8,
+    /// 限速/Flood 超限后的封禁模式：0=hard（写黑名单），1=soft（仅丢弃当前包，不拉黑，缓解 NAT 连带误封）
+    pub rate_limit_soft: u8,
     /// 显式尾部填充，保证 repr(C) 无隐式未初始化 padding
-    pub padding: [u8; 5],
+    pub padding: [u8; 3],
 }
 
 /// 采样数据包日志（由 eBPF 通过 Ring Buffer 上报）

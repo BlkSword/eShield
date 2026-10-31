@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.5.0 (2026-10-31) — 产品化 GA 门禁
+
+> 目标：把"能跑"变成"能交付"。本版集中修复 v0.4.8 实测暴露的绕过面，补齐可观测性、
+> 权限治理、审计防篡改与安装生命周期，并把能力边界和容量数据写成可交付文档。
+> 兼容性变更：`GET /api/auth/check` 由返回 `OK` 文本改为返回 `{"role":"admin"|"readonly"}`；
+> `[port_rate_limit].enabled` 默认值由 `false` 改为 `true`；新增配置项 `readonly_token`、
+> `[xdp].fragment_policy`、`[rate_limit].block_mode`、`[limits]`，旧配置可继续加载（均有默认值）。
+
+### 正确性 / 绕过面修复
+
+- **IPv4 非首片分片绕过 L4 防护**：v0.4.x 中非首片分片没有 L4 头，会跳过端口 ACL / 防护项目 /
+  TCP / UDP / ICMP / L7 全部模块，实测伪造源分片 SYN/UDP Flood 可整段放行。新增
+  `[xdp].fragment_policy = "pass" | "rate_limit" | "drop"`（默认 `rate_limit`）：按「协议 + 0 端口」
+  在 `PORT_RATE_MAP` 聚合限速，不依赖源地址；`drop` 直接丢弃全部分片，`pass` 保留旧行为。
+  新增规则/原因 ID `FRAGMENT=14`，计数 `fragment_blocked`。
+  **注意**：`rate_limit` 依赖 `[port_rate_limit].enabled = true`；关闭端口聚合限速时分片等同 `pass`。
+- **按目的端口聚合限速默认开启**：`[port_rate_limit].enabled` 默认由 `false` 改为 **`true`**。
+  背景：v0.4.8 实测以伪造随机源 IP 打 20k pps 时 per-IP 黑名单/限速完全不触发、流量全部 PASS，
+  `RATE_MAP` 被撑到 20000 条上限。端口维度不随源地址变化，是唯一兜底；本版同时把覆盖范围
+  从 UDP/ICMP 扩展到 **TCP（新增）** 与非首片分片。新增规则/原因 ID `PORT_RATE=15`，
+  计数 `port_rate_blocked`。
+- **软封禁模式**：新增 `[rate_limit].block_mode = "hard" | "soft"`（默认 `hard`）。`soft` 只丢弃
+  超限包、**不写黑名单**，流量回落后自动恢复；作用于全局限速、UDP Flood、ICMP Flood 三条超限路径。
+  用于 NAT 出口 / 共享代理 IP 场景，避免一个用户触发阈值导致整段出口被封（误封代价从
+  "整段出口不可用"降为"超限包被丢"）。
+- **分片与伪造源的实测依据归档**：v0.4.8 实测数据（20k pps 随机源全 PASS、RATE_MAP 打满、
+  分片大部分放行、单 IP 500rps CC 不触发策略）写入 `docs/capacity-planning.md`，作为参数默认值与
+  能力边界文档的依据。
+
+### 可观测性
+
+- 新增 `GET /api/map-usage`：返回每个 eBPF map 的 `name/type/entries/max/ratio` 与
+  `warn_threshold = 0.8`，数据来自后台采样缓存（`metrics_interval_s`，默认 30s），抓取路径不加锁。
+- `/metrics` 新增 `eshield_map_usage_ratio{name}`、`eshield_fragment_blocked_total{policy}`、
+  `eshield_port_rate_blocked_total`；配合已有的 `eshield_map_entries` / `eshield_map_max_entries`
+  可在 LRU 表被打满前告警（运维规则示例见 `docs/operations.md`）。
+- `/api/stats` 新增 `port_rate_blocked`、`fragment_blocked`。
+- `GET /api/config` 新增 `fragment_policy`、`rate_limit_block_mode`、`audit_path`、`audit_enabled`；
+  `PATCH /api/config` 新增可写字段 `fragment_policy`、`rate_limit_block_mode`（带取值校验）。
+
+### 安全与治理
+
+- **RBAC-lite（只读 Token）**：顶层配置新增 `readonly_token`。使用该 Token 的请求只允许
+  `GET`/`HEAD`/`OPTIONS`，写方法返回 `403 {"error":"read-only token: write operations are not permitted"}`
+  （唯一例外：`POST /api/auth/logout`）。`GET /api/auth/check` 返回 `{"role":"admin"|"readonly"}`。
+  适合 Prometheus 抓取、只读大屏与监控系统，避免把管理凭据发给监控。
+- **审计哈希链防篡改**：文件审计后端每条记录追加 `seq`、`prev_hash`、`hash`，
+  `hash = sha256(seq|prev_hash|规范化内容)`；进程重启自动从文件尾部恢复链，继续追加不破坏校验。
+  新增 `GET /api/audit/verify`，返回 `{"ok":bool,"checked":N,"first_bad_seq":null|N,"path":"..."}`
+  （未启用文件审计时返回 `{"ok":true,"enabled":false,"message":"..."}`）。
+  早期版本写入的无 hash 记录在校验时跳过。
+- **启动内存预检**：新增 `[limits]` 段——`min_memory_mb`（默认 512，低于该值告警）、
+  `refuse_memory_mb`（默认 256，低于该值拒绝启动），可用 `ESHIELD_ALLOW_LOW_MEMORY=1` 强制启动
+  （不推荐）。背景：400MB 内存实例装 nginx + eShield 后 `sshd` 失去响应（TCP 通但 banner 不返回）。
+- **安装生命周期**：`scripts/install.sh` 新增 `--version <x.y.z>`、`--sha256 <hex>`
+  （或 `ESHIELD_EXPECTED_SHA`）、`--uninstall`、`--purge`、`--rollback [dir]`、`--help`。
+  升级前自动把当前二进制/配置/systemd 单元/版本号备份到
+  `/var/lib/eshield/backup/<YYYYmmdd-HHMMSS>/`（只保留最近 5 份），升级过程先停服务再装新版本；
+  卸载默认保留配置与数据，`--purge` 才删除 `/etc/eshield`、持久化目录与 `/var/log/eshield`。
+
+### 文档与测试
+
+- 新增 `docs/capability-boundaries.md`：逐条给出**现象 / 原因 / 缓解 / 是否计划支持**，
+  覆盖 L3-L4 防护范围、不防 CC/HTTP Flood、不抗带宽耗尽、单 IP 封禁连带 NAT、伪造源与分片绕过、
+  generic/native XDP 差异、SYN Proxy 实验特性、L7 仅首包 8 字节、IPv6 分片/SYN Cookie 限制、
+  最小内存规格、Hub 非高可用等，并列出明确"不承诺"清单。
+- 新增 `docs/capacity-planning.md`：归档单包 CPU 成本（UDP PASS ≈ 92ns、DROP ≈ 75ns）、
+  4 vCPU 22–28 万 pps 的 CPU/ksoftirqd 数据、真实两机 135k pps 的 CPU/内存/API 延迟、
+  攻击期正常流量 p50/p95/成功率变化、推荐规格（最小/推荐/高流量）、容量估算公式
+  `所需核数 ≈ 峰值 pps × 单包成本(75~92ns) / 0.7`、eBPF map 内存占用（LRU 表按容量预分配，
+  合计约 75–82MB）与调优建议。
+- `docs/operations.md` 新增：升级/回滚/卸载流程、只读 Token 用法、审计链校验与巡检建议
+  （含轮转边界的注意事项）、map 水位与 Prometheus 告警规则示例、低内存启动行为；
+  修正日志/告警配置示例（`log_json`、`alert_webhook_url` 等顶层键）。
+- `docs/api.md` 更新到 v0.5.0：新端点、新字段、新指标、403/错误码约定与 `/api/auth/check` 新响应。
+- `README.md` / `README_EN.md`：能力列表、配置参考、认证、指标、审计、性能与文档索引同步，
+  并链接到新的能力边界/容量规划文档。
+- `packaging/config.example.toml`：补齐 `readonly_token`、`[xdp].fragment_policy`、
+  `[rate_limit].block_mode`、`[limits]`，`[port_rate_limit].enabled` 改为 `true` 并说明原因；
+  同时**修正文件结构**——原示例把 `[xdp]` 表头放在顶层配置项之前，导致 `log_level`/`web_bind`/
+  `whitelist`/`api_token` 等键被 TOML 解析进 `[xdp]` 表而被静默忽略（用户照抄示例会拿到默认值）。
+- `AGENTS.md`：版本号、配置段列表、已知约束与文档索引同步到 v0.5.0。
+
+### 已知限制变化
+
+- 分片绕过与伪造源绕过**已缓解但未根除**：伪造源的 per-IP 识别仍然不存在，端口聚合限速只是
+  "限速兜底"；单 IP HTTP/CC Flood 仍不在防护范围内（详见能力边界 B1/B4/B5）。
+- `[xdp].fragment_policy = "drop"` 可能影响依赖 IP 分片的合法大包/隧道，默认仍用 `rate_limit`。
+- 审计链校验只覆盖当前 `audit.path` 文件；文件按大小轮转后，新文件链头指向旧文件，
+  需在轮转前完成校验并归档（已写入运维文档）。
+- Hub 仍为单实例有状态服务，未提供高可用；IPv6 扩展头/分片解析、SYN Cookie IPv6 仍未支持。
+
 ## Unreleased（v0.4.8 计划）
 
 ### 修复

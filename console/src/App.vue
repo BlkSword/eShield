@@ -6,7 +6,8 @@ import SlideDrawer from './components/SlideDrawer.vue'
 import ModalDialog from './components/ModalDialog.vue'
 import CommandPalette from './components/CommandPalette.vue'
 import ToastHost from './components/ToastHost.vue'
-import { commandOpen, initTheme, refresh, store } from './stores/app'
+import { commandOpen, initTheme, refresh, setRole, store } from './stores/app'
+import { api } from './api/client'
 import { useRoute, useRouter } from 'vue-router'
 
 const sidebarOpen = ref(false)
@@ -36,9 +37,11 @@ function onKey(e: KeyboardEvent) {
 async function bootstrapAuth() {
   if (!location.protocol.startsWith('http')) { ready.value = true; return }
   try {
-    const res = await fetch('/api/auth/check', { credentials: 'same-origin' })
+    // v0.5.0：/api/auth/check 返回 JSON 角色（admin / readonly），未认证返回 null。
+    const role = await api.authCheck()
     const hash = location.hash || '#/'
-    if (res.ok) {
+    if (role) {
+      setRole(role)
       if (hash === '#/' || hash.startsWith('#/login')) router.replace('/overview')
     } else if (!hash.startsWith('#/login')) {
       router.replace('/login')

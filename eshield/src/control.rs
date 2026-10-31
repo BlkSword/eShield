@@ -85,6 +85,13 @@ pub struct RuntimeConfigSnapshot {
     pub packet_log_enabled: bool,
     pub packet_log_sample_rate: u16,
     pub protection_projects_enabled: bool,
+    /// 非首片分片策略：pass | rate_limit | drop（v0.5.0）
+    pub fragment_policy: String,
+    /// 限速超限处置模式：hard | soft（v0.5.0）
+    pub rate_limit_block_mode: String,
+    /// 审计文件路径与开关（用于 /api/audit/verify）
+    pub audit_path: String,
+    pub audit_enabled: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -119,6 +126,10 @@ pub struct RuntimeConfigPatch {
     pub rate_limit: Option<RateLimitParams>,
     pub port_rate_limit: Option<RateLimitParams>,
     pub adaptive: Option<crate::config::AdaptiveConfig>,
+    /// pass | rate_limit | drop
+    pub fragment_policy: Option<String>,
+    /// hard | soft
+    pub rate_limit_block_mode: Option<String>,
 }
 
 impl ControlState {
@@ -538,6 +549,12 @@ impl ControlState {
         if let Some(action) = patch.geoip_default_action {
             snapshot.geoip_default_action = action;
         }
+        if let Some(ref policy) = patch.fragment_policy {
+            snapshot.fragment_policy = policy.to_ascii_lowercase();
+        }
+        if let Some(ref mode) = patch.rate_limit_block_mode {
+            snapshot.rate_limit_block_mode = mode.to_ascii_lowercase();
+        }
         if let Some(ref adaptive_cfg) = patch.adaptive {
             snapshot.adaptive = adaptive_cfg.clone();
             if let Some(adaptive) = &self.adaptive {
@@ -613,6 +630,8 @@ impl ControlState {
             cfg.project_enabled = u8::from(snapshot.protection_projects_enabled);
             cfg.port_rate_limit_enabled = u8::from(snapshot.port_rate_limit.enabled);
             cfg.rate_limit_dport_grouping = u8::from(snapshot.rate_limit.dport_grouping);
+            cfg.fragment_policy = fragment_policy_to_u8(&snapshot.fragment_policy);
+            cfg.rate_limit_soft = u8::from(snapshot.rate_limit_block_mode == "soft");
             config_array.set(0, cfg, 0)?;
         }
 
@@ -1099,7 +1118,31 @@ fn validate_runtime_patch(patch: &RuntimeConfigPatch) -> anyhow::Result<()> {
     if let Some(action) = patch.geoip_default_action {
         anyhow::ensure!(action <= 1, "geoip_default_action must be 0 or 1");
     }
+    if let Some(ref policy) = patch.fragment_policy {
+        anyhow::ensure!(
+            matches!(
+                policy.to_ascii_lowercase().as_str(),
+                "pass" | "rate_limit" | "drop"
+            ),
+            "fragment_policy must be pass | rate_limit | drop"
+        );
+    }
+    if let Some(ref mode) = patch.rate_limit_block_mode {
+        anyhow::ensure!(
+            matches!(mode.to_ascii_lowercase().as_str(), "hard" | "soft"),
+            "rate_limit_block_mode must be hard | soft"
+        );
+    }
     Ok(())
+}
+
+/// 分片策略字符串 → eBPF 编码（0=pass, 1=rate_limit, 2=drop）。
+pub(crate) fn fragment_policy_to_u8(policy: &str) -> u8 {
+    match policy.to_ascii_lowercase().as_str() {
+        "rate_limit" => 1,
+        "drop" => 2,
+        _ => 0,
+    }
 }
 
 impl RuntimeConfigSnapshot {
@@ -1153,6 +1196,10 @@ impl RuntimeConfigSnapshot {
                 block_duration_s: 0,
                 dport_grouping: false,
             },
+            fragment_policy: config.xdp.fragment_policy.clone(),
+            rate_limit_block_mode: config.rate_limit.block_mode.clone(),
+            audit_path: config.audit.path.clone(),
+            audit_enabled: config.audit.enabled,
             port_acl: config.port_acl.clone(),
             protection_projects: config.protection_projects.clone(),
             l7_scan: config.l7_scan.clone(),
@@ -1214,7 +1261,9 @@ fn init_config_map(ebpf: &mut Ebpf, config: &Config) -> anyhow::Result<()> {
             .min(eshield_common::MAX_L7_PATTERNS as u8),
         port_rate_limit_enabled: u8::from(config.port_rate_limit.enabled),
         rate_limit_dport_grouping: u8::from(config.rate_limit.dport_grouping),
-        padding: [0; 5],
+        fragment_policy: fragment_policy_to_u8(&config.xdp.fragment_policy),
+        rate_limit_soft: u8::from(config.rate_limit.block_mode.eq_ignore_ascii_case("soft")),
+        padding: [0; 3],
     };
     tracing::debug!(
         "init_config_map: tcp_reset_on_drop={} trust={}/{} geoip_default={}",

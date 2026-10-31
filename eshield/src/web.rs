@@ -199,6 +199,8 @@ pub async fn run(
         )
         .route("/api/config/reload", post(reload_config_handler))
         .route("/api/auth/check", get(auth_check_handler))
+        .route("/api/map-usage", get(map_usage_handler))
+        .route("/api/audit/verify", get(audit_verify_handler))
         .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/reset-token", post(reset_token_handler))
         .route("/api/protection-modules", get(protection_modules_handler))
@@ -307,6 +309,10 @@ struct StatsResponse {
     xdp_attached: bool,
     /// XDP 挂载模式：native / generic / unknown
     xdp_mode: String,
+    /// 协议+目的端口聚合限速拦截（v0.5.0）
+    port_rate_blocked: u64,
+    /// 分片策略拦截（v0.5.0）
+    fragment_blocked: u64,
 }
 
 #[derive(Serialize)]
@@ -471,8 +477,60 @@ async fn login_api_handler(
     }
 }
 
-async fn auth_check_handler() -> &'static str {
-    "OK"
+/// 校验当前凭据并返回角色（v0.5.0 RBAC-lite）：admin / readonly。
+async fn auth_check_handler(
+    axum::Extension(role): axum::Extension<crate::auth::Role>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "role": role.as_str() }))
+}
+
+/// eBPF map 水位（v0.5.0）：条目数 / 上限 / 使用率，供控制台与告警使用。
+/// 数据来自后台采样缓存，抓取路径不触碰全局 Ebpf 锁。
+async fn map_usage_handler(State(state): State<Arc<WebState>>) -> Json<serde_json::Value> {
+    let mut items = Vec::new();
+    for info in state.map_infos.iter() {
+        let used = state
+            .stats
+            .map_entries
+            .iter()
+            .find(|e| *e.key() == info.name.as_str())
+            .map(|e| *e.value())
+            .unwrap_or(0);
+        let ratio = if info.max_entries > 0 {
+            used as f64 / info.max_entries as f64
+        } else {
+            0.0
+        };
+        items.push(serde_json::json!({
+            "name": info.name,
+            "type": info.map_type,
+            "entries": used,
+            "max": info.max_entries,
+            "ratio": ratio,
+        }));
+    }
+    Json(serde_json::json!({
+        "maps": items,
+        "warn_threshold": 0.8,
+        "sampled_ns": state.stats.map_entries_updated_ns.load(Ordering::Relaxed),
+    }))
+}
+
+/// 审计哈希链校验（v0.5.0）：任何记录被改写/删除/插入都会在断点处被发现。
+async fn audit_verify_handler(
+    State(state): State<Arc<WebState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let rt = state.control.runtime.read().await.clone();
+    if !rt.audit_enabled {
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "enabled": false,
+            "message": "文件审计后端未启用（[audit].enabled = false）"
+        })));
+    }
+    let report = crate::audit::verify_chain(std::path::Path::new(&rt.audit_path))
+        .map_err(|e| api_err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(serde_json::to_value(report).unwrap_or_default()))
 }
 
 /// 退出登录：清除 HttpOnly 会话 Cookie。
@@ -725,6 +783,8 @@ fn rule_display_name(rule_id: u16) -> &'static str {
         rules::THREAT_INTEL => "威胁情报",
         rules::PROJECT_POLICY => "防护项目",
         rules::CONN_TRACK => "连接跟踪",
+        rules::FRAGMENT => "分片策略",
+        rules::PORT_RATE => "端口聚合限速",
         rules::UNKNOWN => "未知",
         _ => "未知",
     }
@@ -1661,6 +1721,8 @@ async fn stats_snapshot(stats: &Arc<Stats>) -> StatsResponse {
         danger_level: stats.danger_level.load(Ordering::Relaxed),
         xdp_attached: stats.xdp_attached.load(Ordering::Relaxed),
         xdp_mode: stats.xdp_mode_str().to_string(),
+        port_rate_blocked: stats.port_rate_blocked.load(Ordering::Relaxed),
+        fragment_blocked: stats.fragment_blocked.load(Ordering::Relaxed),
     }
 }
 
@@ -1789,6 +1851,21 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         interface, 0, interface, cumulative
     ));
 
+    // v0.5.0 新增：分片策略与端口聚合限速计数
+    body.push_str(&format!(
+        "\n# HELP eshield_fragment_blocked_total Fragments blocked by fragment policy\n\
+         # TYPE eshield_fragment_blocked_total counter\n\
+         eshield_fragment_blocked_total{{interface=\"{}\",policy=\"{}\"}} {}\n\n\
+         # HELP eshield_port_rate_blocked_total Port-aggregate rate-limit drops\n\
+         # TYPE eshield_port_rate_blocked_total counter\n\
+         eshield_port_rate_blocked_total{{interface=\"{}\"}} {}\n",
+        interface,
+        state.control.runtime.read().await.fragment_policy,
+        stats.fragment_blocked,
+        interface,
+        stats.port_rate_blocked
+    ));
+
     // eBPF map 指标：
     // - max_entries 来自启动时采集的静态元信息（无需加锁，也不会因锁竞争缺指标）；
     // - 当前条目数来自后台 30s 采样缓存（Stats.map_entries_*），抓取路径不遍历大表。
@@ -1819,6 +1896,33 @@ async fn metrics_handler(State(state): State<Arc<WebState>>) -> Response {
         body.push_str(&format!(
             "eshield_map_entries{{interface=\"{}\",name=\"{}\"}} {}\n",
             interface, name, count
+        ));
+    }
+
+    // v0.5.0：map 水位使用率（entries / max_entries），供告警与容量规划
+    body.push_str(
+        "\n# HELP eshield_map_usage_ratio eBPF map usage ratio (entries / max_entries)\n\
+         # TYPE eshield_map_usage_ratio gauge\n",
+    );
+    for info in state.map_infos.iter() {
+        if !COUNTED_MAPS.contains(&info.name.as_str()) {
+            continue;
+        }
+        let used = state
+            .stats
+            .map_entries
+            .iter()
+            .find(|e| *e.key() == info.name.as_str())
+            .map(|e| *e.value())
+            .unwrap_or(0);
+        if info.max_entries == 0 {
+            continue;
+        }
+        body.push_str(&format!(
+            "eshield_map_usage_ratio{{interface=\"{}\",name=\"{}\"}} {:.4}\n",
+            interface,
+            info.name,
+            used as f64 / info.max_entries as f64
         ));
     }
 

@@ -11,10 +11,49 @@ info()  { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()   { echo -e "${RED}[FAIL]${NC} $1"; }
 
+# ── 参数解析（v0.5.0：安装 / 升级 / 回滚 / 卸载） ──
+ACTION="install"
+BUILD_MODE=0
+PURGE=0
+ROLLBACK_DIR=""
+EXPECTED_SHA="${ESHIELD_EXPECTED_SHA:-}"
+_argv=("$@")
+for ((i = 0; i < ${#_argv[@]}; i++)); do
+    case "${_argv[i]}" in
+        --build) BUILD_MODE=1 ;;
+        --uninstall) ACTION="uninstall" ;;
+        --purge) PURGE=1 ;;
+        --version) VERSION="${_argv[i + 1]:-}"; ((i++)) ;;
+        --version=*) VERSION="${_argv[i]#*=}" ;;
+        --sha256) EXPECTED_SHA="${_argv[i + 1]:-}"; ((i++)) ;;
+        --sha256=*) EXPECTED_SHA="${_argv[i]#*=}" ;;
+        --rollback) ACTION="rollback"; ROLLBACK_DIR="${_argv[i + 1]:-}"; ((i++)) ;;
+        --rollback=*) ACTION="rollback"; ROLLBACK_DIR="${_argv[i]#*=}" ;;
+        -h | --help)
+            cat <<'USAGE'
+用法: sudo bash scripts/install.sh [选项]
+
+  --build               从当前源码构建并安装（默认从 GitHub Release 下载）
+  --version <x.y.z>     指定安装版本（默认取 Release 最新/仓库版本）
+  --sha256 <hex>        校验下载产物 SHA256（也可用 ESHIELD_EXPECTED_SHA）
+  --rollback [dir]      回滚到备份目录（省略则使用最近一次备份）
+  --uninstall           卸载（保留配置与数据）
+  --purge               配合 --uninstall：同时删除 /etc/eshield 与持久化数据
+  -h, --help            显示本帮助
+
+升级时脚本会自动把当前二进制/配置/service 备份到
+/var/lib/eshield/backup/<时间戳>/，可用 --rollback 回退。
+USAGE
+            exit 0
+            ;;
+        *) err "未知参数: ${_argv[i]}（用 --help 查看用法）"; exit 1 ;;
+    esac
+done
+
 # GitHub 仓库（与 scripts/publish-release.sh 保持一致；可用 ESHIELD_REPO 覆盖）
 REPO="${ESHIELD_REPO:-BlkSword/eShield}"
 # 优先从环境变量读取版本；未设置时依次尝试 workspace / eshield crate 的 Cargo.toml；最后回退到默认版本。
-DEFAULT_VERSION="0.4.8"
+DEFAULT_VERSION="0.5.0"
 if [ -z "${VERSION:-}" ]; then
     if [ -f "Cargo.toml" ] && grep -qE '^\[workspace\]' Cargo.toml 2>/dev/null; then
         # workspace 根 Cargo.toml 不含 version，版本在 eshield/Cargo.toml
@@ -165,6 +204,66 @@ build_local() {
     install -m 0755 "target/$TARGET/release/eshield" "$INSTALL_BIN"
 }
 
+BACKUP_ROOT="${ESHIELD_BACKUP_DIR:-/var/lib/eshield/backup}"
+
+# 备份当前安装（升级/回滚用）：二进制 + 配置 + systemd 单元 + 版本号
+backup_current() {
+    local ts dir
+    ts="$(date +%Y%m%d-%H%M%S)"
+    dir="${BACKUP_ROOT}/${ts}"
+    mkdir -p "$dir" || return 0
+    [ -f "$INSTALL_BIN" ] && cp -a "$INSTALL_BIN" "$dir/eshield" 2>/dev/null || true
+    [ -f "$INSTALL_CFG" ] && cp -a "$INSTALL_CFG" "$dir/config.toml" 2>/dev/null || true
+    [ -f "$SERVICE_FILE" ] && cp -a "$SERVICE_FILE" "$dir/eshield.service" 2>/dev/null || true
+    echo "${VERSION}" > "$dir/VERSION" 2>/dev/null || true
+    # 最多保留 5 个备份，避免 /var/lib 无限增长
+    ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | tail -n +6 | xargs -r rm -rf
+    echo "$dir"
+}
+
+do_uninstall() {
+    echo "── 卸载 eShield ──"
+    if [ "$SKIP_SYSTEMD" != "1" ]; then
+        systemctl stop eshield 2>/dev/null || true
+        systemctl disable eshield 2>/dev/null || true
+        rm -f "$SERVICE_FILE"
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    rm -f "$INSTALL_BIN"
+    info "已移除二进制与服务单元（配置与数据默认保留）"
+    if [ "$PURGE" = "1" ]; then
+        rm -rf /etc/eshield "$(dirname "$STORE_PATH")" /var/log/eshield
+        info "已删除配置目录 /etc/eshield、数据目录 $(dirname "$STORE_PATH")、日志目录 /var/log/eshield"
+    else
+        warn "配置保留在 ${INSTALL_CFG}；如需彻底删除请加 --purge"
+    fi
+}
+
+do_rollback() {
+    local dir="${ROLLBACK_DIR}"
+    if [ -z "$dir" ]; then
+        dir="$(ls -1dt "${BACKUP_ROOT}"/*/ 2>/dev/null | head -1)"
+        dir="${dir%/}"
+    fi
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+        err "没有可用的备份目录（${BACKUP_ROOT}）"
+        exit 1
+    fi
+    echo "── 回滚到备份：${dir} ──"
+    [ -f "$dir/eshield" ] || { err "备份中缺少二进制"; exit 1; }
+    if [ "$SKIP_SYSTEMD" != "1" ]; then
+        systemctl stop eshield 2>/dev/null || true
+    fi
+    install -m 0755 "$dir/eshield" "$INSTALL_BIN"
+    [ -f "$dir/config.toml" ] && install -m 0644 "$dir/config.toml" "$INSTALL_CFG"
+    [ -f "$dir/eshield.service" ] && install -m 0644 "$dir/eshield.service" "$SERVICE_FILE"
+    if [ "$SKIP_SYSTEMD" != "1" ]; then
+        systemctl daemon-reload
+        systemctl start eshield
+    fi
+    info "回滚完成：$([ -f "$dir/VERSION" ] && cat "$dir/VERSION" || echo unknown)"
+}
+
 download_release() {
     URL="https://github.com/${REPO}/releases/download/v${VERSION}/eshield-${TARGET}"
     TMP_BIN="$(mktemp /tmp/eshield-download.XXXXXX)"
@@ -200,11 +299,40 @@ download_release() {
         warn "未找到 SHA256SUMS，跳过二进制校验（建议核对下载来源）"
     fi
 
+    if [ -n "$EXPECTED_SHA" ]; then
+        ACTUAL_SHA=$(sha256sum "$TMP_BIN" | awk '{print $1}')
+        if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            rm -f "$TMP_BIN"
+            err "SHA256 校验失败（期望 ${EXPECTED_SHA}，实际 ${ACTUAL_SHA}），已中止安装"
+            exit 1
+        fi
+        info "SHA256 校验通过（--sha256）"
+    fi
+
     install -m 0755 "$TMP_BIN" "$INSTALL_BIN"
     rm -f "$TMP_BIN"
 }
 
-if [ "${1:-}" = "--build" ]; then
+if [ "$ACTION" = "uninstall" ]; then
+    do_uninstall
+    exit 0
+fi
+if [ "$ACTION" = "rollback" ]; then
+    do_rollback
+    exit 0
+fi
+
+# 升级前：停止旧服务并备份（避免覆盖正在运行的二进制）
+if [ -f "$INSTALL_BIN" ]; then
+    BACKUP_DIR="$(backup_current)"
+    info "检测到已安装版本，已备份到：${BACKUP_DIR}"
+    if [ "$SKIP_SYSTEMD" != "1" ] && systemctl is-active --quiet eshield 2>/dev/null; then
+        systemctl stop eshield
+        info "已停止旧版本服务，准备升级"
+    fi
+fi
+
+if [ "$BUILD_MODE" = "1" ]; then
     build_local
 else
     download_release
@@ -233,6 +361,9 @@ web_bind = "0.0.0.0:8720"
 
 store_path = "/var/lib/eshield/rules.redb"
 
+# 只读 Token（可选，v0.5.0）：仅允许 GET/HEAD，适合监控系统 / 只读大屏
+# readonly_token = "readonly-changeme"
+
 # 告警 Webhook（可选）
 # alert_webhook_url = "https://hooks.example.com/eshield"
 alert_webhook_type = "generic"
@@ -242,13 +373,31 @@ alert_cooldown_s = 60
 whitelist = ["127.0.0.1/32", "10.0.0.0/8"]
 blacklist = []
 
+[xdp]
+mode = "auto"
+# 非首片 IPv4 分片策略（v0.5.0）：rate_limit（默认，按协议聚合限速）| drop | pass
+fragment_policy = "rate_limit"
+
 [rate_limit]
 enabled = true
-threshold = 200
+threshold = 2000
 tick_ms = 100
 decay_num = 7
 decay_den = 8
-block_duration_s = 300
+block_duration_s = 120
+# 超限处置（v0.5.0）：hard=写黑名单（默认），soft=只丢弃不拉黑（NAT 出口推荐）
+block_mode = "hard"
+
+# 协议 + 目的端口聚合限速（v0.5.0 起默认开启，防伪造源绕过 per-IP 计数）
+[port_rate_limit]
+enabled = true
+threshold = 2000
+tick_ms = 100
+
+# 启动资源预检（v0.5.0）：低于 min 告警，低于 refuse 拒绝启动
+[limits]
+min_memory_mb = 512
+refuse_memory_mb = 256
 
 [syn_proxy]
 enabled = false

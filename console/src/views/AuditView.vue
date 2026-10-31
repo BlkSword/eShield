@@ -3,15 +3,36 @@ import { computed, onMounted, ref } from 'vue'
 import PanelCard from '../components/PanelCard.vue'
 import KpiCard from '../components/KpiCard.vue'
 import { api } from '../api/client'
+import { toast } from '../stores/app'
 import type { AuditEntry } from '../api/types'
 import { fmtDateTime, fmtInt } from '../utils/format'
 
 const rows = ref<AuditEntry[]>([])
 const q = ref('')
 const actor = ref('all')
+const verifying = ref(false)
 onMounted(async () => {
   rows.value = await api.audit()
 })
+
+/** v0.5.0：校验审计哈希链，任何改写/删除/插入都会在断点处被发现。 */
+async function verifyChain() {
+  verifying.value = true
+  try {
+    const r = await api.auditVerify()
+    if (r.enabled === false) {
+      toast('文件审计未启用', r.message || '开启 [audit].enabled 后可用哈希链校验', 'warn')
+    } else if (!r.ok) {
+      toast('审计链校验失败', `首个断点序号 ${r.first_bad_seq ?? '—'}`, 'danger')
+    } else {
+      toast('审计链完整', `已校验 ${r.checked ?? 0} 条记录${r.path ? ' · ' + r.path : ''}`, 'ok')
+    }
+  } catch (e) {
+    toast('校验失败', String(e), 'danger')
+  } finally {
+    verifying.value = false
+  }
+}
 
 const filtered = computed(() => {
   const n = q.value.trim().toLowerCase()
@@ -31,7 +52,12 @@ const lastEntry = computed(() => rows.value[0])
     <div class="page-head">
       <div class="page-title">审计日志</div>
       <div class="page-meta">控制面所有写操作均落盘，并支持 SSE 推送</div>
-      <div class="page-actions"><span class="state"><span class="dot live"></span>SSE 推送</span></div>
+      <div class="page-actions">
+        <span class="state"><span class="dot live"></span>SSE 推送</span>
+        <button class="btn btn-sm" :disabled="verifying" @click="verifyChain">
+          {{ verifying ? '校验中…' : '校验审计链' }}
+        </button>
+      </div>
     </div>
 
     <div class="kpis">

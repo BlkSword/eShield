@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { cycleTheme, live, refresh, store, openSearch, logout } from '../stores/app'
+import { cycleTheme, isReadonly, live, refresh, store, openSearch, logout } from '../stores/app'
 import { navGroups } from '../router'
 
 const emit = defineEmits<{ (e: 'toggle-sidebar'): void }>()
@@ -44,6 +44,9 @@ async function onLogout() {
       <kbd>Ctrl K</kbd>
     </div>
     <span class="state" :title="xdp.title"><span class="dot" :class="xdp.dot"></span>{{ xdp.text }}</span>
+    <span v-if="isReadonly" class="state warn" title="只读令牌：可查看全部数据，写操作会被服务端拒绝（403）">
+      <span class="dot warn"></span>只读
+    </span>
     <span class="state"><span class="dot" :class="live ? 'live' : 'warn'"></span>{{ live ? '实时' : '演示数据' }}</span>
     <span class="topbar-divider"></span>
     <button class="icon-btn" toggles="refresh" title="刷新（R）" @click="refresh(true)">刷新</button>

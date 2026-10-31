@@ -4,7 +4,7 @@ import PanelCard from '../components/PanelCard.vue'
 import ToggleSwitch from '../components/ToggleSwitch.vue'
 import { api, state, setToken } from '../api/client'
 import { store, toast } from '../stores/app'
-import type { ConfigSnapshot } from '../api/types'
+import type { ConfigSnapshot, FragmentPolicy, PortRateLimitConfig, RateLimitBlockMode } from '../api/types'
 
 const cfg = ref<ConfigSnapshot | null>(null)
 const webhook = ref('')
@@ -12,27 +12,85 @@ const threshold = ref(1000)
 const cooldown = ref(60)
 const retention = ref(30)
 const token = ref(state.token)
+const saving = ref(false)
+
+// 「访问控制与分片」独立编辑态：避免直接 v-model 可选嵌套字段导致类型收窄问题。
+const portRate = ref<PortRateLimitConfig>({ enabled: true, threshold: 2000, tick_ms: 100 })
+const fragmentPolicy = ref<FragmentPolicy>('rate_limit')
+const blockMode = ref<RateLimitBlockMode>('hard')
+
+const fragmentHint = computed(() => {
+  switch (fragmentPolicy.value) {
+    case 'pass': return '放行非首片分片，仅保留源地址级判断（v0.4.x 兼容行为）'
+    case 'rate_limit': return '计入 协议 + 目的端口 聚合限速（默认，推荐）'
+    case 'drop': return '直接丢弃非首片分片，最严格，可能影响合法分片流量'
+    default: return 'pass / rate_limit / drop'
+  }
+})
+const blockModeHint = computed(() =>
+  blockMode.value === 'soft'
+    ? '只丢弃超限包、不拉黑源 IP，适合 NAT 出口'
+    : '超限后把源 IP 加入动态黑名单（默认）',
+)
 
 const dangerLevel = computed(() => store.stats?.danger_level || 0)
 const dangerLabel = computed(() => ['平稳', '关注', '警戒', '严重'][Math.min(dangerLevel.value, 3)])
 const dangerTone = computed(() => (['ok', 'warn', 'warn', 'danger'] as const)[Math.min(dangerLevel.value, 3)])
 
+/** 兼容旧节点：缺失 v0.5.0 字段时补默认值，保证面板可用。 */
+function ensureDefaults() {
+  if (!cfg.value) return
+  if (!cfg.value.port_rate_limit) cfg.value.port_rate_limit = { enabled: true, threshold: 2000, tick_ms: 100 }
+  if (!cfg.value.fragment_policy) cfg.value.fragment_policy = 'rate_limit'
+  if (!cfg.value.rate_limit_block_mode) cfg.value.rate_limit_block_mode = 'hard'
+  portRate.value = { ...cfg.value.port_rate_limit }
+  fragmentPolicy.value = cfg.value.fragment_policy
+  blockMode.value = cfg.value.rate_limit_block_mode
+}
+/** 保存后重新拉取运行时快照，让界面显示服务端实际生效值。 */
+async function reloadConfig() {
+  cfg.value = await api.config()
+  ensureDefaults()
+}
 onMounted(async () => {
   cfg.value = await api.config()
+  ensureDefaults()
 })
 async function save() {
   if (!cfg.value) return
-  await api.patchConfig({
-    rate_limit_enabled: cfg.value.rate_limit_enabled,
-    syn_proxy_enabled: cfg.value.syn_proxy_enabled,
-    l7_scan_enabled: cfg.value.l7_scan_enabled,
-    udp_flood_enabled: cfg.value.udp_flood_enabled,
-    icmp_flood_enabled: cfg.value.icmp_flood_enabled,
-    geoip_enabled: cfg.value.geoip_enabled,
-    conn_track_enabled: cfg.value.conn_track_enabled,
-    tcp_reset_on_drop: cfg.value.tcp_reset_on_drop,
-  })
-  toast('系统设置已保存', '部分参数需重载配置后生效', 'ok')
+  saving.value = true
+  try {
+    await api.patchConfig({
+      rate_limit_enabled: cfg.value.rate_limit_enabled,
+      syn_proxy_enabled: cfg.value.syn_proxy_enabled,
+      l7_scan_enabled: cfg.value.l7_scan_enabled,
+      udp_flood_enabled: cfg.value.udp_flood_enabled,
+      icmp_flood_enabled: cfg.value.icmp_flood_enabled,
+      geoip_enabled: cfg.value.geoip_enabled,
+      conn_track_enabled: cfg.value.conn_track_enabled,
+      tcp_reset_on_drop: cfg.value.tcp_reset_on_drop,
+      // v0.5.0：分片策略 / 限速处置模式 / 协议+目的端口聚合限速
+      fragment_policy: fragmentPolicy.value,
+      rate_limit_block_mode: blockMode.value,
+      // 端口聚合限速不使用指数衰减，decay/block 字段按数据面语义取 0/1/0。
+      port_rate_limit: {
+        enabled: portRate.value.enabled,
+        // 输入框被清空时 v-model.number 会得到空串，这里兜底成合法值，避免 PATCH 被拒。
+        threshold: Math.max(1, Math.round(Number(portRate.value.threshold) || 2000)),
+        tick_ms: Math.max(1, Math.round(Number(portRate.value.tick_ms) || 100)),
+        decay_num: 0,
+        decay_den: 1,
+        block_duration_s: 0,
+      },
+    })
+    toast('系统设置已保存', '运行时参数已下发数据面，部分参数需重载配置后生效', 'ok')
+    await reloadConfig()
+  } catch (e) {
+    const desc = store.role === 'readonly' ? '只读令牌不允许写操作（403）' : String(e)
+    toast('保存失败', desc, 'danger')
+  } finally {
+    saving.value = false
+  }
 }
 function resetToken() {
   const t = Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join('')
@@ -47,7 +105,11 @@ function resetToken() {
     <div class="page-head">
       <div class="page-title">系统设置</div>
       <div class="page-meta">开关类参数热生效；监听地址、存储路径等需重启进程</div>
-      <div class="page-actions"><button class="btn btn-primary btn-sm" @click="save">保存运行参数</button></div>
+      <div class="page-actions">
+        <button class="btn btn-primary btn-sm" :disabled="saving" @click="save">
+          {{ saving ? '保存中…' : '保存运行参数' }}
+        </button>
+      </div>
     </div>
 
     <div class="grid grid-main-side">
@@ -89,6 +151,10 @@ function resetToken() {
             <dt>网卡</dt><dd class="mono">{{ cfg?.interface || '—' }}</dd>
             <dt>监听地址</dt><dd class="mono">{{ cfg?.web_bind || '—' }}</dd>
             <dt>存储路径</dt><dd class="mono" :title="cfg?.store_path">{{ cfg?.store_path || '—' }}</dd>
+            <dt>审计后端</dt>
+            <dd class="mono" :title="cfg?.audit_path">
+              {{ cfg?.audit_enabled ? '文件审计已启用' : '文件审计未启用' }}
+            </dd>
             <dt>XDP 模式</dt><dd class="mono">{{ (store.stats as never as Record<string, unknown>)?.xdp_mode || '—' }}</dd>
           </dl>
         </PanelCard>
@@ -104,6 +170,43 @@ function resetToken() {
         </PanelCard>
       </div>
     </div>
+
+    <PanelCard title="访问控制与分片" sub="v0.5.0 · 运行时热生效">
+      <div class="setting-row">
+        <div class="sr-main">
+          <div class="sr-title">端口聚合限速</div>
+          <div class="sr-desc">按 协议 + 目的端口 聚合统计，防伪造源 IP 绕过单源限速（默认启用）</div>
+        </div>
+        <ToggleSwitch v-model="portRate.enabled" />
+      </div>
+      <div class="grid grid-3" style="margin-top: 12px">
+        <div class="field">
+          <label class="field-label">聚合限速阈值（包/窗口）</label>
+          <input v-model.number="portRate.threshold" class="input mono" type="number" min="1" />
+          <div class="field-hint">窗口 {{ portRate.tick_ms || 100 }}ms，默认 2000 包/窗口</div>
+        </div>
+        <div class="field">
+          <label class="field-label">非首片分片策略</label>
+          <select v-model="fragmentPolicy" class="select">
+            <option value="pass">pass · 放行</option>
+            <option value="rate_limit">rate_limit · 计入聚合限速</option>
+            <option value="drop">drop · 直接丢弃</option>
+          </select>
+          <div class="field-hint">{{ fragmentHint }}</div>
+        </div>
+        <div class="field">
+          <label class="field-label">限速超限处置模式</label>
+          <select v-model="blockMode" class="select">
+            <option value="hard">hard · 拉黑源 IP</option>
+            <option value="soft">soft · 只丢弃不拉黑</option>
+          </select>
+          <div class="field-hint">{{ blockModeHint }}</div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top: 10px; font-size: 11px; line-height: 1.55">
+        soft 适合 NAT 出口：超限只丢弃超量包，不把出口 IP 拉黑；pass 为 v0.4.x 兼容行为（跳过 L4 模块，不推荐）。
+      </div>
+    </PanelCard>
 
     <div class="grid grid-2">
       <PanelCard title="告警" sub="DROP 速率超过阈值时推送 Webhook">

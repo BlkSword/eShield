@@ -69,6 +69,10 @@ pub struct Config {
     pub web_bind: Option<String>,
     #[serde(default)]
     pub api_token: Option<String>,
+    /// 只读 Token（v0.5.0）：仅允许 GET/HEAD，适合监控系统 / 只读大屏。
+    /// 留空表示不启用只读角色。
+    #[serde(default)]
+    pub readonly_token: Option<String>,
     #[serde(default = "default_false")]
     pub log_json: bool,
     #[serde(default = "default_store_path")]
@@ -101,6 +105,9 @@ pub struct Config {
     /// XDP 挂载策略（v0.4.8）
     #[serde(default)]
     pub xdp: XdpConfig,
+    /// 启动资源预检（v0.5.0）
+    #[serde(default)]
+    pub limits: LimitsConfig,
 }
 
 /// XDP 挂载策略。
@@ -120,6 +127,13 @@ pub struct XdpConfig {
     /// 周期性校验挂载状态，被驱动重置/外部操作摘掉时自动重新挂载
     #[serde(default = "default_true")]
     pub auto_reattach: bool,
+    /// 非首片 IPv4 分片的处理策略（v0.5.0）：
+    /// - `rate_limit`（默认）：按「协议 + 0 端口」聚合限速，超阈值丢弃。伪造源 IP 的分片
+    ///   SYN/UDP 攻击无法被 per-IP 计数识别，必须靠端口/协议维度兜底；
+    /// - `drop`：直接丢弃所有非首片分片（最严格，可能影响合法大包路径 MTU 发现）；
+    /// - `pass`：跳过 L4 模块直接放行（v0.4.x 兼容行为，不推荐）。
+    #[serde(default = "default_fragment_policy")]
+    pub fragment_policy: String,
 }
 
 impl Default for XdpConfig {
@@ -128,12 +142,19 @@ impl Default for XdpConfig {
             mode: default_xdp_mode(),
             disable_offloads: true,
             auto_reattach: true,
+            fragment_policy: default_fragment_policy(),
         }
     }
 }
 
 fn default_xdp_mode() -> String {
     "auto".to_string()
+}
+
+fn default_fragment_policy() -> String {
+    // v0.5.0：默认从「跳过 L4 模块」改为「按协议聚合限速」——
+    // 实测伪造源 SYN/UDP 分片流量在 v0.4.x 会整段放行，属于明确的绕过面。
+    "rate_limit".to_string()
 }
 
 fn default_log_level() -> String {
@@ -569,6 +590,12 @@ pub struct RateLimitConfig {
     /// 适合 NAT / 单 IP 多业务端口场景，避免不同业务共享一个计数器互相挤占额度。
     #[serde(default)]
     pub dport_grouping: bool,
+    /// 超限后的处置模式（v0.5.0）：
+    /// - `hard`（默认）：写入黑名单，后续包在 XDP 黑名单快路径丢弃；
+    /// - `soft`：只丢弃超限包，不写黑名单，流量回落后自动恢复。
+    ///   NAT 出口 / 共享代理 IP 场景建议 soft，避免整段出口被误封。
+    #[serde(default = "default_block_mode")]
+    pub block_mode: String,
 }
 
 impl Default for RateLimitConfig {
@@ -581,8 +608,13 @@ impl Default for RateLimitConfig {
             decay_den: 8,
             block_duration_s: 120,
             dport_grouping: false,
+            block_mode: default_block_mode(),
         }
     }
+}
+
+fn default_block_mode() -> String {
+    "hard".to_string()
 }
 
 fn default_true() -> bool {
@@ -611,10 +643,11 @@ fn default_block_duration_s() -> u64 {
 
 /// 按目的端口限速参数：对（协议 + 目的端口）维度做速率限制，
 /// 用于防换源 IP 绕过（源 IP 随机化时 per-IP 限速失效）。
-/// 默认关闭，不影响既有行为；阈值默认高于 per-IP（聚合多源流量）。
+/// v0.5.0 起默认开启：实测伪造源 SYN/UDP Flood 可绕开 per-IP 黑名单，
+/// 端口维度是唯一不依赖源地址的兜底；阈值默认高于 per-IP（聚合多源流量）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortRateLimitConfig {
-    #[serde(default = "default_false")]
+    #[serde(default = "default_true")]
     pub enabled: bool,
     #[serde(default = "default_port_rate_threshold")]
     pub threshold: u64,
@@ -625,7 +658,7 @@ pub struct PortRateLimitConfig {
 impl Default for PortRateLimitConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             threshold: 2000,
             tick_ms: 100,
         }
@@ -634,6 +667,35 @@ impl Default for PortRateLimitConfig {
 
 fn default_port_rate_threshold() -> u64 {
     2000
+}
+
+/// 启动资源预检（v0.5.0）：避免在过小规格机器上"装上就跑、跑着被 OOM"。
+/// 实测 400MB 内存实例在装 nginx + eShield 后 sshd 失去响应。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LimitsConfig {
+    /// 低于该值启动时打印醒目告警（默认 512MB）
+    #[serde(default = "default_min_memory_mb")]
+    pub min_memory_mb: u64,
+    /// 低于该值直接拒绝启动（默认 256MB），可用 ESHIELD_ALLOW_LOW_MEMORY=1 强制启动
+    #[serde(default = "default_refuse_memory_mb")]
+    pub refuse_memory_mb: u64,
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            min_memory_mb: default_min_memory_mb(),
+            refuse_memory_mb: default_refuse_memory_mb(),
+        }
+    }
+}
+
+fn default_min_memory_mb() -> u64 {
+    512
+}
+
+fn default_refuse_memory_mb() -> u64 {
+    256
 }
 
 impl Config {
@@ -666,6 +728,20 @@ impl Config {
             "auto" | "native" | "drv" | "generic" | "skb" => {}
             other => {
                 anyhow::bail!("invalid [xdp].mode '{other}' (expected auto | native | generic)")
+            }
+        }
+
+        match self.xdp.fragment_policy.to_ascii_lowercase().as_str() {
+            "pass" | "rate_limit" | "drop" => {}
+            other => anyhow::bail!(
+                "invalid [xdp].fragment_policy '{other}' (expected pass | rate_limit | drop)"
+            ),
+        }
+
+        match self.rate_limit.block_mode.to_ascii_lowercase().as_str() {
+            "hard" | "soft" => {}
+            other => {
+                anyhow::bail!("invalid [rate_limit].block_mode '{other}' (expected hard | soft)")
             }
         }
 

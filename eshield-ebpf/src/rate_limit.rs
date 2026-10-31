@@ -34,12 +34,17 @@ pub fn check_rate_limit(src: &IpKey, dport: u16, now_ns: u64) -> bool {
     }
 
     if update.counter > update.threshold {
-        add_to_blacklist(
-            src,
-            now_ns,
-            update.block_duration_s,
-            rules::RATE_LIMIT as u8,
-        );
+        // soft 模式（[rate_limit].block_mode = "soft"）：只丢弃超限包，不写黑名单。
+        // NAT 出口 / 共享代理 IP 场景下，hard 模式会把整个出口段一起封掉；
+        // soft 模式在流量回落后自动恢复，误封代价从"整段出口不可用"降为"超限包被丢"。
+        if runtime.rate_limit_soft == 0 {
+            add_to_blacklist(
+                src,
+                now_ns,
+                update.block_duration_s,
+                rules::RATE_LIMIT as u8,
+            );
+        }
         return true;
     }
 

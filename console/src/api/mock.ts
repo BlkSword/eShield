@@ -1,6 +1,6 @@
 import type {
-  AttackEvent, AuditEntry, BlockEntry, ConfigSnapshot, L7Pattern, ModuleState,
-  PacketSample, PortAclEntry, ProtectionProject, SeriesPoint, Stats, WhitelistEntry,
+  AttackEvent, AuditEntry, AuditVerifyReport, BlockEntry, ConfigSnapshot, L7Pattern, MapUsage,
+  ModuleState, PacketSample, PortAclEntry, ProtectionProject, SeriesPoint, Stats, WhitelistEntry,
 } from './types'
 
 // Mock data mirrors values observed during the 2026-10 extreme test on
@@ -9,12 +9,14 @@ const now = Date.now()
 const ns = (msAgo: number) => (now - msAgo) * 1_000_000
 
 const protocols = ['TCP', 'UDP', 'ICMP']
-const rules = ['blacklist', 'syn_flood', 'udp_flood', 'icmp_flood', 'l7_pattern', 'rate_limit', 'geoip', 'conn_track', 'project_policy', 'port_acl']
+const rules = ['blacklist', 'syn_flood', 'udp_flood', 'icmp_flood', 'port_rate', 'fragment', 'l7_pattern', 'rate_limit', 'geoip', 'conn_track', 'project_policy', 'port_acl']
 const reasons: Record<string, string> = {
   blacklist: '命中动态/静态黑名单',
   syn_flood: 'SYN 半连接超阈值',
   udp_flood: 'UDP 单源速率超阈值',
   icmp_flood: 'ICMP 单源速率超阈值',
+  port_rate: '端口聚合限速超阈值',
+  fragment: '非首片分片策略拦截',
   l7_pattern: '命中 L7 指纹',
   rate_limit: '全局速率限制',
   geoip: 'GeoIP 区域策略',
@@ -28,12 +30,17 @@ const attackerIps = [
 ]
 
 export function makeStats(boost = 0): Stats {
+  // 在原有累计拦截基数上叠加 v0.5.0 两项计数，并保持 total_packets = total_passed + total_dropped。
+  const portRateBlocked = 512_304
+  const fragmentBlocked = 23_618
+  const dropped = 13_909_086 + portRateBlocked + fragmentBlocked
+  const totalPackets = 3_284_915_204 + boost
   return {
     xdp_attached: true,
     xdp_mode: 'generic',
-    total_packets: 3_284_915_204 + boost,
-    total_passed: 3_271_006_118 + boost,
-    total_dropped: 13_909_086,
+    total_packets: totalPackets,
+    total_passed: totalPackets - dropped,
+    total_dropped: dropped,
     current_pps: 1_482_310 + boost,
     current_dps: 86_420,
     blacklist_blocked: 9_812_443,
@@ -45,6 +52,8 @@ export function makeStats(boost = 0): Stats {
     icmp_flood_blocked: 15,
     geoip_blocked: 402_188,
     conn_track_blocked: 218_336,
+    port_rate_blocked: portRateBlocked,
+    fragment_blocked: fragmentBlocked,
     tcp_rst_sent: 0,
     tcp_rst_fail: 0,
     tcp_rst_attempt: 0,
@@ -79,6 +88,28 @@ export function makeSeries(points = 48): SeriesPoint[] {
     out.push({ t, pps, dps: dropped, passed: pps - dropped, dropped })
   }
   return out
+}
+
+export function makeMapUsage(): MapUsage {
+  // 与 eBPF map 采样一致的演示水位：RATE_MAP 超过告警阈值（ratio > 0.8），
+  // PORT_RATE_MAP 处于 60%~80% 的警戒区间。
+  const maps = [
+    { name: 'BLACKLIST', type: 'LruHash', entries: 12_340, max: 100_000 },
+    { name: 'RATE_MAP', type: 'LruHash', entries: 184_000, max: 200_000 },
+    { name: 'PORT_RATE_MAP', type: 'LruHash', entries: 68_200, max: 100_000 },
+    { name: 'TRUST_MAP', type: 'LruHash', entries: 4_820, max: 50_000 },
+    { name: 'CONN_TRACK', type: 'LruHash', entries: 33_766, max: 65_536 },
+  ]
+  return {
+    maps: maps.map((m) => ({ ...m, ratio: m.max > 0 ? m.entries / m.max : 0 })),
+    warn_threshold: 0.8,
+    // 服务端返回单调时钟纳秒（CLOCK_MONOTONIC），演示值取「已运行 1 天」。
+    sampled_ns: 86_400_000_000_000,
+  }
+}
+
+export function makeAuditVerify(): AuditVerifyReport {
+  return { ok: true, enabled: true, checked: 60, first_bad_seq: null, path: '/var/log/eshield/audit.log' }
 }
 
 export function makeAttackEvents(n = 120): AttackEvent[] {
@@ -190,7 +221,7 @@ export const projects: ProtectionProject[] = [
 export function makeModules(stats: Stats): ModuleState[] {
   return [
     { id: 'rate_limit', name: '全局速率限制', group: '流量', description: '按源 IP 统计包速率，超过阈值后进入动态黑名单', enabled: true, statsKey: 'rate_limited', fields: [{ key: 'threshold', label: '阈值（包/窗口）', value: 200, type: 'number' }, { key: 'tick_ms', label: '窗口（ms）', value: 100, type: 'number' }, { key: 'block_duration_s', label: '封禁时长（s）', value: 300, type: 'number' }] },
-    { id: 'port_rate_limit', name: '端口维度限速', group: '流量', description: '按协议 + 目的端口聚合限速，防换源 IP 绕过', enabled: false, fields: [{ key: 'threshold', label: '阈值（包/窗口）', value: 2000, type: 'number' }, { key: 'tick_ms', label: '窗口（ms）', value: 100, type: 'number' }] },
+    { id: 'port_rate_limit', name: '端口维度限速', group: '流量', description: '按协议 + 目的端口聚合限速，防换源 IP 绕过（v0.5.0 默认启用）', enabled: true, fields: [{ key: 'threshold', label: '阈值（包/窗口）', value: 2000, type: 'number' }, { key: 'tick_ms', label: '窗口（ms）', value: 100, type: 'number' }] },
     { id: 'syn_proxy', name: 'SYN Proxy / Cookie', group: 'TCP', description: 'SYN Cookie 校验，缓解 SYN Flood', enabled: true, statsKey: 'syn_flood_blocked', fields: [] },
     { id: 'conn_track', name: '连接跟踪', group: 'TCP', description: '跟踪半连接数，超过阈值丢弃新 SYN', enabled: false, statsKey: 'conn_track_blocked', fields: [{ key: 'threshold', label: '半连接阈值', value: 100, type: 'number' }, { key: 'window_ms', label: '窗口（ms）', value: 10000, type: 'number' }] },
     { id: 'udp_flood', name: 'UDP Flood', group: 'UDP', description: '单源 UDP 速率限制，超限加入黑名单', enabled: true, statsKey: 'udp_flood_blocked', fields: [] },
@@ -207,21 +238,24 @@ export function makeModules(stats: Stats): ModuleState[] {
 
 export function makeConfig(): ConfigSnapshot {
   return {
-    version: '0.4.6', interface: 'eth0', log_level: 'info', web_bind: '0.0.0.0:8720',
+    version: '0.5.0', interface: 'eth0', log_level: 'info', web_bind: '0.0.0.0:8720',
     store_path: '/var/lib/eshield/rules.redb', rate_limit_enabled: true,
     syn_proxy_enabled: true, l7_scan_enabled: true, udp_flood_enabled: true,
     icmp_flood_enabled: true, geoip_enabled: false, geoip_default_action: 0,
     conn_track_enabled: false, conn_track_threshold: 100, conn_track_window_ms: 10000,
     trust_enabled: true, tcp_reset_on_drop: false, danger_level: 2,
     protection_projects_enabled: true,
+    fragment_policy: 'rate_limit', rate_limit_block_mode: 'hard',
+    audit_path: '/var/log/eshield/audit.log', audit_enabled: true,
+    port_rate_limit: { enabled: true, threshold: 2000, tick_ms: 100 },
   }
 }
 
 export const hubNodes = [
-  { name: 'edge-sgp-01', ip: '172.23.83.42', version: '0.4.6', status: 'online', policies: 18, last_seen: '6s' },
-  { name: 'edge-hkg-02', ip: '172.23.83.41', version: '0.4.6', status: 'online', policies: 18, last_seen: '11s' },
+  { name: 'edge-sgp-01', ip: '172.23.83.42', version: '0.5.0', status: 'online', policies: 18, last_seen: '6s' },
+  { name: 'edge-hkg-02', ip: '172.23.83.41', version: '0.5.0', status: 'online', policies: 18, last_seen: '11s' },
   { name: 'edge-fra-03', ip: '10.8.0.14', version: '0.4.5', status: 'stale', policies: 12, last_seen: '4m' },
-  { name: 'edge-sfo-04', ip: '10.9.1.22', version: '0.4.6', status: 'online', policies: 21, last_seen: '9s' },
+  { name: 'edge-sfo-04', ip: '10.9.1.22', version: '0.5.0', status: 'online', policies: 21, last_seen: '9s' },
 ]
 
 export const threatFeeds = [

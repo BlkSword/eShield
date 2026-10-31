@@ -334,6 +334,30 @@ svg.chart { width: 100%; display: block; }
 .progress.warn i { background: var(--warn); }
 .progress.ok i { background: var(--ok); }
 
+/* 总览 · 防护有效性 / 表项水位（v0.5.0 可观测性面板） */
+.hbars.wide-label .hbar { grid-template-columns: 86px minmax(0, 1fr) 64px; }
+.eff-summary { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.eff-value { font-size: 20px; font-weight: 600; line-height: 1.25; font-variant-numeric: tabular-nums; }
+.eff-value.ok { color: var(--ok); }
+.eff-value.warn { color: var(--warn); }
+.eff-value.danger { color: var(--danger); }
+.eff-side { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; font-size: 11.5px; }
+
+.mu-list { display: flex; flex-direction: column; }
+.mu-row {
+  display: grid; grid-template-columns: 150px minmax(0, 1fr) 118px 54px;
+  align-items: center; gap: 10px; height: var(--row-h); padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+}
+.mu-row:last-child { border-bottom: 0; }
+.mu-row:hover { background: var(--surface-hover); }
+.mu-name { font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mu-val { text-align: right; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.mu-pct { text-align: right; font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.mu-pct.warn { color: var(--warn); }
+.mu-pct.danger { color: var(--danger); }
+.mu-foot { margin-top: auto; padding: 8px 12px; border-top: 1px solid var(--border); color: var(--text-3); font-size: 11px; }
+
 /* ---------------------------------------------------------------- 表格 */
 .table-wrap { overflow: auto; }
 table.dt { width: 100%; border-collapse: collapse; font-size: 12px; }

@@ -54,10 +54,10 @@ eShield 是基于 eBPF/XDP 的主机级 L3-L4 网络防护系统，用于在 Lin
 
 ## 1. 项目概述
 
-> **v0.4.8（2026-10-25）**：控制台全量重构（体积 1.26MB → 239KB，移除 ECharts）、
-> XDP 挂载状态巡检与 `/ready` 降级、限速默认阈值对齐业务基线、SYN Proxy 定级为实验特性、
-> 黑名单保留首因与叠加原因、SYN Proxy 支持带 TCP 选项的 SYN、Hub 批量删除与审计。
-> 完整变更见 [CHANGELOG.md](CHANGELOG.md)。
+> **v0.5.0（2026-10-31）**：产品化 GA 门禁。修复伪造源 IP 与 IPv4 分片绕过（默认开启按目的端口聚合
+> 限速、新增 `[xdp].fragment_policy` 分片策略）、新增 `[rate_limit].block_mode = hard|soft` 软封禁、
+> 启动内存预检、只读 Token（RBAC-lite）、审计哈希链防篡改、map 水位可观测。
+> 完整变更见 [CHANGELOG.md](CHANGELOG.md)，能力边界见 [docs/capability-boundaries.md](docs/capability-boundaries.md)。
 
 eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在进入内核协议栈之前完成解析、规则匹配与丢弃决策，避免恶意流量消耗协议栈、连接表和应用进程资源。
 
@@ -82,9 +82,10 @@ eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在�
 | eBPF/XDP 早期过滤 | 在网卡驱动层完成丢弃决策，不经过内核协议栈。 |
 | CIDR 白名单 | 基于 LPM Trie，支持 IPv4/IPv6，白名单命中后尽早放行。 |
 | 动态黑名单 | 基于 LRU Hash，支持永久与限时封禁，到期自动解封。 |
-| Per-IP 速率限制 | 指数衰减滑动窗口，用于识别突发连接与请求。 |
-| 按目的端口限速 | 按协议与目的端口维度限速，降低换源 IP 绕过 per-IP 限速的风险。 |
-| UDP/ICMP Flood 防护 | 对无连接流量执行 per-IP 与按端口速率抑制。 |
+| Per-IP 速率限制 | 指数衰减滑动窗口，用于识别突发连接与请求；`block_mode = hard/soft` 控制超限后是否拉黑。 |
+| 按目的端口聚合限速 | 按「协议 + 目的端口」维度限速，**v0.5.0 起默认开启**，用于抵御伪造源 IP 绕过 per-IP 计数。 |
+| 分片策略 | IPv4 非首片分片：`pass` / `rate_limit`（默认）/ `drop`，堵住"跳过 L4 模块"的绕过面。 |
+| UDP/ICMP Flood 防护 | 对无连接流量执行 per-IP 与按端口速率抑制（支持 soft 模式不拉黑）。 |
 | 端口/协议 ACL | 支持 `tcp`、`udp`、`icmp`、`icmpv6`、`any`，支持端口、端口范围与通配。 |
 | SYN Cookie 代理 | IPv4 TCP SYN Flood 场景下返回 SYN-ACK Cookie，验证合法 ACK 后放行。 |
 | TCP RST 回包 | 对被丢弃的 TCP 连接回复 RST，减少客户端重传堆积。 |
@@ -105,10 +106,11 @@ eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在�
 | Web 控制台 | Vue 3 + TypeScript 单文件 SPA（`console/`），跟随系统亮/暗色，文本导航、命令面板与高密度表格。 |
 | CLI 与 TUI | `eshield start/status/block/unblock/reload/check/tui/reset-token`。 |
 | 配置热加载 | 通过 `SIGHUP` 或 `systemctl reload` 重新加载配置。 |
-| 认证 | 可选 Bearer Token；本机回环请求跳过 Token 校验。 |
+| 认证与 RBAC-lite | 可选 Bearer Token；v0.5.0 新增只读 Token（只允许 GET/HEAD），本机回环请求跳过 Token 校验。 |
 | 持久化 | 动态规则与时序指标写入 redb，进程重启后恢复。 |
-| 审计 | 内存或 JSON Lines 审计后端，支持 SSE 实时流与 CSV 导出。 |
-| 指标 | Prometheus `/metrics` 与 JSON `/api/stats`。 |
+| 审计 | 内存或 JSON Lines 审计后端（带 `seq`/`prev_hash`/`hash` 哈希链），支持 SSE 实时流、CSV 导出与 `GET /api/audit/verify` 防篡改校验。 |
+| 指标 | Prometheus `/metrics`、JSON `/api/stats`、map 水位 `/api/map-usage`。 |
+| 安装与生命周期 | `scripts/install.sh` 支持 `--version`、`--sha256`、`--rollback`、`--uninstall`，升级前自动备份。 |
 | 告警 | 支持 Webhook 告警与阈值、冷却时间配置。 |
 | 分布式策略 | Hub 聚合多节点策略；支持 master token 与每节点 Token。 |
 | 内核兼容 | 固定 `nightly-2026-07-31` 与 `bpf-linker 0.10.4`；支持 `ESHIELD_XDP_MODE=skb` 规避虚拟网卡原生 XDP 问题。 |
@@ -148,6 +150,8 @@ eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在�
 
 - root 权限或以下 capabilities：`CAP_BPF`、`CAP_NET_ADMIN`、`CAP_NET_RAW`、`CAP_PERFMON`、`CAP_IPC_LOCK`。
 - 支持 XDP 的网卡；虚拟网卡环境建议使用 SKB 通用模式。
+- 内存：建议 ≥ 1GB，最低 512MB（`[limits]` 默认在 256MB 以下拒绝启动，见
+  [docs/capacity-planning.md](docs/capacity-planning.md)）。
 
 ### 4.2 构建环境
 
@@ -164,6 +168,8 @@ eShield 将过滤逻辑部署在网卡驱动层的 XDP 钩子上。数据包在�
 | `ESHIELD_EBPF_TOOLCHAIN` | 覆盖 eBPF 构建使用的 nightly 工具链。 |
 | `ESHIELD_XDP_MODE` | 设为 `skb` 或 `generic` 时强制 SKB 通用模式挂载。 |
 | `ESHIELD_INTERFACE` | 覆盖配置中的监听网卡。 |
+| `ESHIELD_ALLOW_LOW_MEMORY` | 设为 `1` 时跳过 `[limits].refuse_memory_mb` 的启动内存预检（不推荐）。 |
+| `ESHIELD_ASSUME_TLS_PROXY` | 设为 `1` 表示控制台已由 TLS 反代终结，关闭明文 HTTP 告警。 |
 
 Windows 主机无法直接构建或运行本项目。构建与测试应在 WSL2、Linux 虚拟机或 Linux 云主机中进行。
 
@@ -180,8 +186,26 @@ sudo bash scripts/install.sh --build
 1. 使用固定 nightly 工具链构建 eBPF 程序。
 2. 使用 musl target 静态构建用户态二进制。
 3. 安装 `eshield` 到 `/usr/local/bin`。
-4. 创建默认配置 `/etc/eshield/config.toml`。
+4. 创建默认配置 `/etc/eshield/config.toml`（升级时不会覆盖已有配置）。
 5. 安装并启用 systemd 服务。
+
+升级、回滚与卸载（v0.5.0）：
+
+```bash
+# 升级到指定版本；升级前自动备份到 /var/lib/eshield/backup/<时间戳>/
+sudo bash scripts/install.sh --version 0.5.0
+sudo bash scripts/install.sh --version 0.5.0 --sha256 <官方 SHA256>
+
+# 回滚到最近一次备份（或指定备份目录）
+sudo bash scripts/install.sh --rollback
+sudo bash scripts/install.sh --rollback /var/lib/eshield/backup/20261030-090000
+
+# 卸载（默认保留 /etc/eshield 与数据；--purge 一并删除）
+sudo bash scripts/install.sh --uninstall
+sudo bash scripts/install.sh --uninstall --purge
+```
+
+完整流程与注意事项见 [docs/operations.md](docs/operations.md)。
 
 ### 5.2 手动构建
 
@@ -211,20 +235,35 @@ eBPF 目标文件由 `include_bytes_aligned!` 嵌入用户态二进制，部署�
 interface = "eth0"
 web_bind = "0.0.0.0:8720"
 api_token = "replace-with-a-random-token"
+# readonly_token = "replace-with-another-random-token"   # 只读 Token（可选，v0.5.0）
 
 whitelist = ["10.0.0.0/8"]
 blacklist = []
 
+[xdp]
+mode = "auto"
+fragment_policy = "rate_limit"   # v0.5.0 默认：非首片分片按协议聚合限速
+
 [rate_limit]
 enabled = true
-threshold = 200
+threshold = 2000                 # 突发信用，稳态约 2500pps/单 IP
 tick_ms = 100
 decay_num = 7
 decay_den = 8
-block_duration_s = 300
+block_duration_s = 120
+block_mode = "hard"              # hard=写黑名单（默认）；soft=只丢弃不拉黑（NAT 出口推荐）
+
+[port_rate_limit]
+enabled = true                   # v0.5.0 起默认开启，防伪造源绕过
+threshold = 2000
+tick_ms = 100
+
+[limits]
+min_memory_mb = 512
+refuse_memory_mb = 256
 
 [syn_proxy]
-enabled = true
+enabled = false                  # 实验特性，默认关闭
 
 [conn_track]
 enabled = false
@@ -272,13 +311,16 @@ ESHIELD_XDP_MODE=skb sudo eshield start --config /etc/eshield/config.toml
 |---|---|
 | `interface` | XDP 挂载网卡。 |
 | `web_bind` | Web/API 监听地址，默认 `0.0.0.0:8720`。 |
-| `api_token` | Bearer Token；未设置时生成随机 Token。 |
+| `api_token` | 读写 Bearer Token；未设置时生成随机 Token。 |
+| `readonly_token` | **v0.5.0**：只读 Token，仅允许 GET/HEAD/OPTIONS，写操作 403。 |
 | `whitelist` / `blacklist` | 启动时加载的静态 CIDR 白名单与永久黑名单。 |
-| `[rate_limit]` | per-IP 指数衰减速率限制与触发封禁时长。 |
-| `[port_rate_limit]` | 按协议与目的端口的固定窗口限速。 |
-| `[syn_proxy]` | IPv4 SYN Cookie 代理开关。 |
-| `[udp_flood]` / `[icmp_flood]` | 无连接 Flood 防护开关。 |
-| `[l7_scan]` | TCP 首包指纹匹配。 |
+| `[xdp]` | XDP 挂载策略（`mode`、`disable_offloads`、`auto_reattach`）与分片策略 `fragment_policy`（v0.5.0）。 |
+| `[limits]` | **v0.5.0**：启动内存预检（`min_memory_mb` 告警、`refuse_memory_mb` 拒绝启动）。 |
+| `[rate_limit]` | per-IP 指数衰减速率限制、触发封禁时长与 `block_mode`（hard/soft，v0.5.0）。 |
+| `[port_rate_limit]` | 按协议与目的端口的固定窗口限速，**v0.5.0 起默认开启**。 |
+| `[syn_proxy]` | IPv4 SYN Cookie 代理开关（实验特性，默认关闭）。 |
+| `udp_flood_enabled` / `icmp_flood_enabled` | 无连接 Flood 防护顶层开关。 |
+| `[l7_scan]` | TCP 首包指纹匹配（不是 WAF）。 |
 | `[adaptive]` | 重复触发规则的自动封禁窗口与阈值。 |
 | `[geoip]` | 基于国家/地区或 ASN 的 CSV CIDR 放行/封禁。 |
 | `[threat_intel]` | 外部威胁情报 feed 同步。 |
@@ -290,8 +332,8 @@ ESHIELD_XDP_MODE=skb sudo eshield start --config /etc/eshield/config.toml
 | `[packet_log]` | DROP 包采样日志。 |
 | `[hub]` | 分布式 Hub 同步配置。 |
 | `timeseries_retention_days` | 时序指标保留天数。 |
-| `[audit]` | 审计后端与文件轮转配置。 |
-| `[alert]` | Webhook 告警地址、类型、阈值与冷却时间。 |
+| `[audit]` | 审计后端与文件轮转；**v0.5.0** 文件后端带哈希链，可用 `/api/audit/verify` 校验。 |
+| `alert_webhook_url` / `alert_webhook_type` / `alert_threshold_dps` / `alert_cooldown_s` | Webhook 告警地址、类型、阈值与冷却时间（顶层配置项）。 |
 
 配置约束：
 
@@ -333,11 +375,15 @@ eshield block 192.0.2.1 --endpoint http://eshield-host:8720
 eshield reset-token
 ```
 
-### 8.2 认证规则
+### 8.2 认证与角色
 
 - 设置 `api_token` 后，Dashboard、`/api/*` 与 `/metrics` 需要 `Authorization: Bearer <token>`。
 - 本机 CLI 通过回环地址访问时自动跳过 Token 校验。
+- 设置 `readonly_token`（v0.5.0）后，持有该 Token 的请求只允许 `GET`/`HEAD`/`OPTIONS`，
+  写操作返回 403；`GET /api/auth/check` 返回 `{"role":"admin"|"readonly"}`。
+  只读 Token 适合监控抓取与只读大屏，不能用于控制台登录。
 - Web 控制台支持通过 `/login` 页面设置 Cookie，用于浏览器访问。
+- 修改 `api_token` / `readonly_token` 后需重启服务生效。
 
 ### 8.3 热加载
 
@@ -432,6 +478,14 @@ http://<host>:8720/metrics
 - `eshield_geoip_blocked_total`
 - `eshield_conn_track_blocked_total`
 - `eshield_dropped_by_protocol_total`
+- `eshield_dropped_by_port_total`
+- `eshield_source_dropped_total`
+- **v0.5.0 新增**：`eshield_map_usage_ratio{name}`、`eshield_map_entries{name}`、
+  `eshield_map_max_entries{name}`、`eshield_fragment_blocked_total{policy}`、
+  `eshield_port_rate_blocked_total`
+
+map 水位的 JSON 视图为 `GET /api/map-usage`；告警规则示例见
+[docs/operations.md](docs/operations.md)。
 
 ### 10.3 JSON API
 
@@ -446,6 +500,13 @@ curl -H "Authorization: Bearer <token>" http://<host>:8720/api/stats | jq
 - `GET /api/audit`：查询审计事件，支持 `limit`、`ip`、`action`、`from`、`to`。
 - `GET /api/audit/stream`：SSE 实时推送。
 - 审计后端支持内存与 JSON Lines 文件；文件后端支持大小轮转。
+- **v0.5.0**：文件后端每条记录追加 `seq`/`prev_hash`/`hash`（`sha256(seq|prev_hash|规范化内容)`），
+  进程重启自动从文件尾部恢复链；`GET /api/audit/verify` 校验完整性：
+
+```bash
+curl -s -H "Authorization: Bearer <token>" http://<host>:8720/api/audit/verify
+# {"ok":true,"checked":1024,"first_bad_seq":null,"path":"/var/log/eshield/audit.log"}
+```
 
 ### 10.5 TUI
 
@@ -492,7 +553,22 @@ eshield tui
 | TOP_ATTACKERS 热榜 | 1/16 采样写入，单次补 16。 |
 | 黑名单命中 RingBuf 事件 | 不再写入，计数由全局统计与 hit_count 覆盖。 |
 
-详细基准方法与数据见 [docs/benchmark.md](docs/benchmark.md)。
+详细基准方法与 veth 大包数据见 [docs/benchmark.md](docs/benchmark.md)；
+v0.5.0 的实测单包成本、真实两机攻击数据、内存占用与容量公式见
+[docs/capacity-planning.md](docs/capacity-planning.md)。
+
+### 11.4 容量速查（v0.5.0 实测）
+
+| 场景 | 实测 |
+|---|---|
+| 单包 CPU 成本（4 vCPU / generic XDP / netns+veth） | UDP PASS ≈ 92 ns/包；UDP 限速+黑名单 DROP / SYN Flood DROP ≈ 75 ns/包 |
+| 4 vCPU generic，22 万~28 万 pps | eShield 进程 CPU 2%，ksoftirqd 1.4~1.8% |
+| 2 vCPU 真实两机，135k pps / 540 万包 / 99.9% 黑名单丢弃 | eShield CPU 5%（峰值 7%）、系统繁忙 13%、RSS 48MB、API 0.5ms |
+| 攻击期正常流量 | p50 3.4ms 不变；p95 8.5ms → 412ms；成功率 96.9% → 75.6% |
+
+容量估算：`所需核数 ≈ 峰值 pps × 单包成本(75~92ns) / 0.7`（数据面理论下限，另加控制面与业务开销）；
+2 vCPU 建议只承载 ≤150k pps 的已识别攻击，未识别流量建议 ≥4 vCPU + native XDP。
+
 
 ## 12. 测试
 
@@ -556,14 +632,26 @@ cargo +nightly-2026-07-31 clippy --package eshield-ebpf \
 
 ## 14. 安全边界与限制
 
+> 完整的「现象 / 原因 / 缓解 / 是否计划支持」清单见
+> [docs/capability-boundaries.md](docs/capability-boundaries.md)。
+
 - **主机级防护**：面向单机或边缘节点的 L3-L4 防护。T 级带宽耗尽型攻击需要上游云清洗或运营商清洗，eShield 无法突破物理链路上限。
 - **L7 能力有限**：当前 L7 模块仅检查 TCP 首包指纹，不支持 TCP 分段重组，不提供 HTTP Flood、CC 或慢速攻击的完整应用层防御。
-- **SYN Cookie 范围**：仅支持 IPv4 TCP，采用挑战模式，仅对超过阈值的源生效。挑战包只支持 20/24 字节 TCP 头，**带 timestamps/SACK 等选项的源进入挑战态后会被丢弃**（最长 30s；否则这类 SYN Flood 会绕过防护直通内核）。面向真实客户端的高流量服务不建议开启该模块。
+- **单 IP 粒度封禁**：`block_mode = "hard"`（默认）会把触发限速的 IP 写入黑名单，NAT 出口/共享代理上会连带整段出口；
+  v0.5.0 新增 `block_mode = "soft"`：超限只丢包、不拉黑，流量回落自动恢复。
+- **伪造源与分片绕过**：per-IP 计数对伪造源无效（v0.4.8 实测 20k pps 随机源可完全绕过）；
+  v0.5.0 起 `[port_rate_limit]` 默认开启，并以 `[xdp].fragment_policy`（默认 `rate_limit`）处理
+  非首片 IPv4 分片。`rate_limit` 依赖 `[port_rate_limit].enabled = true`。
+- **IPv6 限制**：解析器不遍历 IPv6 扩展头，分片策略仅对 IPv4 生效；SYN Cookie 仅支持 IPv4 TCP。
+- **SYN Cookie 范围**：仅支持 IPv4 TCP，采用挑战模式，仅对超过阈值的源生效。挑战包只支持 20/24 字节 TCP 头，**带 timestamps/SACK 等选项的源进入挑战态后会被丢弃**（最长 30s；否则这类 SYN Flood 会绕过防护直通内核）。**该模块为实验特性，默认关闭**，面向真实客户端的高流量服务不建议开启。
 - **防护项目范围**：数据面仅匹配 IPv4 精确 IP，CIDR 由控制面展开，下限 `/24`，项目上限 8192 条。
 - **规则容量限制**：`port_acl` 上限 32 条，`l7_scan.patterns` 上限 8 条，用于满足内核 7.0 verifier 的指令处理限制。
+- **最小内存规格**：`[limits].refuse_memory_mb`（默认 256MB）以下拒绝启动，`min_memory_mb`（默认 512MB）以下告警；
+  400MB 实例上装 nginx + eShield 会导致 sshd 失联，不要用 `ESHIELD_ALLOW_LOW_MEMORY=1` 长期绕过。
 - **虚拟网卡限制**：veth 等虚拟网卡的原生 XDP_TX 存在内核异常风险，测试环境应使用 `ESHIELD_XDP_MODE=skb`。
 - **平台限制**：不支持 Windows；不支持无 BTF 的内核。
 - **物理网卡基准缺失**：当前公开基准基于 veth，物理网卡、多队列、小包 pps 与延迟需在目标环境实测。
+- **Hub 非高可用**：`eshield-hub` 是单实例有状态服务，需要自行备份；节点侧在 Hub 不可用时仍可本地自治。
 
 ## 15. 文档索引
 
@@ -571,8 +659,10 @@ cargo +nightly-2026-07-31 clippy --package eshield-ebpf \
 |---|---|
 | [docs/user-guide.md](docs/user-guide.md) | 运维与安全人员使用手册。 |
 | [docs/architecture.md](docs/architecture.md) | 系统架构、数据包旅程与 BPF Maps。 |
+| [docs/capability-boundaries.md](docs/capability-boundaries.md) | **能力边界与不承诺项**（现象/原因/缓解/计划）。 |
+| [docs/capacity-planning.md](docs/capacity-planning.md) | **容量规划**：实测 CPU/内存、推荐规格、估算公式、map 内存与调优。 |
 | [docs/deployment.md](docs/deployment.md) | 二进制、systemd、容器、K8s 与 Hub 部署。 |
-| [docs/operations.md](docs/operations.md) | 日常操作、日志、告警、备份恢复与故障排查。 |
+| [docs/operations.md](docs/operations.md) | 日常操作、升级回滚、认证、审计链、map 告警与故障排查。 |
 | [docs/dev-linux.md](docs/dev-linux.md) | 依赖安装、构建与本地测试。 |
 | [docs/api.md](docs/api.md) | REST API 端点、请求与响应示例。 |
 | [docs/benchmark.md](docs/benchmark.md) | 基准测试方法与数据。 |

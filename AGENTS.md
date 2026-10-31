@@ -6,7 +6,7 @@
 
 ## 1. 项目概述
 
-**eShield**（版本 `0.4.8`，变更见 CHANGELOG）是一个基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、网络层扫描等攻击。
+**eShield**（版本 `0.5.0`，变更见 CHANGELOG）是一个基于 **eBPF/XDP** 的主机级 L3-L4 网络清洗盾，专注防御 SYN/UDP/ICMP Flood、CC、网络层扫描等攻击。
 
 - **数据面**：用 Rust/Aya 编写的 eBPF 程序挂载在 Linux XDP 钩子上，在包进入内核网络协议栈之前完成过滤/丢弃/挑战。
 - **控制面**：Rust + Tokio + axum，提供 REST API、中文 Web Dashboard、CLI、TUI、审计日志、持久化与告警。
@@ -31,6 +31,7 @@
   - nightly：用于 eBPF（`bpfel-unknown-none`，需要 `rust-src`）。默认使用经验证的 `nightly-2026-07-31`（最新 nightly 的 LLVM 可能与 bpf-linker/内核 verifier 不兼容），可用 `ESHIELD_EBPF_TOOLCHAIN` 覆盖。
   - `ESHIELD_XDP_MODE=skb|generic`：强制 SKB 模式挂载，用于规避 veth/虚拟网卡上原生 XDP_TX 可能触发的内核问题。
   - `ESHIELD_TEST_XDP_MODE=skb`：`tests/netns_test.sh` 专用，让所有测试实例继承 SKB 模式。
+  - `ESHIELD_ALLOW_LOW_MEMORY=1`：跳过 `[limits].refuse_memory_mb` 的启动内存预检（v0.5.0，不推荐）。
   - 内核 7.0 verifier 对复杂 XDP 程序更严格；PORT_ACL 上限 32、L7 模式上限 8 是为了低于 100 万指令处理上限。
 - **构建工具**：LLVM / clang、`bpf-linker`。
 - **注意**：Aya 用户态依赖 Linux API，**无法在 Windows 上直接编译或运行**；代码编辑可以在 Windows 完成，构建和测试必须在 WSL2 / 虚拟机 / 远程 Linux 上执行。
@@ -74,8 +75,10 @@
 - `state.rs`：内存中的统计状态（PPS/DPS、Top 攻击源、Trust Score 分布等）。
 - `event_consumer.rs`：消费 eBPF Ring Buffer 事件。
 - `web.rs`：axum HTTP 服务（控制台静态资源、REST API、Prometheus `/metrics`、审计 SSE）。
-- `auth.rs`：Bearer Token 认证；本机 `127.0.0.1/::1` 自动跳过校验。
-- `audit.rs`：审计日志后端（内存 / JSON Lines 文件）。
+- `auth.rs`：Bearer Token 认证；本机 `127.0.0.1/::1` 自动跳过校验；v0.5.0 起支持 `readonly_token`
+  只读角色（仅 GET/HEAD/OPTIONS，写操作 403）与 `GET /api/auth/check` 角色查询。
+- `audit.rs`：审计日志后端（内存 / JSON Lines 文件）；v0.5.0 起文件后端写入
+  `seq`/`prev_hash`/`hash` 哈希链，并提供 `verify_chain()` 供 `GET /api/audit/verify` 使用。
 - `store.rs`：基于 redb 的规则持久化。
 - `adaptive.rs`：自适应阈值引擎，重复触发自动提升封禁时长。
 - `danger.rs`：系统危险信号监测（CPU/内存/DPS 异常时调整全局防御等级）。
@@ -114,13 +117,13 @@ Web 控制台前端是**独立的 Vue 3 + TypeScript 工程**，位于 `console/
 
 主要模块：
 
-- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 黑名单 → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP（block/allow + default_action）→ 可选连接跟踪（仅启用时）→ TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 决策；非首片 IPv4 分片跳过端口/L4 模块。
+- `main.rs`：`eshield` XDP 主流程：解析 → 白名单 → 端口 ACL → 黑名单 → 防护项目（DEFEND 记录 `project_flags` 位图）→ GeoIP（block/allow + default_action）→ 可选连接跟踪（仅启用时）→ TCP（SYN Proxy / SYN Flood）→ UDP Flood（per-IP + per-port）→ ICMP Flood → L7 扫描 → 速率限制 → 决策；非首片 IPv4 分片按 `[xdp].fragment_policy` 处理（默认 `rate_limit` 按「协议 + 0 端口」聚合限速，`drop` 直接丢弃，`pass` 跳过 L4 模块）。
 - `parser.rs`：有界读取 Ethernet / IPv4 / IPv6 / TCP / UDP / ICMP 头部。
 - `maps.rs`：BPF Maps 定义。
 - `blacklist.rs`：LRU Hash 黑名单查询。
 - `port_acl.rs`：端口/协议 ACL（按 `RuntimeConfig.port_acl_count` 循环，空表跳过）。
 - `rate_limit.rs` / `rate_counter.rs`：指数衰减滑动窗口速率限制。
-- `port_rate.rs`：按目的端口固定窗口限速（v0.4.6，防换源 IP 绕过；不使用指数衰减——包间隔 < 1 tick 时整数衰减失效，counter 单调增长误伤低速率流量）。
+- `port_rate.rs`：按目的端口固定窗口限速（v0.4.6，防换源 IP 绕过；不使用指数衰减——包间隔 < 1 tick 时整数衰减失效，counter 单调增长误伤低速率流量）。v0.5.0 起默认开启，并覆盖 TCP/UDP/ICMP 与非首片分片（分片 key 为 `dport=0`）。
 - `udp_flood.rs` / `icmp_flood.rs`：无连接 Flood 检测。
 - `l7_scan.rs`：TCP 首包指纹扫描。
 - `tcp_reset.rs`：丢弃 TCP 包时回复 RST。
@@ -289,10 +292,15 @@ sudo bash scripts/benchmark.sh
 关键配置段：
 
 - `interface` / `web_bind`：XDP 挂载网卡与 Web/API 监听地址（默认 `0.0.0.0:8720`）。
+- `api_token` / `readonly_token`：读写 Token 与只读 Token（v0.5.0）；只读 Token 仅允许 GET/HEAD/OPTIONS。
 - `whitelist` / `blacklist`：启动时加载的静态 CIDR 白名单与永久黑名单。
-- `[xdp]`：XDP 挂载策略（`mode = auto|native|generic`、`disable_offloads`、`auto_reattach`）。
+- `[xdp]`：XDP 挂载策略（`mode = auto|native|generic`、`disable_offloads`、`auto_reattach`）
+  与 `fragment_policy = pass|rate_limit|drop`（v0.5.0，默认 `rate_limit`，按「协议 + 0 端口」聚合限速）。
+- `[limits]`：启动内存预检（v0.5.0）——`min_memory_mb`（默认 512，告警）、
+  `refuse_memory_mb`（默认 256，拒绝启动），`ESHIELD_ALLOW_LOW_MEMORY=1` 可强制启动（不推荐）。
 - `[rate_limit]`：per-IP 速率限制（默认 threshold=2000、封禁 120s；threshold 是"突发信用"，
-  稳态 ≈ 每 tick 到达数/(1-decay)，默认约对应 2500pps 持续速率）。
+  稳态 ≈ 每 tick 到达数/(1-decay)，默认约对应 2500pps 持续速率）；`block_mode = hard|soft`
+  （v0.5.0，默认 hard；soft 只丢包不拉黑，适合 NAT 出口/共享代理）。
 - `[syn_proxy]`：IPv4 SYN Cookie 代理开关。
 - `udp_flood_enabled` / `icmp_flood_enabled`：无连接 Flood 防护顶层开关。
 - `[l7_scan]`：TCP 首包指纹匹配。
@@ -302,7 +310,8 @@ sudo bash scripts/benchmark.sh
 - `[trust_score]`：IP 双向信誉引擎（v0.4.0）；`add_divisor`/`sub_divisor` 已接入数据面。
 - `[danger_signal]`：系统危险信号监测（v0.4.0）。
 - `[port_acl]`：端口/协议级 allow/drop 规则。
-- `[port_rate_limit]`：按目的端口（协议+端口）固定窗口限速，防换源 IP 绕过（v0.4.6，默认关闭）。
+- `[port_rate_limit]`：按目的端口（协议+端口）固定窗口限速，防换源 IP 绕过（v0.4.6，
+  **v0.5.0 起默认开启**；覆盖 TCP/UDP/ICMP 与非首片分片，命中计 `port_rate_blocked`）。
 - `[protection_projects]`：防护项目分组（v0.4.6 起 PASS/DROP 数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块）。
 - `[hub]`：分布式 Hub 同步配置（v0.4.2）。
 - `[packet_log]`：采样包日志（v0.4.2）。
@@ -351,6 +360,8 @@ sudo kill -HUP $(pidof eshield)
 - 审计 SSE：`GET /api/audit/stream`
 
 认证：未设置 `api_token` 时，进程会生成随机 Token 并要求外部请求携带 `Authorization: Bearer <token>`（不存在匿名外部模式）；显式设置 `api_token` 后以其为准。本机 CLI（`127.0.0.1/::1`）自动跳过校验，但带 `X-Forwarded-For`/`X-Real-IP`/`Forwarded` 头的反向代理请求不再享受该豁免。
+v0.5.0 起新增只读 Token：`GET /api/auth/check` 返回 `{"role":"admin"|"readonly"}`；只读角色仅允许
+GET/HEAD/OPTIONS，写操作返回 403；`GET /api/map-usage` 与 `GET /api/audit/verify` 为新增只读端点。
 
 ---
 
@@ -376,7 +387,7 @@ docker run -d --name eshield \
   --cap-add PERFMON --cap-add IPC_LOCK \
   -v /etc/eshield/config.toml:/etc/eshield/config.toml:ro \
   -p 8720:8720 \
-  ghcr.io/blksword/eshield:v0.4.7
+  ghcr.io/blksword/eshield:v0.5.0
 ```
 
 ### 8.3 分布式 Hub
@@ -408,6 +419,8 @@ sync_rules_enabled = true
 
 - **必须 root 或高权限 capability**：加载 XDP/eBPF 程序需要 `CAP_BPF` / `CAP_NET_ADMIN` 等，无法以普通用户运行。
 - **Token 管理**：建议显式设置 `api_token`；若未设置，系统会生成随机 Token 并只在日志中输出前缀。首次使用可在本机执行 `eshield reset-token` 生成并打印新 Token，或在 CLI/TUI 上用 `--token`/`ESHIELD_API_TOKEN` 访问远程实例。Hub 支持 `--node-tokens-file`（每行 `node_name:token`），节点专属 Token 会以认证节点名为准，避免请求体伪造。
+- **只读 Token（v0.5.0）**：`readonly_token` 仅用于监控抓取/只读大屏（GET/HEAD/OPTIONS），
+  写操作返回 403；不能用于控制台登录；修改两个 Token 都需要重启服务生效。
 - **审计与持久化**：动态规则写入 redb（`store_path`），审计日志可开启文件后端；确保这些目录的权限正确，避免敏感信息泄露。
 - **威胁情报**：feed URL 通过 `reqwest` + `rustls-tls` 拉取，但仍应只使用可信来源。
 - **Hub 通信**：节点与 Hub 之间使用共享 Bearer Token；生产环境务必启用 TLS，并确保 `node_name` 在集群内唯一，避免策略回环。
@@ -427,7 +440,18 @@ sync_rules_enabled = true
     但带 IP option 或携带数据的 SYN 仍会被直接 DROP；被挑战源的合法连接最长 30s 内失败
     （`CHALLENGE_TIMEOUT_NS`）；
   - 面向真实客户端的高流量服务建议关闭该模块、改用 SYN Flood 检测 + 限速。
-- **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击；非首片 IPv4 分片会跳过端口/L4 模块，仅保留黑名单/限速/GeoIP 等源地址级判断。
+- **L7 扫描**：仅检查 TCP 首包前若干字节，不支持 TCP 分段重组，也不防御 HTTP Flood / CC / 慢速攻击。
+  非首片 IPv4 分片的处理由 `[xdp].fragment_policy` 控制（v0.5.0，默认 `rate_limit` 按「协议 + 0 端口」
+  聚合限速，`drop` 直接丢弃，`pass` 跳过 L4 模块）；IPv6 扩展头/分片不解析，仅能做源地址级判断。
+- **限速超限处置**：`[rate_limit].block_mode = hard|soft`（v0.5.0）。`hard`（默认）把超限 IP 写入黑名单，
+  对 NAT 出口/共享代理会连带整段出口；`soft` 只丢弃超限包、不拉黑，流量回落自动恢复。
+  作用于全局限速、UDP Flood、ICMP Flood。
+- **伪造源绕过**：per-IP 计数对伪造随机源无效（v0.4.8 实测 20k pps 全 PASS、RATE_MAP 打满）；
+  v0.5.0 起 `[port_rate_limit].enabled` 默认 `true`，按「协议 + 目的端口」聚合限速兜底
+  （命中计 `port_rate_blocked`，规则 ID `PORT_RATE=15`）。这是"限速兜底"，不是源 IP 识别。
+- **启动资源预检**：`[limits]`（v0.5.0）在加载 eBPF 前读取 `/proc/meminfo`：低于
+  `refuse_memory_mb`（默认 256）拒绝启动，低于 `min_memory_mb`（默认 512）告警。
+  400MB 实例上装 nginx + eShield 会导致 sshd 失联，不要用 `ESHIELD_ALLOW_LOW_MEMORY=1` 长期绕过。
 - **防护项目**：按 目的 IPv4 + 端口 + 协议 精确匹配（target_ips 的 CIDR 由控制面展开，下限 /24，IPv6 目标暂不匹配）；PASS/DROP 在数据面生效，DEFEND 按 `enabled_modules` 位图过滤全局防御模块（SYN_FLOOD/UDP_FLOOD/ICMP_FLOOD/RATE_LIMIT/L7_SCAN/GEOIP 已实现，PORT_ACL/TCP_RESET/ADAPTIVE 位保留）。
 - **XDP 挂载**：由 `[xdp].mode` 控制（auto/native/generic，默认 auto）。native 失败时按
   `disable_offloads` 尝试关闭 virtio_net 的 rx-gro-hw/tx-checksum 后重试；仍失败则
@@ -445,9 +469,10 @@ sync_rules_enabled = true
 |---|---|
 | `README.md` / `README_EN.md` | 项目简介、快速开始、功能列表 |
 | `docs/architecture.md` | 系统架构、数据包旅程、BPF Maps |
-| `docs/distributed-architecture.md` | Hub-Node 架构与数据流 |
+| `docs/capability-boundaries.md` | 能力边界与不承诺项（现象/原因/缓解/计划） |
+| `docs/capacity-planning.md` | 容量规划：实测 CPU/内存、推荐规格、估算公式、map 内存与调优 |
 | `docs/deployment.md` | 二进制、systemd、容器、K8s、Hub 部署 |
-| `docs/operations.md` | 日常运维、日志、告警、备份恢复、故障排查 |
+| `docs/operations.md` | 日常运维、升级回滚、认证、审计链、map 告警、故障排查 |
 | `docs/dev-linux.md` | 开发环境、依赖安装、本地构建测试 |
 | `docs/api.md` | REST API 完整端点与认证说明 |
 | `docs/benchmark.md` | 基准测试方法与示例报告 |

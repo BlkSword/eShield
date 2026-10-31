@@ -195,11 +195,60 @@ async fn check_config(config_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// 启动资源预检（v0.5.0）。
+///
+/// 实测在 400MB 内存实例上，系统 + nginx + eShield 会触发 OOM，连 sshd 都失去响应。
+/// 这里在加载 eBPF 之前给出明确结论，避免"装上了、跑挂了"的现场事故。
+fn preflight_memory(config: &Config) -> anyhow::Result<()> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let total_mb = meminfo
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemTotal:")
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|kb| kb.parse::<u64>().ok())
+        })
+        .map(|kb| kb / 1024)
+        .unwrap_or(u64::MAX);
+
+    let refuse = config.limits.refuse_memory_mb;
+    let min = config.limits.min_memory_mb;
+    let low_mem_override = std::env::var("ESHIELD_ALLOW_LOW_MEMORY")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if total_mb < refuse {
+        if !low_mem_override {
+            anyhow::bail!(
+                "系统内存 {}MB 低于 [limits].refuse_memory_mb={}MB，拒绝启动；\
+                 如确需在低内存环境运行，设置 ESHIELD_ALLOW_LOW_MEMORY=1 强制启动\
+                 （建议同时下调 map 规模或关闭部分模块）",
+                total_mb,
+                refuse
+            );
+        }
+        tracing::warn!(
+            "系统内存 {}MB 低于 refuse_memory_mb={}MB，但已通过 ESHIELD_ALLOW_LOW_MEMORY 强制启动",
+            total_mb,
+            refuse
+        );
+    } else if total_mb < min {
+        tracing::warn!(
+            "系统内存 {}MB 低于建议值 [limits].min_memory_mb={}MB：\
+             blacklist/rate/trust 等 LRU 表在高并发下更容易被挤掉，建议 >= 1GB",
+            total_mb,
+            min
+        );
+    }
+    Ok(())
+}
+
 async fn start(config_path: &str) -> anyhow::Result<()> {
     let config = Config::from_file(config_path).context("读取配置文件失败")?;
     config
         .validate()
         .context("配置校验失败，请检查 /etc/eshield/config.toml")?;
+    preflight_memory(&config)?;
 
     logging::init_tracing(&config.log_level, config.log_json);
 
@@ -429,7 +478,7 @@ async fn start(config_path: &str) -> anyhow::Result<()> {
             );
             Some(token)
         });
-    let auth = AuthState::new(api_token);
+    let auth = AuthState::with_readonly(api_token, config.readonly_token.clone());
 
     // 控制面：封装所有 eBPF Map 操作，供 Web / CLI / SIGHUP 使用
     let control = Arc::new(
@@ -1357,6 +1406,8 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
                         acc.udp_dropped += v.udp_dropped;
                         acc.icmp_dropped += v.icmp_dropped;
                         acc.other_dropped += v.other_dropped;
+                        acc.fragment_blocked += v.fragment_blocked;
+                        acc.port_rate_blocked += v.port_rate_blocked;
                     }
                     tracing::debug!(
                         "sync_global_stats total_packets={} total_dropped={} blacklist_blocked={} geoip_blocked={} rst_sent={} rst_fail={} rst_attempt={}",
@@ -1418,6 +1469,12 @@ async fn sync_global_stats(ebpf: Arc<tokio::sync::Mutex<Ebpf>>, stats: Arc<crate
         stats
             .other_dropped
             .store(acc.other_dropped, Ordering::Relaxed);
+        stats
+            .fragment_blocked
+            .store(acc.fragment_blocked, Ordering::Relaxed);
+        stats
+            .port_rate_blocked
+            .store(acc.port_rate_blocked, Ordering::Relaxed);
 
         let pps = acc.total_packets.saturating_sub(last_packets);
         let dps = acc.total_dropped.saturating_sub(last_dropped);
